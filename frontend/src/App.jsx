@@ -436,20 +436,31 @@ export default function App() {
     return Math.ceil(filteredFixtures.length / size) || 1;
   }, [filteredFixtures, pageSize]);
 
-  // Summary metrics
+  // Summary metrics calculated for the currently selected match day & active/upcoming matches
   const summaryStats = useMemo(() => {
-    if (!fixtures.length) return { total: 0, avgXg: '0.00', highOver15Count: 0, highOver25Count: 0 };
-    const total = fixtures.length;
-    const sumXg = fixtures.reduce((acc, f) => acc + (f.prediction?.expected_goals_xg || 0), 0);
-    const highOver15Count = fixtures.filter(f => (f.prediction?.over_1_5_probability || 0) >= 0.75).length;
-    const highOver25Count = fixtures.filter(f => (f.prediction?.over_2_5_probability || 0) >= 0.50).length;
+    if (!fixtures.length) return { total: 0, highOver15Count: 0, highOver25Count: 0 };
+    
+    // Filter for selected match day
+    let dayFixtures = fixtures;
+    if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
+      dayFixtures = fixtures.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+    }
+    
+    // Exclude finished fixtures so available counts decrease dynamically as each match ends
+    const activeFixtures = dayFixtures.filter(f => 
+      f.status !== 'FINISHED' && f.status !== 'FT' && f.status !== 'AET' && f.status !== 'PEN'
+    );
+    
+    const total = activeFixtures.length;
+    const highOver15Count = activeFixtures.filter(f => (f.prediction?.over_1_5_probability || 0) >= 0.75).length;
+    const highOver25Count = activeFixtures.filter(f => (f.prediction?.over_2_5_probability || 0) >= 0.50).length;
+    
     return {
       total,
-      avgXg: (sumXg / total).toFixed(2),
       highOver15Count,
       highOver25Count,
     };
-  }, [fixtures]);
+  }, [fixtures, selectedPickDay]);
 
   // Helper for outcome badges
   const getBestOutcome = (pred) => {
@@ -637,7 +648,7 @@ export default function App() {
               Soccer Goal Expectations Dashboard
             </h1>
             <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-              Track live match scores and live clocks alongside full goal threshold predictions (Home, Away, 1st Half, and 2nd Half probabilities).
+              Real-time Poisson goal expectation analytics and probability predictions across Home, Away, 1st Half, and 2nd Half match goal thresholds.
             </p>
           </div>
 
@@ -646,22 +657,27 @@ export default function App() {
             <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fixtures</span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Fixtures</span>
               <span className={`text-base sm:text-xl font-bold mt-0.5 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                 {summaryStats.total}
+              </span>
+              <span className="text-[8px] sm:text-[9px] font-semibold text-emerald-400 truncate mt-0.5">
+                {selectedPickDay === 'ALL_DAYS' ? 'All Days' : formatDayTitle(selectedPickDay)}
               </span>
             </div>
             <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">&gt; 1.5 Goals</span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">&gt; 1.5 Goals</span>
               <span className="text-base sm:text-xl font-bold text-emerald-400 mt-0.5">{summaryStats.highOver15Count}</span>
+              <span className="text-[8px] sm:text-[9px] font-semibold text-slate-500 truncate mt-0.5">Active</span>
             </div>
             <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">&gt; 2.5 Goals</span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">&gt; 2.5 Goals</span>
               <span className="text-base sm:text-xl font-bold text-cyan-400 mt-0.5">{summaryStats.highOver25Count}</span>
+              <span className="text-[8px] sm:text-[9px] font-semibold text-slate-500 truncate mt-0.5">Active</span>
             </div>
           </div>
         </section>
