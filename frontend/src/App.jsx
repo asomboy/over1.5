@@ -519,10 +519,11 @@ export default function App() {
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 sm:gap-2">
-                <span className={`font-extrabold text-sm sm:text-lg md:text-xl tracking-tight whitespace-nowrap ${
+                <span className={`font-black text-xs sm:text-base md:text-xl tracking-tight leading-tight uppercase ${
                   darkMode ? 'bg-gradient-to-r from-white via-slate-200 to-emerald-400 bg-clip-text text-transparent' : 'text-slate-900'
                 }`}>
-                  Soccer Goal Predictor
+                  <span className="block sm:inline">Soccer</span>
+                  <span className="sm:ml-1 text-emerald-400">GoalPredictor</span>
                 </span>
                 <span className="hidden md:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 whitespace-nowrap">
                   GMT+1 Live Feed
