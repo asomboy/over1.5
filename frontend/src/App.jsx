@@ -1831,9 +1831,7 @@ export default function App() {
             <div className="p-3 sm:p-4 border-b flex flex-wrap items-center justify-between gap-2 border-slate-800/80">
               <span className="text-xs font-extrabold uppercase text-slate-300 flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-emerald-400" />
-                {showBest15Over15 
-                  ? `Table 2: Best 15 Over 1.5 Goal Picks (${formatDayTitle(selectedPickDay)})`
-                  : `Table 2: All Upcoming Fixtures (${formatDayTitle(selectedPickDay)})`}
+                {`Table 2: Top 20 Over 1.5 Goal Matches (${selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})`}
               </span>
               <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-bold text-slate-400">
                 <span>Showing {paginatedFixtures.length} of {filteredFixtures.length} matches</span>
