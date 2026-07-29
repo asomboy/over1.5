@@ -368,5 +368,109 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     return {"status": "ok", "count": len(result_data), "data": result_data}
 
 
+@app.get("/api/fixtures/finished")
+def get_finished_fixtures(db: Session = Depends(get_db)):
+    """
+    Retrieve completed match results with final scores and Over 1.5 goal prediction outcomes.
+    """
+    fixtures = db.query(models.Fixture).filter(
+        models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
+    ).order_by(models.Fixture.match_date.desc()).limit(150).all()
+
+    result_data = []
+    for fix in fixtures:
+        pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fix.id).first()
+        if not pred:
+            pred = PoissonPredictionEngine.predict_fixture(db, fix.id)
+
+        top_scorelines = []
+        if pred and pred.top_scorelines_json:
+            try:
+                top_scorelines = json.loads(pred.top_scorelines_json)
+            except Exception:
+                top_scorelines = []
+
+        h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
+        a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
+        pois = PoissonPredictionEngine.calculate_poisson_probabilities(h_xg, a_xg)
+
+        btts_prob = round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+
+        match_date_str = None
+        if fix.match_date:
+            if isinstance(fix.match_date, datetime):
+                dt_obj = fix.match_date if fix.match_date.tzinfo else fix.match_date.replace(tzinfo=timezone.utc)
+                match_date_str = dt_obj.isoformat()
+            else:
+                s = str(fix.match_date).replace(" ", "T")
+                match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
+
+        h_score = fix.home_score if fix.home_score is not None else 0
+        a_score = fix.away_score if fix.away_score is not None else 0
+        total_actual_goals = h_score + a_score
+
+        result_data.append({
+            "id": fix.id,
+            "external_id": fix.external_id,
+            "match_date": match_date_str,
+            "status": fix.status or "FINISHED",
+            "venue": fix.venue,
+            "home_score": h_score,
+            "away_score": a_score,
+            "total_goals": total_actual_goals,
+            "over_1_5_hit": total_actual_goals >= 2,
+            "over_2_5_hit": total_actual_goals >= 3,
+            "live_clock": "FT",
+            "league": {
+                "id": fix.league.id if fix.league else None,
+                "name": fix.league.name if fix.league else "Unknown League",
+                "country": fix.league.country if fix.league else "",
+                "season": fix.league.season if fix.league else ""
+            },
+            "home_team": {
+                "id": fix.home_team.id if fix.home_team else None,
+                "name": fix.home_team.name if fix.home_team else "Home Team",
+                "short_code": fix.home_team.short_code if fix.home_team else "HOM",
+                "logo_url": fix.home_team.logo_url if fix.home_team else None
+            },
+            "away_team": {
+                "id": fix.away_team.id if fix.away_team else None,
+                "name": fix.away_team.name if fix.away_team else "Away Team",
+                "short_code": fix.away_team.short_code if fix.away_team else "AWY",
+                "logo_url": fix.away_team.logo_url if fix.away_team else None
+            },
+            "prediction": {
+                "predicted_home_score": h_xg,
+                "predicted_away_score": a_xg,
+                "expected_goals_xg": round(h_xg + a_xg, 2),
+                "home_win_probability": pois.get("home_win_probability", 0.0),
+                "draw_probability": pois.get("draw_probability", 0.0),
+                "away_win_probability": pois.get("away_win_probability", 0.0),
+                "over_0_5_probability": pois.get("over_0_5_probability", 0.0),
+                "over_1_5_probability": pois.get("over_1_5_probability", 0.0),
+                "over_2_5_probability": pois.get("over_2_5_probability", 0.0),
+                "over_3_5_probability": pois.get("over_3_5_probability", 0.0),
+                "under_2_5_probability": pois.get("under_2_5_probability", 0.0),
+                "btts_probability": btts_prob,
+                "home_over_0_5_probability": pois.get("home_over_0_5_probability", 0.0),
+                "home_over_1_5_probability": pois.get("home_over_1_5_probability", 0.0),
+                "home_over_2_5_probability": pois.get("home_over_2_5_probability", 0.0),
+                "away_over_0_5_probability": pois.get("away_over_0_5_probability", 0.0),
+                "away_over_1_5_probability": pois.get("away_over_1_5_probability", 0.0),
+                "away_over_2_5_probability": pois.get("away_over_2_5_probability", 0.0),
+                "first_half_xg": pois.get("first_half_xg", 0.0),
+                "first_half_over_0_5_probability": pois.get("first_half_over_0_5_probability", 0.0),
+                "first_half_over_1_5_probability": pois.get("first_half_over_1_5_probability", 0.0),
+                "second_half_xg": pois.get("second_half_xg", 0.0),
+                "second_half_over_0_5_probability": pois.get("second_half_over_0_5_probability", 0.0),
+                "second_half_over_1_5_probability": pois.get("second_half_over_1_5_probability", 0.0),
+                "most_likely_score": pois.get("most_likely_score", "1-1"),
+                "top_scorelines": top_scorelines or pois.get("top_5_scorelines", [])
+            }
+        })
+
+    return {"status": "ok", "count": len(result_data), "data": result_data}
+
+
 
 

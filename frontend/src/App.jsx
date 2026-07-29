@@ -77,6 +77,11 @@ export default function App() {
   // Dedicated Best 15 Over 1.5 Filter State
   const [showBest15Over15, setShowBest15Over15] = useState(false);
 
+  // Main Tab Selection ('upcoming' | 'finished')
+  const [activeTab, setActiveTab] = useState('upcoming');
+  const [finishedFixtures, setFinishedFixtures] = useState([]);
+  const [loadingFinished, setLoadingFinished] = useState(false);
+
   // Notification Banner State
   const [notification, setNotification] = useState(null);
 
@@ -155,6 +160,26 @@ export default function App() {
     }
   };
 
+  // Fetch completed match results from FastAPI
+  const fetchFinishedFixtures = async () => {
+    setLoadingFinished(true);
+    try {
+      let response;
+      try {
+        response = await axios.get(`${API_BASE_URL}/api/fixtures/finished`);
+      } catch {
+        response = await axios.get('/api/fixtures/finished');
+      }
+      if (response.data?.status === 'ok') {
+        setFinishedFixtures(response.data.data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch finished match results:', err);
+    } finally {
+      setLoadingFinished(false);
+    }
+  };
+
   // Trigger automated data sync & recalculation
   const handleSyncData = async () => {
     setSyncing(true);
@@ -168,6 +193,7 @@ export default function App() {
         await axios.post('/api/predictions/predict-all');
       }
       await fetchUpcomingFixtures(true);
+      await fetchFinishedFixtures();
       setNotification({ type: 'success', message: 'Live global fixtures & predictions refreshed successfully!' });
     } catch (err) {
       console.error('Sync failed:', err);
@@ -181,6 +207,7 @@ export default function App() {
   useEffect(() => {
     checkHealth();
     fetchUpcomingFixtures(false);
+    fetchFinishedFixtures();
     // Auto refresh live scores silently every 20 seconds
     const interval = setInterval(() => {
       checkHealth();
@@ -412,6 +439,19 @@ export default function App() {
     return result;
   }, [fixtures, searchTerm, selectedLeague, sortBy, selectedPickDay, showBest15Over15]);
 
+  // Filtered Finished Fixtures for Results Tab
+  const filteredFinishedFixtures = useMemo(() => {
+    return finishedFixtures.filter(fix => {
+      const homeName = fix.home_team?.name?.toLowerCase() || '';
+      const awayName = fix.away_team?.name?.toLowerCase() || '';
+      const leagueName = fix.league?.name?.toLowerCase() || '';
+      const query = searchTerm.toLowerCase();
+      const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
+      const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
+      return matchesSearch && matchesLeague;
+    });
+  }, [finishedFixtures, searchTerm, selectedLeague]);
+
   // Table 2 Pagination State (Default: 50 matches per page for fast DOM render)
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState('50');
@@ -638,6 +678,310 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col gap-5 sm:gap-8 overflow-x-hidden">
+        
+        {/* Main Tab Navigation Bar */}
+        <div className="flex items-center gap-2 sm:gap-3 border-b pb-3 border-slate-800/80 w-full overflow-x-auto custom-scrollbar">
+          <button
+            onClick={() => setActiveTab('upcoming')}
+            className={`px-4 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all shrink-0 ${
+              activeTab === 'upcoming'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
+                : darkMode ? 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+            }`}
+          >
+            <Activity className="w-4 h-4 text-emerald-400" />
+            <span>Upcoming & Live Fixtures</span>
+            <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-emerald-400 border border-emerald-500/30">
+              {fixtures.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('finished');
+              if (finishedFixtures.length === 0) fetchFinishedFixtures();
+            }}
+            className={`px-4 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all shrink-0 ${
+              activeTab === 'finished'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
+                : darkMode ? 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+            }`}
+          >
+            <Trophy className="w-4 h-4 text-amber-400" />
+            <span>Finished Matches & Scores</span>
+            <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-amber-400 border border-amber-500/30">
+              {finishedFixtures.length}
+            </span>
+          </button>
+        </div>
+
+        {activeTab === 'finished' ? (
+          <section className="space-y-6">
+            {/* Finished Matches Banner Header */}
+            <div className={`rounded-2xl sm:rounded-3xl p-4 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 transition-colors ${
+              darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
+            }`}>
+              <div className="space-y-1.5 max-w-2xl">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                    <Trophy className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </div>
+                  <h1 className={`text-xl sm:text-3xl font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Finished Match Results & Scores
+                  </h1>
+                </div>
+                <p className="text-xs sm:text-sm text-slate-400 leading-relaxed mt-1">
+                  Completed match scores with verified Over 1.5 goals prediction outcomes and accuracy tracking.
+                </p>
+              </div>
+
+              {/* Finished Summary Stats */}
+              <div className="grid grid-cols-3 gap-2 sm:gap-3 w-full md:w-auto shrink-0">
+                <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Results</span>
+                  <span className="text-base sm:text-xl font-bold text-white block mt-0.5">{filteredFinishedFixtures.length}</span>
+                </div>
+                <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">&gt; 1.5 Hits</span>
+                  <span className="text-base sm:text-xl font-bold text-emerald-400 block mt-0.5">
+                    {filteredFinishedFixtures.filter(f => f.over_1_5_hit).length}
+                  </span>
+                </div>
+                <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Hit Rate</span>
+                  <span className="text-base sm:text-xl font-bold text-cyan-400 block mt-0.5">
+                    {filteredFinishedFixtures.length ? Math.round((filteredFinishedFixtures.filter(f => f.over_1_5_hit).length / filteredFinishedFixtures.length) * 100) : 0}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Finished Controls / Search Bar */}
+            <div className={`rounded-2xl p-3.5 sm:p-4 border shadow-md ${darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[200px] max-w-sm">
+                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search finished match or league..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className={`w-full h-10 border rounded-xl pl-10 pr-3.5 text-xs focus:outline-none focus:border-emerald-500 ${
+                      darkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                    }`}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedLeague}
+                    onChange={(e) => setSelectedLeague(e.target.value)}
+                    className={`h-10 border px-3 rounded-xl text-xs font-bold focus:outline-none ${
+                      darkMode ? 'bg-slate-950 border-slate-800 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-800'
+                    }`}
+                  >
+                    <option value="ALL">All Competitions</option>
+                    {Array.from(new Set(finishedFixtures.map(f => f.league?.name).filter(Boolean))).map(l => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={fetchFinishedFixtures}
+                    className="p-2.5 rounded-xl border bg-slate-900 border-slate-800 text-slate-300 hover:text-white"
+                    title="Refresh Finished Results"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${loadingFinished ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Finished Results Table & Mobile View */}
+            {loadingFinished ? (
+              <div className="p-12 text-center space-y-3">
+                <RefreshCw className="w-8 h-8 text-emerald-500 animate-spin mx-auto" />
+                <p className="text-xs font-bold text-slate-400">Loading completed match results...</p>
+              </div>
+            ) : filteredFinishedFixtures.length === 0 ? (
+              <div className="p-12 text-center space-y-3 rounded-3xl border border-slate-800 bg-slate-900/60">
+                <Layers className="w-10 h-10 text-slate-500 mx-auto" />
+                <p className="text-sm font-bold text-slate-300">No finished matches found</p>
+                <p className="text-xs text-slate-400">Completed match scores will appear here after matches conclude.</p>
+              </div>
+            ) : (
+              <div className={`rounded-3xl border overflow-hidden transition-colors shadow-lg ${
+                darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
+              }`}>
+                {/* Mobile Accordion View (< sm) */}
+                <div className="block sm:hidden p-2 space-y-2">
+                  {filteredFinishedFixtures.map(fix => {
+                    const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                    const isExpanded = expandedMobileRows.has(`finished-${fix.id}`);
+
+                    return (
+                      <div
+                        key={`finished-mobile-${fix.id}`}
+                        className={`rounded-xl border transition-all overflow-hidden ${
+                          darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
+                        }`}
+                      >
+                        <div
+                          onClick={() => toggleMobileRow(`finished-${fix.id}`)}
+                          className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
+                        >
+                          <div className="flex flex-col min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 truncate">
+                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                {fix.home_team?.name}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shrink-0">
+                                {fix.home_score} - {fix.away_score}
+                              </span>
+                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                {fix.away_team?.name}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 truncate">
+                              {fix.league?.name} &bull; {formatDateGMT1(fix.match_date)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {fix.over_1_5_hit ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>Hit</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                <span>Under</span>
+                              </span>
+                            )}
+                            <div className="p-1 rounded-lg text-slate-400">
+                              {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
+                            </div>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                            darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
+                          }`}>
+                            <div className="grid grid-cols-2 gap-2 text-[11px]">
+                              <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                <span className="text-slate-400 font-semibold text-[10px]">Predicted Over 1.5%</span>
+                                <span className="font-mono font-bold text-emerald-400 text-xs mt-0.5">{over15Pct}%</span>
+                              </div>
+                              <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                <span className="text-slate-400 font-semibold text-[10px]">Actual Goals Scored</span>
+                                <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">{fix.total_goals} Goals</span>
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                              className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
+                            >
+                              <span>View Full Prediction Analytics</span>
+                              <ArrowUpRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop Table View (>= sm) */}
+                <div className="hidden sm:block overflow-x-auto custom-scrollbar">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className={`border-b text-[11px] font-extrabold uppercase tracking-wider ${
+                        darkMode ? 'border-slate-800 bg-slate-950/80 text-slate-400' : 'border-slate-200 bg-slate-100 text-slate-600'
+                      }`}>
+                        <th className="py-3.5 px-4">Match Date (GMT+1)</th>
+                        <th className="py-3.5 px-4">Competition</th>
+                        <th className="py-3.5 px-4">Matchup & Final Score</th>
+                        <th className="py-3.5 px-4 text-center">Actual Goals</th>
+                        <th className="py-3.5 px-4 text-center">Over 1.5 Outcome</th>
+                        <th className="py-3.5 px-4 text-center">Pred. Over 1.5%</th>
+                        <th className="py-3.5 px-4 text-right">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
+                      {filteredFinishedFixtures.map(fix => {
+                        const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+
+                        return (
+                          <tr
+                            key={`finished-${fix.id}`}
+                            onClick={() => setSelectedFixture(fix)}
+                            className={`cursor-pointer transition-all ${
+                              darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            <td className="py-3.5 px-4 font-bold text-slate-300">
+                              {formatDateGMT1(fix.match_date)}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
+                                {fix.league?.name || 'League'}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center space-x-2.5">
+                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                  {fix.home_team?.name}
+                                </span>
+                                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shadow-sm">
+                                  {fix.home_score} - {fix.away_score} (FT)
+                                </span>
+                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                  {fix.away_team?.name}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-200">
+                              {fix.total_goals} Goals
+                            </td>
+                            <td className="py-3.5 px-4 text-center">
+                              {fix.over_1_5_hit ? (
+                                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 inline-flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Over 1.5 HIT</span>
+                                </span>
+                              ) : (
+                                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40 inline-flex items-center gap-1">
+                                  <XCircle className="w-3.5 h-3.5" />
+                                  <span>Under 1.5</span>
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 text-center font-mono font-bold text-emerald-400">
+                              {over15Pct}%
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                                className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                              >
+                                <span>Details</span>
+                                <ArrowUpRight className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+        ) : (
+          <>
         
         {/* Banner Card */}
         <section className={`rounded-2xl sm:rounded-3xl p-4 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 sm:gap-6 transition-colors ${
@@ -1632,6 +1976,8 @@ export default function App() {
               );
             })}
           </div>
+        )}
+          </>
         )}
       </main>
 
