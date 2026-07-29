@@ -14,6 +14,8 @@ import {
   Zap, 
   Sparkles, 
   ChevronRight, 
+  ChevronDown,
+  ChevronUp,
   Layers, 
   X,
   Filter,
@@ -77,6 +79,21 @@ export default function App() {
 
   // Notification Banner State
   const [notification, setNotification] = useState(null);
+
+  // Mobile Accordion state to track expanded fixture IDs
+  const [expandedMobileRows, setExpandedMobileRows] = useState(new Set());
+
+  const toggleMobileRow = (fixId) => {
+    setExpandedMobileRows(prev => {
+      const next = new Set(prev);
+      if (next.has(fixId)) {
+        next.delete(fixId);
+      } else {
+        next.add(fixId);
+      }
+      return next;
+    });
+  };
 
   // Backend health status state
   const [backendHealth, setBackendHealth] = useState({
@@ -718,149 +735,270 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className={`border-b text-[10px] font-black uppercase tracking-wider ${
-                    darkMode ? 'border-slate-800/80 text-emerald-400' : 'border-emerald-200 text-emerald-800'
-                  }`}>
-                    <th className="py-2.5 px-3">Rank</th>
-                    <th className="py-2.5 px-3">Status / Kickoff (GMT+1)</th>
-                    <th className="py-2.5 px-3">Competition</th>
-                    <th className="py-2.5 px-3">Matchup & Live Score</th>
-                    <th className="py-2.5 px-3 text-center">Over 1.5 Goals %</th>
-                    <th className="py-2.5 px-3 text-center">Total xG</th>
-                    <th className="py-2.5 px-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/60' : 'divide-emerald-100'}`}>
-                  {top10Over15Picks.map((fix, idx) => {
-                    const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
-                    const isRank1 = idx === 0;
-                    const isTop3 = idx < 3;
-                    const isLive = isMatchLive(fix);
-                    const brightnessClass = getPercentageColorClass(over15Pct);
+            <>
+              {/* MOBILE ACCORDION VIEW (< sm BREAKPOINT) */}
+              <div className="block sm:hidden space-y-2">
+                {top10Over15Picks.map((fix, idx) => {
+                  const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                  const isRank1 = idx === 0;
+                  const isTop3 = idx < 3;
+                  const isLive = isMatchLive(fix);
+                  const isExpanded = expandedMobileRows.has(`top10-${fix.id}`);
+                  const brightnessClass = getPercentageColorClass(over15Pct);
 
-                    return (
-                      <tr 
-                        key={`top10-${fix.id}`}
-                        onClick={() => setSelectedFixture(fix)}
-                        className={`cursor-pointer transition-all ${
-                          isLive
-                            ? 'bg-rose-500/20 border-l-4 border-l-rose-500 shadow-lg font-bold'
-                            : isRank1
-                            ? darkMode ? 'bg-amber-500/10 border-l-4 border-l-amber-400 hover:bg-amber-500/20' : 'bg-amber-50 border-l-4 border-l-amber-500 hover:bg-amber-100'
-                            : isTop3
-                            ? darkMode ? 'bg-emerald-500/5 hover:bg-emerald-500/15' : 'bg-emerald-50/50 hover:bg-emerald-100/50'
-                            : darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
-                        }`}
+                  return (
+                    <div 
+                      key={`top10-mobile-${fix.id}`}
+                      className={`rounded-xl border transition-all overflow-hidden ${
+                        isLive
+                          ? 'bg-rose-500/10 border-rose-500/40'
+                          : isRank1
+                          ? darkMode ? 'bg-amber-500/10 border-amber-500/40' : 'bg-amber-50 border-amber-300'
+                          : darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
+                      }`}
+                    >
+                      {/* Compact Header Row (Ranking & Team Names) */}
+                      <div 
+                        onClick={() => toggleMobileRow(`top10-${fix.id}`)}
+                        className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
                       >
-                        {/* Rank Badge */}
-                        <td className="py-3 px-3">
+                        {/* Left: Rank & Team Matchup */}
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          {/* Rank Badge */}
                           {isRank1 ? (
-                            <span className="px-2.5 py-1 rounded-xl font-black text-xs bg-amber-400 text-slate-950 shadow-md flex items-center gap-1 font-mono w-fit">
-                              <Crown className="w-3.5 h-3.5 fill-current" />
-                              <span>#1 TOP PICK</span>
-                            </span>
-                          ) : isTop3 ? (
-                            <span className="w-7 h-7 rounded-xl font-black text-xs bg-emerald-400 text-slate-950 shadow-sm flex items-center justify-center font-mono">
-                              #{idx + 1}
+                            <span className="px-2 py-0.5 rounded-md font-extrabold text-[10px] bg-amber-400 text-slate-950 shadow-sm flex items-center gap-1 font-mono shrink-0">
+                              <Crown className="w-3 h-3 fill-current" />
+                              <span>#1</span>
                             </span>
                           ) : (
-                            <span className="w-7 h-7 rounded-xl font-black text-xs bg-slate-800 text-slate-300 border border-slate-700 flex items-center justify-center font-mono">
+                            <span className={`w-5 h-5 rounded-md font-bold text-[10px] flex items-center justify-center font-mono shrink-0 ${
+                              isTop3 ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                            }`}>
                               #{idx + 1}
                             </span>
                           )}
-                        </td>
 
-                        {/* Live Status & Kickoff Date/Time */}
-                        <td className="py-3 px-3">
-                          <div className="flex flex-col space-y-1">
-                            {renderLiveStatusBadge(fix)}
-                            <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-                              {formatDateGMT1(fix.match_date)}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* Competition Name Badge */}
-                        <td className="py-3 px-3">
-                          <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
-                            {fix.league?.name || 'League'}
-                          </span>
-                        </td>
-
-                        {/* Team Matchup & Live Score */}
-                        <td className="py-3 px-3">
-                          <div className="flex items-center space-x-2.5">
-                            <div className="flex items-center space-x-1.5">
-                              {fix.home_team?.logo_url ? (
-                                <img src={fix.home_team.logo_url} alt={fix.home_team.name} className="w-5 h-5 object-contain" />
-                              ) : (
-                                <span className="w-5 h-5 rounded bg-slate-800 text-[10px] flex items-center justify-center font-bold text-slate-300">
-                                  {fix.home_team?.short_code?.substring(0, 2)}
-                                </span>
-                              )}
-                              <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {/* Team Names */}
+                          <div className="flex flex-col min-w-0 flex-1">
+                            <div className="flex items-center gap-1 truncate">
+                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                                 {fix.home_team?.name}
                               </span>
-                            </div>
-                            
-                            {/* Prominent Live Score Box or VS */}
-                            {(isLive || fix.status === 'FINISHED') ? (
-                              <span className={`px-2.5 py-1 rounded-lg font-mono font-black text-xs shadow-md border ${
-                                isLive ? 'bg-rose-600 text-white border-rose-400 animate-pulse' : 'bg-slate-800 text-slate-200 border-slate-700'
-                              }`}>
-                                {fix.home_score ?? 0} - {fix.away_score ?? 0}
+                              <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                                {(isLive || fix.status === 'FINISHED') ? `${fix.home_score ?? 0}-${fix.away_score ?? 0}` : 'vs'}
                               </span>
-                            ) : (
-                              <span className="text-[10px] font-black text-slate-500">vs</span>
-                            )}
-
-                            <div className="flex items-center space-x-1.5">
-                              {fix.away_team?.logo_url ? (
-                                <img src={fix.away_team.logo_url} alt={fix.away_team.name} className="w-5 h-5 object-contain" />
-                              ) : (
-                                <span className="w-5 h-5 rounded bg-slate-800 text-[10px] flex items-center justify-center font-bold text-slate-300">
-                                  {fix.away_team?.short_code?.substring(0, 2)}
-                                </span>
-                              )}
-                              <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                                 {fix.away_team?.name}
                               </span>
                             </div>
+                            <span className="text-[10px] text-slate-400 truncate">
+                              {fix.league?.name || 'League'}
+                            </span>
                           </div>
-                        </td>
+                        </div>
 
-                        {/* Over 1.5 Goals % Badge (RIGHT AFTER MATCHUP COLUMN - Color Differentiated by Brightness) */}
-                        <td className="py-3 px-3 text-center">
-                          <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
-                            <Flame className="w-3 h-3 fill-current" />
-                            <span>Over 1.5: {over15Pct}%</span>
+                        {/* Right: Over 1.5 % Badge & Dropdown Chevron */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${brightnessClass}`}>
+                            {over15Pct}%
                           </span>
-                        </td>
+                          <div className="p-1 rounded-lg text-slate-400">
+                            {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
+                          </div>
+                        </div>
+                      </div>
 
-                        {/* Total xG */}
-                        <td className="py-3 px-3 text-center font-mono font-bold text-slate-300">
-                          {fix.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
-                        </td>
+                      {/* Dropdown Accordion Panel (Clicked Details) */}
+                      {isExpanded && (
+                        <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                          darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
+                        }`}>
+                          <div className="grid grid-cols-2 gap-2 text-[11px]">
+                            <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                              <span className="text-slate-400 font-semibold text-[10px]">Status & Time (GMT+1)</span>
+                              <div className="mt-1">{renderLiveStatusBadge(fix)}</div>
+                              <span className="text-[10px] text-slate-300 font-bold mt-1">{formatDateGMT1(fix.match_date)}</span>
+                            </div>
+                            <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                              <span className="text-slate-400 font-semibold text-[10px]">Total Expected Goals (xG)</span>
+                              <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">
+                                {fix.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
+                              </span>
+                            </div>
+                          </div>
 
-                        {/* Detail Link */}
-                        <td className="py-3 px-3 text-right">
-                          <button 
+                          {/* Over 1.5 & Over 2.5 Probability Bar */}
+                          <div className="p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-1">
+                            <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                              <span>Over 1.5 Goals: {over15Pct}%</span>
+                              <span>Over 2.5 Goals: {Math.round((fix.prediction?.over_2_5_probability || 0) * 100)}%</span>
+                            </div>
+                            <div className="w-full bg-slate-700/50 rounded-full h-1.5 overflow-hidden flex">
+                              <div className="bg-emerald-400 h-full" style={{ width: `${over15Pct}%` }} />
+                              <div className="bg-cyan-400 h-full" style={{ width: `${100 - over15Pct}%` }} />
+                            </div>
+                          </div>
+
+                          {/* Full Odds Button */}
+                          <button
                             onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
-                            className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-slate-950 border border-emerald-500/40 text-xs font-extrabold transition-all inline-flex items-center gap-1"
+                            className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
                           >
-                            <span>Odds</span>
+                            <span>View Full Odds & Match Analytics</span>
                             <ArrowUpRight className="w-3.5 h-3.5" />
                           </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* DESKTOP MULTI-COLUMN TABLE (>= sm BREAKPOINT) */}
+              <div className="hidden sm:block overflow-x-auto custom-scrollbar">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className={`border-b text-[10px] font-black uppercase tracking-wider ${
+                      darkMode ? 'border-slate-800/80 text-emerald-400' : 'border-emerald-200 text-emerald-800'
+                    }`}>
+                      <th className="py-2.5 px-3">Rank</th>
+                      <th className="py-2.5 px-3">Status / Kickoff (GMT+1)</th>
+                      <th className="py-2.5 px-3">Competition</th>
+                      <th className="py-2.5 px-3">Matchup & Live Score</th>
+                      <th className="py-2.5 px-3 text-center">Over 1.5 Goals %</th>
+                      <th className="py-2.5 px-3 text-center">Total xG</th>
+                      <th className="py-2.5 px-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/60' : 'divide-emerald-100'}`}>
+                    {top10Over15Picks.map((fix, idx) => {
+                      const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                      const isRank1 = idx === 0;
+                      const isTop3 = idx < 3;
+                      const isLive = isMatchLive(fix);
+                      const brightnessClass = getPercentageColorClass(over15Pct);
+
+                      return (
+                        <tr 
+                          key={`top10-${fix.id}`}
+                          onClick={() => setSelectedFixture(fix)}
+                          className={`cursor-pointer transition-all ${
+                            isLive
+                              ? 'bg-rose-500/20 border-l-4 border-l-rose-500 shadow-lg font-bold'
+                              : isRank1
+                              ? darkMode ? 'bg-amber-500/10 border-l-4 border-l-amber-400 hover:bg-amber-500/20' : 'bg-amber-50 border-l-4 border-l-amber-500 hover:bg-amber-100'
+                              : isTop3
+                              ? darkMode ? 'bg-emerald-500/5 hover:bg-emerald-500/15' : 'bg-emerald-50/50 hover:bg-emerald-100/50'
+                              : darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          {/* Rank Badge */}
+                          <td className="py-3 px-3">
+                            {isRank1 ? (
+                              <span className="px-2.5 py-1 rounded-xl font-black text-xs bg-amber-400 text-slate-950 shadow-md flex items-center gap-1 font-mono w-fit">
+                                <Crown className="w-3.5 h-3.5 fill-current" />
+                                <span>#1 TOP PICK</span>
+                              </span>
+                            ) : isTop3 ? (
+                              <span className="w-7 h-7 rounded-xl font-black text-xs bg-emerald-400 text-slate-950 shadow-sm flex items-center justify-center font-mono">
+                                #{idx + 1}
+                              </span>
+                            ) : (
+                              <span className="w-7 h-7 rounded-xl font-black text-xs bg-slate-800 text-slate-300 border border-slate-700 flex items-center justify-center font-mono">
+                                #{idx + 1}
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Live Status & Kickoff Date/Time */}
+                          <td className="py-3 px-3">
+                            <div className="flex flex-col space-y-1">
+                              {renderLiveStatusBadge(fix)}
+                              <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                                {formatDateGMT1(fix.match_date)}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Competition Name Badge */}
+                          <td className="py-3 px-3">
+                            <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                              {fix.league?.name || 'League'}
+                            </span>
+                          </td>
+
+                          {/* Team Matchup & Live Score */}
+                          <td className="py-3 px-3">
+                            <div className="flex items-center space-x-2.5">
+                              <div className="flex items-center space-x-1.5">
+                                {fix.home_team?.logo_url ? (
+                                  <img src={fix.home_team.logo_url} alt={fix.home_team.name} className="w-5 h-5 object-contain" />
+                                ) : (
+                                  <span className="w-5 h-5 rounded bg-slate-800 text-[10px] flex items-center justify-center font-bold text-slate-300">
+                                    {fix.home_team?.short_code?.substring(0, 2)}
+                                  </span>
+                                )}
+                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                  {fix.home_team?.name}
+                                </span>
+                              </div>
+                              
+                              {/* Prominent Live Score Box or VS */}
+                              {(isLive || fix.status === 'FINISHED') ? (
+                                <span className={`px-2.5 py-1 rounded-lg font-mono font-black text-xs shadow-md border ${
+                                  isLive ? 'bg-rose-600 text-white border-rose-400 animate-pulse' : 'bg-slate-800 text-slate-200 border-slate-700'
+                                }`}>
+                                  {fix.home_score ?? 0} - {fix.away_score ?? 0}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-black text-slate-500">vs</span>
+                              )}
+
+                              <div className="flex items-center space-x-1.5">
+                                {fix.away_team?.logo_url ? (
+                                  <img src={fix.away_team.logo_url} alt={fix.away_team.name} className="w-5 h-5 object-contain" />
+                                ) : (
+                                  <span className="w-5 h-5 rounded bg-slate-800 text-[10px] flex items-center justify-center font-bold text-slate-300">
+                                    {fix.away_team?.short_code?.substring(0, 2)}
+                                  </span>
+                                )}
+                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                  {fix.away_team?.name}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Over 1.5 Goals % Badge */}
+                          <td className="py-3 px-3 text-center">
+                            <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
+                              <Flame className="w-3 h-3 fill-current" />
+                              <span>Over 1.5: {over15Pct}%</span>
+                            </span>
+                          </td>
+
+                          {/* Total xG */}
+                          <td className="py-3 px-3 text-center font-mono font-bold text-slate-300">
+                            {fix.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
+                          </td>
+
+                          {/* Detail Link */}
+                          <td className="py-3 px-3 text-right">
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-slate-950 border border-emerald-500/40 text-xs font-extrabold transition-all inline-flex items-center gap-1"
+                            >
+                              <span>Odds</span>
+                              <ArrowUpRight className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
                 </table>
-            </div>
+              </div>
+            </>
           )}
         </section>
 
@@ -1029,14 +1167,14 @@ export default function App() {
           <div className={`rounded-3xl border overflow-hidden transition-colors shadow-lg ${
             darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
           }`}>
-            <div className="p-4 border-b flex flex-wrap items-center justify-between gap-2 border-slate-800/80">
+            <div className="p-3 sm:p-4 border-b flex flex-wrap items-center justify-between gap-2 border-slate-800/80">
               <span className="text-xs font-extrabold uppercase text-slate-300 flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-emerald-400" />
                 {showBest15Over15 
                   ? `Table 2: Best 15 Over 1.5 Goal Picks (${formatDayTitle(selectedPickDay)})`
                   : `Table 2: All Upcoming Fixtures (${formatDayTitle(selectedPickDay)})`}
               </span>
-              <div className="flex items-center gap-3 text-[11px] font-bold text-slate-400">
+              <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-bold text-slate-400">
                 <span>Showing {paginatedFixtures.length} of {filteredFixtures.length} matches</span>
                 <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-emerald-400">
                   Page {currentPage} of {totalPages}
@@ -1044,7 +1182,117 @@ export default function App() {
               </div>
             </div>
 
-            <div className="overflow-x-auto custom-scrollbar">
+            {/* MOBILE ACCORDION VIEW (< sm BREAKPOINT) */}
+            <div className="block sm:hidden p-2 space-y-2">
+              {paginatedFixtures.map(fix => {
+                const pred = fix.prediction || {};
+                const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
+                const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
+                const drawPct = Math.round((pred.draw_probability || 0) * 100);
+                const awayWinPct = Math.round((pred.away_win_probability || 0) * 100);
+                const isLive = isMatchLive(fix);
+                const isExpanded = expandedMobileRows.has(`table2-${fix.id}`);
+                const brightnessClass = getPercentageColorClass(over15Pct);
+
+                return (
+                  <div 
+                    key={`table2-mobile-${fix.id}`}
+                    className={`rounded-xl border transition-all overflow-hidden ${
+                      isLive
+                        ? 'bg-rose-500/10 border-rose-500/40'
+                        : darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    {/* Compact Header Row (Team Names & Live Score) */}
+                    <div 
+                      onClick={() => toggleMobileRow(`table2-${fix.id}`)}
+                      className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
+                    >
+                      {/* Teams Matchup */}
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 truncate">
+                          {fix.home_team?.logo_url && (
+                            <img src={fix.home_team.logo_url} alt="" className="w-4 h-4 object-contain shrink-0" />
+                          )}
+                          <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                            {fix.home_team?.name}
+                          </span>
+                          <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                            {(isLive || fix.status === 'FINISHED') ? `${fix.home_score ?? 0}-${fix.away_score ?? 0}` : 'vs'}
+                          </span>
+                          {fix.away_team?.logo_url && (
+                            <img src={fix.away_team.logo_url} alt="" className="w-4 h-4 object-contain shrink-0" />
+                          )}
+                          <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                            {fix.away_team?.name}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 truncate">
+                          {fix.league?.name || 'League'} &bull; {formatDateGMT1(fix.match_date)}
+                        </span>
+                      </div>
+
+                      {/* Right: Over 1.5 % Badge & Chevron Toggle */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${brightnessClass}`}>
+                          {over15Pct}%
+                        </span>
+                        <div className="p-1 rounded-lg text-slate-400">
+                          {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Accordion Expanded Details Panel */}
+                    {isExpanded && (
+                      <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                        darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
+                      }`}>
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                            <span className="text-slate-400 font-semibold text-[10px]">Status & Kickoff</span>
+                            <div className="mt-1">{renderLiveStatusBadge(fix)}</div>
+                            <span className="text-[10px] text-slate-300 font-bold mt-1">{formatDateGMT1(fix.match_date)}</span>
+                          </div>
+                          <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                            <span className="text-slate-400 font-semibold text-[10px]">Expected Goals (xG)</span>
+                            <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">
+                              {pred.predicted_home_score?.toFixed(2) || '0.00'} - {pred.predicted_away_score?.toFixed(2) || '0.00'} (xG: {pred.expected_goals_xg?.toFixed(2) || '0.00'})
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 1X2 Probabilities Bar */}
+                        <div className="p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-1">
+                          <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                            <span className="text-emerald-400">Home Win: {homeWinPct}%</span>
+                            <span className="text-slate-300">Draw: {drawPct}%</span>
+                            <span className="text-cyan-400">Away Win: {awayWinPct}%</span>
+                          </div>
+                          <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden flex">
+                            <div style={{ width: `${homeWinPct}%` }} className="bg-emerald-500" />
+                            <div style={{ width: `${drawPct}%` }} className="bg-slate-400" />
+                            <div style={{ width: `${awayWinPct}%` }} className="bg-cyan-500" />
+                          </div>
+                        </div>
+
+                        {/* Action Button */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                          className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
+                        >
+                          <span>View Full Odds & Match Analytics</span>
+                          <ArrowUpRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* DESKTOP MULTI-COLUMN TABLE (>= sm BREAKPOINT) */}
+            <div className="hidden sm:block overflow-x-auto custom-scrollbar">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className={`border-b text-[11px] font-extrabold uppercase tracking-wider ${
