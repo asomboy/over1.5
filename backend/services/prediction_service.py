@@ -1,10 +1,10 @@
 import os
 import sys
 import json
+import math
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple, cast
-import scipy.stats as stats
 from sqlalchemy.orm import Session
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +19,12 @@ except ImportError:
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
 
 logger = logging.getLogger(__name__)
+
+def _poisson_pmf(k: int, mu: float) -> float:
+    """Calculates Poisson probability mass function P(X=k) for mean mu."""
+    if mu <= 0:
+        return 1.0 if k == 0 else 0.0
+    return (math.pow(mu, k) * math.exp(-mu)) / math.factorial(k)
 
 
 class PoissonPredictionEngine:
@@ -116,9 +122,9 @@ class PoissonPredictionEngine:
         lambda_h = max(lambda_home, 0.05)
         lambda_a = max(lambda_away, 0.05)
 
-        # Compute PMF for home and away goals up to max_goals using scipy.stats.poisson
-        home_pmf = [float(stats.poisson.pmf(i, lambda_h)) for i in range(max_goals)]
-        away_pmf = [float(stats.poisson.pmf(j, lambda_a)) for j in range(max_goals)]
+        # Compute PMF for home and away goals up to max_goals using _poisson_pmf
+        home_pmf = [_poisson_pmf(i, lambda_h) for i in range(max_goals)]
+        away_pmf = [_poisson_pmf(j, lambda_a) for j in range(max_goals)]
 
         home_win_prob = 0.0
         draw_prob = 0.0
@@ -176,11 +182,11 @@ class PoissonPredictionEngine:
         lambda_1h = max(lambda_tot * 0.45, 0.05)
         lambda_2h = max(lambda_tot * 0.55, 0.05)
 
-        h1_over_0_5 = 1.0 - stats.poisson.pmf(0, lambda_1h)
-        h1_over_1_5 = 1.0 - stats.poisson.pmf(0, lambda_1h) - stats.poisson.pmf(1, lambda_1h)
+        h1_over_0_5 = 1.0 - _poisson_pmf(0, lambda_1h)
+        h1_over_1_5 = 1.0 - _poisson_pmf(0, lambda_1h) - _poisson_pmf(1, lambda_1h)
 
-        h2_over_0_5 = 1.0 - stats.poisson.pmf(0, lambda_2h)
-        h2_over_1_5 = 1.0 - stats.poisson.pmf(0, lambda_2h) - stats.poisson.pmf(1, lambda_2h)
+        h2_over_0_5 = 1.0 - _poisson_pmf(0, lambda_2h)
+        h2_over_1_5 = 1.0 - _poisson_pmf(0, lambda_2h) - _poisson_pmf(1, lambda_2h)
 
         return {
             "home_win_probability": round(home_win_prob, 4),

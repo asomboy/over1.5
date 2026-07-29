@@ -485,6 +485,8 @@ class DataIngestionService:
             return {
                 "status": "ok",
                 "source": "espn_realtime_api",
+                "leagues_ingested": db.query(League).count(),
+                "teams_ingested": db.query(Team).count(),
                 "fixtures_ingested": espn_fixtures_count
             }
 
