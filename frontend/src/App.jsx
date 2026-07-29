@@ -494,6 +494,12 @@ export default function App() {
     };
   }, [fixtures, selectedPickDay]);
 
+  // Total upcoming fixtures for the selected date (or all days if ALL_DAYS)
+  const dayUpcomingFixturesCount = useMemo(() => {
+    if (selectedPickDay === 'ALL_DAYS') return fixtures.length;
+    return fixtures.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
+  }, [fixtures, selectedPickDay]);
+
   // Helper for outcome badges
   const getBestOutcome = (pred) => {
     if (!pred) return { label: 'Over 1.5 Goals', pct: 0, level: 'low' };
