@@ -16,8 +16,6 @@ services:
   - type: web
     name: soccer-goal-predictor-web
     env: static
-    region: oregon
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
