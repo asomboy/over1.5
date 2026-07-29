@@ -372,8 +372,8 @@ export default function App() {
     }
   }, [availableMatchDays, selectedPickDay]);
 
-  // TOP 10 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
-  const top10Over15Picks = useMemo(() => {
+  // TOP 5 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
+  const top5Over15Picks = useMemo(() => {
     if (!fixtures.length) return [];
     
     let dayMatches = [...fixtures];
@@ -384,11 +384,11 @@ export default function App() {
     return dayMatches
       .filter(f => f.prediction && (f.prediction.over_1_5_probability || 0) > 0)
       .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
-      .slice(0, 10);
+      .slice(0, 5);
   }, [fixtures, selectedPickDay]);
 
-  // TOP 10 FINISHED OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (RESULTS)
-  const top10FinishedPicks = useMemo(() => {
+  // TOP 5 FINISHED OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (RESULTS)
+  const top5FinishedPicks = useMemo(() => {
     if (!finishedFixtures.length) return [];
     
     let dayMatches = [...finishedFixtures];
@@ -399,10 +399,10 @@ export default function App() {
     return dayMatches
       .filter(f => f.prediction && (f.prediction.over_1_5_probability || 0) > 0)
       .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
-      .slice(0, 10);
+      .slice(0, 5);
   }, [finishedFixtures, selectedPickDay]);
 
-  // Filter & Sort Logic for Main Fixtures Table (Support Best 15 Over 1.5 Goal Picks for current/selected day)
+  // Filter & Sort Logic for Main Fixtures Table (Table 2: Up to 20 matches >= 50% Over 1.5 Goal probability sorted descending)
   const filteredFixtures = useMemo(() => {
     let result = fixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
@@ -412,52 +412,20 @@ export default function App() {
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
-      return matchesSearch && matchesLeague && matchesDay;
+      const isOver50Percent = (fix.prediction?.over_1_5_probability || 0) >= 0.50;
+      return matchesSearch && matchesLeague && matchesDay && isOver50Percent;
     });
 
-    if (showBest15Over15) {
-      result = result
-        .filter(f => f.prediction && (f.prediction.over_1_5_probability || 0) > 0)
-        .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
-        .slice(0, 15);
-    } else {
-      result = result.sort((a, b) => {
-        const timeA = parseMatchDate(a.match_date)?.getTime() || 0;
-        const timeB = parseMatchDate(b.match_date)?.getTime() || 0;
-        if (sortBy === 'DATE_ASC') {
-          return timeA - timeB;
-        }
-        if (sortBy === 'OVER_1_5_DESC') {
-          return (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0);
-        }
-        if (sortBy === 'OVER_2_5_DESC') {
-          return (b.prediction?.over_2_5_probability || 0) - (a.prediction?.over_2_5_probability || 0);
-        }
-        if (sortBy === 'HOME_OVER_1_5_DESC') {
-          return (b.prediction?.home_over_1_5_probability || 0) - (a.prediction?.home_over_1_5_probability || 0);
-        }
-        if (sortBy === 'AWAY_OVER_1_5_DESC') {
-          return (b.prediction?.away_over_1_5_probability || 0) - (a.prediction?.away_over_1_5_probability || 0);
-        }
-        if (sortBy === 'FIRST_HALF_OVER_0_5_DESC') {
-          return (b.prediction?.first_half_over_0_5_probability || 0) - (a.prediction?.first_half_over_0_5_probability || 0);
-        }
-        if (sortBy === 'SECOND_HALF_OVER_0_5_DESC') {
-          return (b.prediction?.second_half_over_0_5_probability || 0) - (a.prediction?.second_half_over_0_5_probability || 0);
-        }
-        if (sortBy === 'XG_DESC') {
-          return (b.prediction?.expected_goals_xg || 0) - (a.prediction?.expected_goals_xg || 0);
-        }
-        return timeA - timeB;
-      });
-    }
+    result = result
+      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
+      .slice(0, 20);
 
     return result;
-  }, [fixtures, searchTerm, selectedLeague, sortBy, selectedPickDay, showBest15Over15]);
+  }, [fixtures, searchTerm, selectedLeague, selectedPickDay]);
 
-  // Filtered Finished Fixtures for Results Tab (Table 2)
+  // Filtered Finished Fixtures for Results Tab (Table 2: Up to 20 finished matches >= 50% Over 1.5 Goal probability sorted descending)
   const filteredFinishedFixtures = useMemo(() => {
-    return finishedFixtures.filter(fix => {
+    let result = finishedFixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
       const awayName = fix.away_team?.name?.toLowerCase() || '';
       const leagueName = fix.league?.name?.toLowerCase() || '';
@@ -465,8 +433,15 @@ export default function App() {
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
-      return matchesSearch && matchesLeague && matchesDay;
+      const isOver50Percent = (fix.prediction?.over_1_5_probability || 0) >= 0.50;
+      return matchesSearch && matchesLeague && matchesDay && isOver50Percent;
     });
+
+    result = result
+      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
+      .slice(0, 20);
+
+    return result;
   }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay]);
 
   // Table 2 Pagination State (Default: 50 matches per page for fast DOM render)
@@ -794,14 +769,14 @@ export default function App() {
                   <div>
                     <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                       <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                        Table 1: Top 10 Daily Finished Picks
+                        Table 1: Top 5 Daily Finished Picks
                       </h2>
                       <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950">
                         {selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)}
                       </span>
                     </div>
                     <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
-                      Top 10 finished picks sorted by highest predicted percentage for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
+                      Top 5 finished picks sorted by highest predicted percentage for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
                     </p>
                   </div>
                 </div>
@@ -832,7 +807,7 @@ export default function App() {
               </div>
 
               {/* Table 1: Featured Picks Content */}
-              {top10FinishedPicks.length === 0 ? (
+              {top5FinishedPicks.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400 font-semibold">
                   No finished top picks found for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
                 </div>
@@ -840,7 +815,7 @@ export default function App() {
                 <>
                   {/* Mobile Accordion View for Table 1 */}
                   <div className="block sm:hidden space-y-2">
-                    {top10FinishedPicks.map((fix, idx) => {
+                    {top5FinishedPicks.map((fix, idx) => {
                       const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
                       const isRank1 = idx === 0;
                       const isTop3 = idx < 3;
@@ -955,7 +930,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/60' : 'divide-emerald-100'}`}>
-                        {top10FinishedPicks.map((fix, idx) => {
+                        {top5FinishedPicks.map((fix, idx) => {
                           const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
                           const isRank1 = idx === 0;
                           const isTop3 = idx < 3;
@@ -1057,7 +1032,7 @@ export default function App() {
               )}
             </section>
 
-            {/* MAIN TABLE 2: ALL FINISHED FIXTURES OF THE SELECTED DAY */}
+            {/* MAIN TABLE 2: TOP 20 FINISHED FIXTURES OF THE SELECTED DAY SORTED DESCENDING */}
             <section className="space-y-4">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b pb-3 border-slate-800">
                 <div className="flex items-center space-x-2">
@@ -1066,10 +1041,10 @@ export default function App() {
                   </div>
                   <div>
                     <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                      Table 2: All Finished Fixtures ({selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})
+                      Table 2: Top 20 Finished Fixtures ({selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Complete list of completed match scores for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
+                      Top 20 finished matches with &ge; 50% Over 1.5 probability sorted in descending order for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
                     </p>
                   </div>
                 </div>
@@ -1367,14 +1342,14 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                    Table 1: Top 10 Daily Picks
+                    Table 1: Top 5 Daily Picks
                   </h2>
                   <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950">
                     {selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)}
                   </span>
                 </div>
                 <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
-                  Top 10 daily picks sorted strictly from highest percentage down for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
+                  Top 5 daily picks sorted strictly from highest percentage down for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
                 </p>
               </div>
             </div>
@@ -1405,7 +1380,7 @@ export default function App() {
           </div>
 
           {/* Table 1: Featured Picks for Selected Day */}
-          {top10Over15Picks.length === 0 ? (
+          {top5Over15Picks.length === 0 ? (
             <div className="p-8 text-center space-y-3">
               <Layers className="w-8 h-8 text-slate-500 mx-auto" />
               <p className="text-xs font-bold text-slate-400">
@@ -1424,7 +1399,7 @@ export default function App() {
             <>
               {/* MOBILE ACCORDION VIEW (< sm BREAKPOINT) */}
               <div className="block sm:hidden space-y-2">
-                {top10Over15Picks.map((fix, idx) => {
+                {top5Over15Picks.map((fix, idx) => {
                   const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
                   const isRank1 = idx === 0;
                   const isTop3 = idx < 3;
@@ -1557,7 +1532,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/60' : 'divide-emerald-100'}`}>
-                    {top10Over15Picks.map((fix, idx) => {
+                    {top5Over15Picks.map((fix, idx) => {
                       const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
                       const isRank1 = idx === 0;
                       const isTop3 = idx < 3;
