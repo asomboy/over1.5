@@ -684,7 +684,7 @@ export default function App() {
             <Activity className="w-4 h-4 text-emerald-400" />
             <span>Upcoming & Live Fixtures</span>
             <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-emerald-400 border border-emerald-500/30">
-              {fixtures.length}
+              {dayUpcomingFixturesCount}
             </span>
           </button>
 
