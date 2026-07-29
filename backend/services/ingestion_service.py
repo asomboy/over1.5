@@ -21,6 +21,29 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def extract_score_value(score_obj: Any) -> Optional[int]:
+    """Safely extracts an integer score from raw dict, string, float, or int value."""
+    if score_obj is None:
+        return None
+    if isinstance(score_obj, (int, float)):
+        return int(score_obj)
+    if isinstance(score_obj, str):
+        cleaned = score_obj.strip()
+        if cleaned.isdigit():
+            return int(cleaned)
+        try:
+            return int(float(cleaned))
+        except (ValueError, TypeError):
+            return None
+    if isinstance(score_obj, dict):
+        val = score_obj.get("displayValue")
+        if val is None:
+            val = score_obj.get("value")
+        if val is not None:
+            return extract_score_value(val)
+    return None
+
+
 class DataIngestionService:
     """
     Data Ingestion Service responsible for ingesting, deduplicating,
@@ -453,15 +476,15 @@ class DataIngestionService:
                             status = "SCHEDULED"
 
                         venue = comp_info.get("venue", {}).get("fullName")
-                        h_score = home_data.get("score")
-                        a_score = away_data.get("score")
+                        raw_h_score = home_data.get("score") if home_data.get("score") is not None else home_data.get("displayValue")
+                        raw_a_score = away_data.get("score") if away_data.get("score") is not None else away_data.get("displayValue")
 
                         if status == "SCHEDULED":
                             parsed_h_score = None
                             parsed_a_score = None
                         else:
-                            parsed_h_score = int(h_score) if (h_score is not None and str(h_score).isdigit()) else None
-                            parsed_a_score = int(a_score) if (a_score is not None and str(a_score).isdigit()) else None
+                            parsed_h_score = extract_score_value(raw_h_score)
+                            parsed_a_score = extract_score_value(raw_a_score)
 
                         f_payload = [{
                             "external_id": f"ESPN-FIX-{ev.get('id')}",
