@@ -367,23 +367,27 @@ class DataIngestionService:
         ]
 
         now_utc = datetime.now(timezone.utc)
-        d_start = now_utc.strftime("%Y%m%d")
-        d_end = (now_utc + timedelta(days=35)).strftime("%Y%m%d")
-        date_param = f"{d_start}-{d_end}"
+        target_dates = [(now_utc + timedelta(days=i)).strftime("%Y%m%d") for i in range(-1, 15)]
 
-        async def fetch_espn_feed(client_inst, code, default_name, country):
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_param}"
+        async def fetch_espn_feed(client_inst, code, default_name, country, date_str=None):
+            if date_str:
+                url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_str}"
+            else:
+                d_start = now_utc.strftime("%Y%m%d")
+                d_end = (now_utc + timedelta(days=35)).strftime("%Y%m%d")
+                url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={d_start}-{d_end}"
             try:
                 r = await client_inst.get(url)
                 if r.status_code == 200:
                     return (code, default_name, country, r.json())
             except Exception as ex:
-                logger.warning(f"Error fetching ESPN feed {code}: {str(ex)}")
+                logger.warning(f"Error fetching ESPN feed {code} ({date_str}): {str(ex)}")
             return (code, default_name, country, None)
 
         espn_fixtures_count = 0
         async with httpx.AsyncClient(timeout=10.0) as client:
-            feed_tasks = [fetch_espn_feed(client, code, default_name, country) for code, default_name, country in espn_leagues]
+            feed_tasks = [fetch_espn_feed(client, code, default_name, country) for code, default_name, country in espn_leagues if code != "all"]
+            feed_tasks.extend([fetch_espn_feed(client, "all", "Global Matches & Cup Competitions", "Global", d_str) for d_str in target_dates])
             feed_results = await asyncio.gather(*feed_tasks)
 
             for code, default_name, country, data in feed_results:
