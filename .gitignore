@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build & Dist
+dist/
+build/
+.output/
+
+# IDE & Editor
+.vscode/
+.idea/
+.pyrefly.json
+
+# Test & Cache
+.pytest_cache/
+.oxlintcache
+
+# Environment & Logs
+.env
+*.log

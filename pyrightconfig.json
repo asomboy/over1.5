@@ -1,0 +1,27 @@
+{
+  "executionEnvironments": [
+    {
+      "root": "backend",
+      "venvPath": "backend",
+      "venv": "venv",
+      "extraPaths": [
+        "backend",
+        "backend/venv/Lib/site-packages"
+      ]
+    }
+  ],
+  "venvPath": "backend",
+  "venv": "venv",
+  "include": [
+    "backend"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/venv",
+    "**/__pycache__"
+  ],
+  "extraPaths": [
+    "backend",
+    "backend/venv/Lib/site-packages"
+  ]
+}

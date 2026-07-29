@@ -1,0 +1,11 @@
+[tool.pyright]
+venvPath = "."
+venv = "venv"
+include = ["."]
+exclude = ["**/node_modules", "**/venv", "**/__pycache__", "dist"]
+extraPaths = [".", "venv/Lib/site-packages"]
+
+[tool.pyrefly]
+python_path = "venv/Scripts/python.exe"
+venv_path = "venv"
+search_paths = [".", "venv/Lib/site-packages"]
