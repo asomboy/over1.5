@@ -345,12 +345,13 @@ export default function App() {
     );
   };
 
-  // List of distinct match days available in fixtures sorted chronologically
+  // Combined List of distinct match days available across fixtures and finished matches
   const availableMatchDays = useMemo(() => {
-    const daysSet = new Set(fixtures.map(f => getGMT1DayKey(f.match_date)).filter(Boolean));
+    const allMatches = [...fixtures, ...finishedFixtures];
+    const daysSet = new Set(allMatches.map(f => getGMT1DayKey(f.match_date)).filter(Boolean));
     const days = Array.from(daysSet).sort();
     return days;
-  }, [fixtures]);
+  }, [fixtures, finishedFixtures]);
 
   // Selected Particular Day state for Top 10 Daily Picks (Default: Today's Date)
   const [selectedPickDay, setSelectedPickDay] = useState(() => {
@@ -371,7 +372,7 @@ export default function App() {
     }
   }, [availableMatchDays, selectedPickDay]);
 
-  // TOP 10 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (SORTED DESCENDING BY HIGHEST PROBABILITY FIRST)
+  // TOP 10 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
   const top10Over15Picks = useMemo(() => {
     if (!fixtures.length) return [];
     
@@ -385,6 +386,21 @@ export default function App() {
       .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
       .slice(0, 10);
   }, [fixtures, selectedPickDay]);
+
+  // TOP 10 FINISHED OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (RESULTS)
+  const top10FinishedPicks = useMemo(() => {
+    if (!finishedFixtures.length) return [];
+    
+    let dayMatches = [...finishedFixtures];
+    if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
+      dayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+    }
+    
+    return dayMatches
+      .filter(f => f.prediction && (f.prediction.over_1_5_probability || 0) > 0)
+      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
+      .slice(0, 10);
+  }, [finishedFixtures, selectedPickDay]);
 
   // Filter & Sort Logic for Main Fixtures Table (Support Best 15 Over 1.5 Goal Picks for current/selected day)
   const filteredFixtures = useMemo(() => {
@@ -439,7 +455,7 @@ export default function App() {
     return result;
   }, [fixtures, searchTerm, selectedLeague, sortBy, selectedPickDay, showBest15Over15]);
 
-  // Filtered Finished Fixtures for Results Tab
+  // Filtered Finished Fixtures for Results Tab (Table 2)
   const filteredFinishedFixtures = useMemo(() => {
     return finishedFixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
@@ -448,9 +464,10 @@ export default function App() {
       const query = searchTerm.toLowerCase();
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
-      return matchesSearch && matchesLeague;
+      const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
+      return matchesSearch && matchesLeague && matchesDay;
     });
-  }, [finishedFixtures, searchTerm, selectedLeague]);
+  }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay]);
 
   // Table 2 Pagination State (Default: 50 matches per page for fast DOM render)
   const [currentPage, setCurrentPage] = useState(1);
@@ -731,254 +748,562 @@ export default function App() {
                   </h1>
                 </div>
                 <p className="text-xs sm:text-sm text-slate-400 leading-relaxed mt-1">
-                  Completed match scores with verified Over 1.5 goals prediction outcomes and accuracy tracking.
+                  Completed match scores with verified Over 1.5 goals prediction outcomes and accuracy tracking for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
                 </p>
               </div>
 
               {/* Finished Summary Stats */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3 w-full md:w-auto shrink-0">
                 <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">Results</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase truncate">Results</span>
                   <span className="text-base sm:text-xl font-bold text-white block mt-0.5">{filteredFinishedFixtures.length}</span>
+                  <span className="text-[8px] sm:text-[9px] font-semibold text-emerald-400 truncate mt-0.5">
+                    {selectedPickDay === 'ALL_DAYS' ? 'All Days' : formatDayTitle(selectedPickDay)}
+                  </span>
                 </div>
                 <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">&gt; 1.5 Hits</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase truncate">&gt; 1.5 Hits</span>
                   <span className="text-base sm:text-xl font-bold text-emerald-400 block mt-0.5">
                     {filteredFinishedFixtures.filter(f => f.over_1_5_hit).length}
                   </span>
+                  <span className="text-[8px] sm:text-[9px] font-semibold text-slate-500 truncate mt-0.5">Hit</span>
                 </div>
                 <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">Hit Rate</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase truncate">Hit Rate</span>
                   <span className="text-base sm:text-xl font-bold text-cyan-400 block mt-0.5">
                     {filteredFinishedFixtures.length ? Math.round((filteredFinishedFixtures.filter(f => f.over_1_5_hit).length / filteredFinishedFixtures.length) * 100) : 0}%
                   </span>
+                  <span className="text-[8px] sm:text-[9px] font-semibold text-slate-500 truncate mt-0.5">Accuracy</span>
                 </div>
               </div>
             </div>
 
-            {/* Finished Controls / Search Bar */}
-            <div className={`rounded-2xl p-3.5 sm:p-4 border shadow-md ${darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="relative flex-1 min-w-[200px] max-w-sm">
-                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                  <input
-                    type="text"
-                    placeholder="Search finished match or league..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className={`w-full h-10 border rounded-xl pl-10 pr-3.5 text-xs focus:outline-none focus:border-emerald-500 ${
-                      darkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
-                    }`}
-                  />
+            {/* FEATURED TABLE 1: TOP 10 FINISHED OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY */}
+            <section className={`rounded-2xl sm:rounded-3xl border p-4 sm:p-6 space-y-4 shadow-2xl relative overflow-hidden transition-colors ${
+              darkMode 
+                ? 'bg-gradient-to-br from-slate-900 via-slate-900/90 to-emerald-950/30 border-emerald-500/40' 
+                : 'bg-gradient-to-br from-white via-emerald-50/30 to-emerald-100/40 border-emerald-300'
+            }`}>
+              
+              {/* Header & Particular Day Selector */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4 border-b pb-3.5 border-emerald-500/20">
+                <div className="flex items-center space-x-2.5 sm:space-x-3">
+                  <div className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 shrink-0">
+                    <Crown className="w-5 h-5 sm:w-6 sm:h-6 animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                      <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                        Table 1: Top 10 Daily Finished Picks
+                      </h2>
+                      <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950">
+                        {selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)}
+                      </span>
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
+                      Top 10 finished picks sorted by highest predicted percentage for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
+                    </p>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                {/* Particular Day Filter Dropdown */}
+                <div className={`flex items-center gap-2 border px-2.5 sm:px-3 py-1.5 rounded-xl shadow-sm shrink-0 w-full sm:w-auto justify-between sm:justify-start ${
+                  darkMode ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-300'
+                }`}>
+                  <div className="flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold text-slate-400">Match Day:</span>
+                  </div>
                   <select
-                    value={selectedLeague}
-                    onChange={(e) => setSelectedLeague(e.target.value)}
-                    className={`h-10 border px-3 rounded-xl text-xs font-bold focus:outline-none ${
-                      darkMode ? 'bg-slate-950 border-slate-800 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-800'
+                    value={selectedPickDay}
+                    onChange={(e) => setSelectedPickDay(e.target.value)}
+                    className={`bg-transparent text-xs font-bold cursor-pointer focus:outline-none ${
+                      darkMode ? 'text-emerald-400' : 'text-emerald-800'
                     }`}
                   >
-                    <option value="ALL">All Competitions</option>
-                    {Array.from(new Set(finishedFixtures.map(f => f.league?.name).filter(Boolean))).map(l => (
-                      <option key={l} value={l}>{l}</option>
+                    <option value="ALL_DAYS" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All Match Days</option>
+                    {availableMatchDays.map(dayKey => (
+                      <option key={dayKey} value={dayKey} className={darkMode ? 'bg-slate-900' : 'bg-white'}>
+                        {formatDayTitle(dayKey)}
+                      </option>
                     ))}
                   </select>
+                </div>
+              </div>
 
+              {/* Table 1: Featured Picks Content */}
+              {top10FinishedPicks.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400 font-semibold">
+                  No finished top picks found for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
+                </div>
+              ) : (
+                <>
+                  {/* Mobile Accordion View for Table 1 */}
+                  <div className="block sm:hidden space-y-2">
+                    {top10FinishedPicks.map((fix, idx) => {
+                      const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                      const isRank1 = idx === 0;
+                      const isTop3 = idx < 3;
+                      const isExpanded = expandedMobileRows.has(`finished-top10-${fix.id}`);
+
+                      return (
+                        <div
+                          key={`finished-top10-mobile-${fix.id}`}
+                          className={`rounded-xl border transition-all overflow-hidden ${
+                            isRank1
+                              ? darkMode ? 'bg-amber-500/10 border-amber-500/40' : 'bg-amber-50 border-amber-300'
+                              : darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
+                          }`}
+                        >
+                          <div
+                            onClick={() => toggleMobileRow(`finished-top10-${fix.id}`)}
+                            className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              {isRank1 ? (
+                                <span className="px-2 py-0.5 rounded-md font-extrabold text-[10px] bg-amber-400 text-slate-950 shadow-sm flex items-center gap-1 font-mono shrink-0">
+                                  <Crown className="w-3 h-3 fill-current" />
+                                  <span>#1</span>
+                                </span>
+                              ) : (
+                                <span className={`w-5 h-5 rounded-md font-bold text-[10px] flex items-center justify-center font-mono shrink-0 ${
+                                  isTop3 ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                                }`}>
+                                  #{idx + 1}
+                                </span>
+                              )}
+
+                              <div className="flex flex-col min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 truncate">
+                                  <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.home_team?.name}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono font-extrabold text-[10px] border border-emerald-500/40 shrink-0">
+                                    {fix.home_score} - {fix.away_score}
+                                  </span>
+                                  <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.away_team?.name}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 truncate">
+                                  {fix.league?.name || 'League'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {fix.over_1_5_hit ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Hit</span>
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center gap-1">
+                                  <XCircle className="w-3 h-3" />
+                                  <span>Under</span>
+                                </span>
+                              )}
+                              <div className="p-1 rounded-lg text-slate-400">
+                                {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
+                              </div>
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                              darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
+                            }`}>
+                              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                  <span className="text-slate-400 font-semibold text-[10px]">Predicted Over 1.5%</span>
+                                  <span className="font-mono font-bold text-emerald-400 text-xs mt-0.5">{over15Pct}%</span>
+                                </div>
+                                <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                  <span className="text-slate-400 font-semibold text-[10px]">Actual Goals Scored</span>
+                                  <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">{fix.total_goals} Goals</span>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                                className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
+                              >
+                                <span>View Full Prediction Analytics</span>
+                                <ArrowUpRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop Table View for Table 1 */}
+                  <div className="hidden sm:block overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className={`border-b text-[10px] font-black uppercase tracking-wider ${
+                          darkMode ? 'border-slate-800/80 text-emerald-400' : 'border-emerald-200 text-emerald-800'
+                        }`}>
+                          <th className="py-2.5 px-3">Rank</th>
+                          <th className="py-2.5 px-3">Status / Match Date</th>
+                          <th className="py-2.5 px-3">Competition</th>
+                          <th className="py-2.5 px-3">Matchup & Final Score</th>
+                          <th className="py-2.5 px-3 text-center">Over 1.5 Outcome</th>
+                          <th className="py-2.5 px-3 text-center">Pred. Over 1.5%</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/60' : 'divide-emerald-100'}`}>
+                        {top10FinishedPicks.map((fix, idx) => {
+                          const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                          const isRank1 = idx === 0;
+                          const isTop3 = idx < 3;
+
+                          return (
+                            <tr
+                              key={`finished-top10-${fix.id}`}
+                              onClick={() => setSelectedFixture(fix)}
+                              className={`cursor-pointer transition-all ${
+                                isRank1
+                                  ? darkMode ? 'bg-amber-500/10 border-l-4 border-l-amber-400 hover:bg-amber-500/20' : 'bg-amber-50 border-l-4 border-l-amber-500 hover:bg-amber-100'
+                                  : isTop3
+                                  ? darkMode ? 'bg-emerald-500/5 hover:bg-emerald-500/15' : 'bg-emerald-50/50 hover:bg-emerald-100/50'
+                                  : darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="py-3 px-3">
+                                {isRank1 ? (
+                                  <span className="px-2.5 py-1 rounded-xl font-black text-xs bg-amber-400 text-slate-950 shadow-md flex items-center gap-1 font-mono w-fit">
+                                    <Crown className="w-3.5 h-3.5 fill-current" />
+                                    <span>#1 TOP PICK</span>
+                                  </span>
+                                ) : isTop3 ? (
+                                  <span className="w-7 h-7 rounded-xl font-black text-xs bg-emerald-400 text-slate-950 shadow-sm flex items-center justify-center font-mono">
+                                    #{idx + 1}
+                                  </span>
+                                ) : (
+                                  <span className="w-7 h-7 rounded-xl font-black text-xs bg-slate-800 text-slate-300 border border-slate-700 flex items-center justify-center font-mono">
+                                    #{idx + 1}
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="py-3 px-3">
+                                <div className="flex flex-col space-y-1">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-slate-800 text-slate-200 border border-slate-700 w-fit">
+                                    FT &bull; {fix.home_score} - {fix.away_score}
+                                  </span>
+                                  <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                                    {formatDateGMT1(fix.match_date)}
+                                  </span>
+                                </div>
+                              </td>
+
+                              <td className="py-3 px-3">
+                                <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                                  {fix.league?.name || 'League'}
+                                </span>
+                              </td>
+
+                              <td className="py-3 px-3">
+                                <div className="flex items-center space-x-2.5">
+                                  <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.home_team?.name}
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shadow-sm">
+                                    {fix.home_score} - {fix.away_score} (FT)
+                                  </span>
+                                  <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.away_team?.name}
+                                  </span>
+                                </div>
+                              </td>
+
+                              <td className="py-3 px-3 text-center">
+                                {fix.over_1_5_hit ? (
+                                  <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 inline-flex items-center gap-1">
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    <span>Over 1.5 HIT</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40 inline-flex items-center gap-1">
+                                    <XCircle className="w-3.5 h-3.5" />
+                                    <span>Under 1.5</span>
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="py-3 px-3 text-center font-mono font-bold text-emerald-400">
+                                {over15Pct}%
+                              </td>
+
+                              <td className="py-3 px-3 text-right">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                                  className="px-2.5 py-1 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                                >
+                                  <span>Details</span>
+                                  <ArrowUpRight className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </section>
+
+            {/* MAIN TABLE 2: ALL FINISHED FIXTURES OF THE SELECTED DAY */}
+            <section className="space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b pb-3 border-slate-800">
+                <div className="flex items-center space-x-2">
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <List className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      Table 2: All Finished Fixtures ({selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Complete list of completed match scores for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
+                  <span className="text-xs font-semibold text-slate-400">
+                    Showing <strong className="text-emerald-400">{filteredFinishedFixtures.length}</strong> results
+                  </span>
                   <button
                     onClick={fetchFinishedFixtures}
-                    className="p-2.5 rounded-xl border bg-slate-900 border-slate-800 text-slate-300 hover:text-white"
+                    className="p-2 rounded-xl border bg-slate-900 border-slate-800 text-slate-300 hover:text-white"
                     title="Refresh Finished Results"
                   >
-                    <RefreshCw className={`w-4 h-4 ${loadingFinished ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`w-3.5 h-3.5 ${loadingFinished ? 'animate-spin' : ''}`} />
                   </button>
                 </div>
               </div>
-            </div>
 
-            {/* Finished Results Table & Mobile View */}
-            {loadingFinished ? (
-              <div className="p-12 text-center space-y-3">
-                <RefreshCw className="w-8 h-8 text-emerald-500 animate-spin mx-auto" />
-                <p className="text-xs font-bold text-slate-400">Loading completed match results...</p>
-              </div>
-            ) : filteredFinishedFixtures.length === 0 ? (
-              <div className="p-12 text-center space-y-3 rounded-3xl border border-slate-800 bg-slate-900/60">
-                <Layers className="w-10 h-10 text-slate-500 mx-auto" />
-                <p className="text-sm font-bold text-slate-300">No finished matches found</p>
-                <p className="text-xs text-slate-400">Completed match scores will appear here after matches conclude.</p>
-              </div>
-            ) : (
-              <div className={`rounded-3xl border overflow-hidden transition-colors shadow-lg ${
-                darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
-              }`}>
-                {/* Mobile Accordion View (< sm) */}
-                <div className="block sm:hidden p-2 space-y-2">
-                  {filteredFinishedFixtures.map(fix => {
-                    const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
-                    const isExpanded = expandedMobileRows.has(`finished-${fix.id}`);
+              {/* Finished Controls / Search Bar */}
+              <div className={`rounded-2xl p-3.5 sm:p-4 border shadow-md ${darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="relative flex-1 min-w-[200px] max-w-sm">
+                    <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Search finished match or league..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className={`w-full h-10 border rounded-xl pl-10 pr-3.5 text-xs focus:outline-none focus:border-emerald-500 ${
+                        darkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                      }`}
+                    />
+                  </div>
 
-                    return (
-                      <div
-                        key={`finished-mobile-${fix.id}`}
-                        className={`rounded-xl border transition-all overflow-hidden ${
-                          darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
-                        }`}
-                      >
-                        <div
-                          onClick={() => toggleMobileRow(`finished-${fix.id}`)}
-                          className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
-                        >
-                          <div className="flex flex-col min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 truncate">
-                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                                {fix.home_team?.name}
-                              </span>
-                              <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shrink-0">
-                                {fix.home_score} - {fix.away_score}
-                              </span>
-                              <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                                {fix.away_team?.name}
-                              </span>
-                            </div>
-                            <span className="text-[10px] text-slate-400 truncate">
-                              {fix.league?.name} &bull; {formatDateGMT1(fix.match_date)}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {fix.over_1_5_hit ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>Hit</span>
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                <span>Under</span>
-                              </span>
-                            )}
-                            <div className="p-1 rounded-lg text-slate-400">
-                              {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
-                            </div>
-                          </div>
-                        </div>
-
-                        {isExpanded && (
-                          <div className={`p-3 border-t space-y-2 text-xs transition-all ${
-                            darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
-                          }`}>
-                            <div className="grid grid-cols-2 gap-2 text-[11px]">
-                              <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
-                                <span className="text-slate-400 font-semibold text-[10px]">Predicted Over 1.5%</span>
-                                <span className="font-mono font-bold text-emerald-400 text-xs mt-0.5">{over15Pct}%</span>
-                              </div>
-                              <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
-                                <span className="text-slate-400 font-semibold text-[10px]">Actual Goals Scored</span>
-                                <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">{fix.total_goals} Goals</span>
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
-                              className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
-                            >
-                              <span>View Full Prediction Analytics</span>
-                              <ArrowUpRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={selectedLeague}
+                      onChange={(e) => setSelectedLeague(e.target.value)}
+                      className={`h-10 border px-3 rounded-xl text-xs font-bold focus:outline-none ${
+                        darkMode ? 'bg-slate-950 border-slate-800 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-800'
+                      }`}
+                    >
+                      <option value="ALL">All Competitions</option>
+                      {Array.from(new Set(finishedFixtures.map(f => f.league?.name).filter(Boolean))).map(l => (
+                        <option key={l} value={l}>{l}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
+              </div>
 
-                {/* Desktop Table View (>= sm) */}
-                <div className="hidden sm:block overflow-x-auto custom-scrollbar">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className={`border-b text-[11px] font-extrabold uppercase tracking-wider ${
-                        darkMode ? 'border-slate-800 bg-slate-950/80 text-slate-400' : 'border-slate-200 bg-slate-100 text-slate-600'
-                      }`}>
-                        <th className="py-3.5 px-4">Match Date (GMT+1)</th>
-                        <th className="py-3.5 px-4">Competition</th>
-                        <th className="py-3.5 px-4">Matchup & Final Score</th>
-                        <th className="py-3.5 px-4 text-center">Actual Goals</th>
-                        <th className="py-3.5 px-4 text-center">Over 1.5 Outcome</th>
-                        <th className="py-3.5 px-4 text-center">Pred. Over 1.5%</th>
-                        <th className="py-3.5 px-4 text-right">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
-                      {filteredFinishedFixtures.map(fix => {
-                        const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+              {/* Finished Results Table & Mobile View */}
+              {loadingFinished ? (
+                <div className="p-12 text-center space-y-3">
+                  <RefreshCw className="w-8 h-8 text-emerald-500 animate-spin mx-auto" />
+                  <p className="text-xs font-bold text-slate-400">Loading completed match results...</p>
+                </div>
+              ) : filteredFinishedFixtures.length === 0 ? (
+                <div className="p-12 text-center space-y-3 rounded-3xl border border-slate-800 bg-slate-900/60">
+                  <Layers className="w-10 h-10 text-slate-500 mx-auto" />
+                  <p className="text-sm font-bold text-slate-300">No finished matches found for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}</p>
+                  <p className="text-xs text-slate-400">Try selecting another match day from the dropdown above.</p>
+                </div>
+              ) : (
+                <div className={`rounded-3xl border overflow-hidden transition-colors shadow-lg ${
+                  darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
+                }`}>
+                  {/* Mobile Accordion View (< sm) */}
+                  <div className="block sm:hidden p-2 space-y-2">
+                    {filteredFinishedFixtures.map(fix => {
+                      const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+                      const isExpanded = expandedMobileRows.has(`finished-${fix.id}`);
 
-                        return (
-                          <tr
-                            key={`finished-${fix.id}`}
-                            onClick={() => setSelectedFixture(fix)}
-                            className={`cursor-pointer transition-all ${
-                              darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
-                            }`}
+                      return (
+                        <div
+                          key={`finished-mobile-${fix.id}`}
+                          className={`rounded-xl border transition-all overflow-hidden ${
+                            darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-white border-slate-200'
+                          }`}
+                        >
+                          <div
+                            onClick={() => toggleMobileRow(`finished-${fix.id}`)}
+                            className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
                           >
-                            <td className="py-3.5 px-4 font-bold text-slate-300">
-                              {formatDateGMT1(fix.match_date)}
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-                                {fix.league?.name || 'League'}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <div className="flex items-center space-x-2.5">
-                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                            <div className="flex flex-col min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 truncate">
+                                <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                                   {fix.home_team?.name}
                                 </span>
-                                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shadow-sm">
-                                  {fix.home_score} - {fix.away_score} (FT)
+                                <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shrink-0">
+                                  {fix.home_score} - {fix.away_score}
                                 </span>
-                                <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                <span className={`font-extrabold text-xs truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                                   {fix.away_team?.name}
                                 </span>
                               </div>
-                            </td>
-                            <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-200">
-                              {fix.total_goals} Goals
-                            </td>
-                            <td className="py-3.5 px-4 text-center">
+                              <span className="text-[10px] text-slate-400 truncate">
+                                {fix.league?.name} &bull; {formatDateGMT1(fix.match_date)}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
                               {fix.over_1_5_hit ? (
-                                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 inline-flex items-center gap-1">
-                                  <CheckCircle2 className="w-3.5 h-3.5" />
-                                  <span>Over 1.5 HIT</span>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Hit</span>
                                 </span>
                               ) : (
-                                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40 inline-flex items-center gap-1">
-                                  <XCircle className="w-3.5 h-3.5" />
-                                  <span>Under 1.5</span>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 flex items-center gap-1">
+                                  <XCircle className="w-3 h-3" />
+                                  <span>Under</span>
                                 </span>
                               )}
-                            </td>
-                            <td className="py-3.5 px-4 text-center font-mono font-bold text-emerald-400">
-                              {over15Pct}%
-                            </td>
-                            <td className="py-3.5 px-4 text-right">
+                              <div className="p-1 rounded-lg text-slate-400">
+                                {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
+                              </div>
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                              darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
+                            }`}>
+                              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                  <span className="text-slate-400 font-semibold text-[10px]">Predicted Over 1.5%</span>
+                                  <span className="font-mono font-bold text-emerald-400 text-xs mt-0.5">{over15Pct}%</span>
+                                </div>
+                                <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
+                                  <span className="text-slate-400 font-semibold text-[10px]">Actual Goals Scored</span>
+                                  <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">{fix.total_goals} Goals</span>
+                                </div>
+                              </div>
+
                               <button
                                 onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
-                                className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                                className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
                               >
-                                <span>Details</span>
+                                <span>View Full Prediction Analytics</span>
                                 <ArrowUpRight className="w-3.5 h-3.5" />
                               </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop Table View (>= sm) */}
+                  <div className="hidden sm:block overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className={`border-b text-[11px] font-extrabold uppercase tracking-wider ${
+                          darkMode ? 'border-slate-800 bg-slate-950/80 text-slate-400' : 'border-slate-200 bg-slate-100 text-slate-600'
+                        }`}>
+                          <th className="py-3.5 px-4">Match Date (GMT+1)</th>
+                          <th className="py-3.5 px-4">Competition</th>
+                          <th className="py-3.5 px-4">Matchup & Final Score</th>
+                          <th className="py-3.5 px-4 text-center">Actual Goals</th>
+                          <th className="py-3.5 px-4 text-center">Over 1.5 Outcome</th>
+                          <th className="py-3.5 px-4 text-center">Pred. Over 1.5%</th>
+                          <th className="py-3.5 px-4 text-right">Details</th>
+                        </tr>
+                      </thead>
+                      <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
+                        {filteredFinishedFixtures.map(fix => {
+                          const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
+
+                          return (
+                            <tr
+                              key={`finished-${fix.id}`}
+                              onClick={() => setSelectedFixture(fix)}
+                              className={`cursor-pointer transition-all ${
+                                darkMode ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="py-3.5 px-4 font-bold text-slate-300">
+                                {formatDateGMT1(fix.match_date)}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
+                                  {fix.league?.name || 'League'}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <div className="flex items-center space-x-2.5">
+                                  <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.home_team?.name}
+                                  </span>
+                                  <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-mono font-black text-xs border border-emerald-500/40 shadow-sm">
+                                    {fix.home_score} - {fix.away_score} (FT)
+                                  </span>
+                                  <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    {fix.away_team?.name}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-200">
+                                {fix.total_goals} Goals
+                              </td>
+                              <td className="py-3.5 px-4 text-center">
+                                {fix.over_1_5_hit ? (
+                                  <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 inline-flex items-center gap-1">
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    <span>Over 1.5 HIT</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/40 inline-flex items-center gap-1">
+                                    <XCircle className="w-3.5 h-3.5" />
+                                    <span>Under 1.5</span>
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-4 text-center font-mono font-bold text-emerald-400">
+                                {over15Pct}%
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                                  className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                                >
+                                  <span>Details</span>
+                                  <ArrowUpRight className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </section>
           </section>
         ) : (
           <>
