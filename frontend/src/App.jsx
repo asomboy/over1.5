@@ -727,7 +727,7 @@ export default function App() {
             <Trophy className="w-4 h-4 text-amber-400" />
             <span>Finished Matches & Scores</span>
             <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-amber-400 border border-amber-500/30">
-              {finishedFixtures.length}
+              {filteredFinishedFixtures.length}
             </span>
           </button>
         </div>

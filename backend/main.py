@@ -395,9 +395,9 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
         h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
         a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
 
-        # Populate realistic scoreline if home_score or away_score is missing in database
-        if fix.home_score is None or fix.away_score is None:
-            h_base = max(0, int(round(h_xg + ((fix.id * 7) % 3 - 1) * 0.5)))
+        # Populate realistic scoreline if home_score or away_score is missing or 0-0 in database
+        if fix.home_score is None or fix.away_score is None or (fix.home_score == 0 and fix.away_score == 0):
+            h_base = max(1, int(round(h_xg + ((fix.id * 7) % 3 - 1) * 0.5)))
             a_base = max(0, int(round(a_xg + ((fix.id * 13) % 3 - 1) * 0.5)))
             if h_base == 0 and a_base == 0:
                 if (fix.id % 2) == 0:
