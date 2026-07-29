@@ -9,9 +9,9 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
+    from backend.models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
 except ImportError:
-    from ..models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
+    from models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
 
 
 def calculate_team_statistics(
