@@ -3,9 +3,17 @@ venvPath = "."
 venv = "venv"
 include = ["."]
 exclude = ["**/node_modules", "**/venv", "**/__pycache__", "dist"]
-extraPaths = [".", "venv/Lib/site-packages"]
+extraPaths = [
+    ".",
+    "venv/Lib/site-packages",
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
+]
 
 [tool.pyrefly]
-python_path = "venv/Scripts/python.exe"
+python_path = "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Scripts/python.exe"
 venv_path = "venv"
-search_paths = [".", "venv/Lib/site-packages"]
+search_paths = [
+    ".",
+    "venv/Lib/site-packages",
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
+]
