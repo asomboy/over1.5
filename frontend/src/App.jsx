@@ -493,59 +493,59 @@ export default function App() {
       <header className={`border-b sticky top-0 z-40 backdrop-blur-md transition-colors ${
         darkMode ? 'border-slate-800/80 bg-slate-950/80' : 'border-slate-200 bg-white/80'
       }`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2 overflow-hidden">
           
           {/* Brand */}
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-500">
-              <Activity className="w-6 h-6 animate-pulse" />
+          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
+            <div className="p-1.5 sm:p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-500 shrink-0">
+              <Activity className="w-4 h-4 sm:w-6 sm:h-6 animate-pulse" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={`font-black text-xl tracking-tight ${
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className={`font-extrabold text-sm sm:text-lg md:text-xl tracking-tight whitespace-nowrap ${
                   darkMode ? 'bg-gradient-to-r from-white via-slate-200 to-emerald-400 bg-clip-text text-transparent' : 'text-slate-900'
                 }`}>
                   Soccer Goal Predictor
                 </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
+                <span className="hidden md:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 whitespace-nowrap">
                   GMT+1 Live Feed
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden sm:block">
+              <p className="text-[11px] text-slate-400 hidden lg:block">
                 Real-Time Match Timings (GMT+1) & Goal Expectation Analytics
               </p>
             </div>
           </div>
 
           {/* Action Controls */}
-          <div className="flex items-center space-x-2 sm:space-x-3">
+          <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
             
             {/* View Mode Toggle */}
-            <div className={`flex items-center p-1 rounded-xl border ${
+            <div className={`flex items-center p-0.5 sm:p-1 rounded-xl border ${
               darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'
             }`}>
               <button
                 onClick={() => setViewMode('table')}
-                className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
+                className={`p-1 sm:p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
                   viewMode === 'table' 
                     ? 'bg-emerald-600 text-white shadow-sm' 
                     : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
                 }`}
                 title="Compact Table / List View"
               >
-                <List className="w-4 h-4" />
+                <List className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="hidden md:inline">List</span>
               </button>
               <button
                 onClick={() => setViewMode('grid')}
-                className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
+                className={`p-1 sm:p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
                   viewMode === 'grid' 
                     ? 'bg-emerald-600 text-white shadow-sm' 
                     : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
                 }`}
                 title="Grid Cards View"
               >
-                <Grid className="w-4 h-4" />
+                <Grid className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="hidden md:inline">Grid</span>
               </button>
             </div>
@@ -553,25 +553,25 @@ export default function App() {
             {/* Theme Toggle */}
             <button
               onClick={() => setDarkMode(!darkMode)}
-              className={`p-2 rounded-xl border transition-all ${
+              className={`p-1.5 sm:p-2 rounded-xl border transition-all ${
                 darkMode 
                   ? 'bg-slate-900 border-slate-800 text-amber-400 hover:bg-slate-800' 
                   : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
               }`}
               title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
             >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {darkMode ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
             </button>
 
             {/* API Health */}
-            <div className={`flex items-center space-x-2 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+            <div className={`flex items-center space-x-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-xs font-semibold border transition-all ${
               backendHealth.online 
                 ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' 
                 : 'bg-rose-500/10 text-rose-500 border-rose-500/30'
             }`}>
-              <span className={`w-2 h-2 rounded-full ${backendHealth.online ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`} />
-              <span className="hidden md:inline">
-                {backendHealth.online ? `Live API (${backendHealth.latency}ms)` : 'Offline'}
+              <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${backendHealth.online ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`} />
+              <span className="hidden sm:inline">
+                {backendHealth.online ? `Live (${backendHealth.latency}ms)` : 'Offline'}
               </span>
             </div>
 
@@ -579,10 +579,10 @@ export default function App() {
             <button
               onClick={handleSyncData}
               disabled={syncing}
-              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50"
+              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{syncing ? 'Syncing...' : 'Sync Dataset'}</span>
+              <span className="hidden sm:inline">{syncing ? 'Syncing...' : 'Sync'}</span>
             </button>
           </div>
         </div>
@@ -590,8 +590,8 @@ export default function App() {
 
       {/* Toast Notification Banner */}
       {notification && (
-        <div className="max-w-7xl mx-auto px-4 mt-4 w-full">
-          <div className={`p-3 rounded-2xl border text-xs font-bold flex items-center justify-between ${
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 mt-3 sm:mt-4 w-full">
+          <div className={`p-2.5 sm:p-3 rounded-2xl border text-xs font-bold flex items-center justify-between ${
             notification.type === 'success' 
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
               : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
@@ -608,84 +608,86 @@ export default function App() {
       )}
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col gap-5 sm:gap-8 overflow-x-hidden">
         
         {/* Banner Card */}
-        <section className={`rounded-3xl p-6 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 transition-colors ${
+        <section className={`rounded-2xl sm:rounded-3xl p-4 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 sm:gap-6 transition-colors ${
           darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
         }`}>
-          <div className="space-y-2 max-w-2xl">
-            <h1 className={`text-2xl sm:text-4xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+          <div className="space-y-1.5 max-w-2xl">
+            <h1 className={`text-xl sm:text-3xl md:text-4xl font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
               Soccer Goal Expectations Dashboard
             </h1>
-            <p className="text-sm text-slate-400 leading-relaxed">
+            <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
               Track live match scores and live clocks alongside full goal threshold predictions (Home, Away, 1st Half, and 2nd Half probabilities).
             </p>
           </div>
 
           {/* Metric Stats (3-column grid) */}
-          <div className="grid grid-cols-3 gap-2.5 w-full md:w-auto">
-            <div className={`p-3 rounded-2xl border text-center flex flex-col justify-center min-w-[85px] ${
+          <div className="grid grid-cols-3 gap-2 sm:gap-3 w-full md:w-auto shrink-0">
+            <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[10px] font-semibold text-slate-400">Fixtures</span>
-              <span className={`text-lg font-black mt-0.5 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fixtures</span>
+              <span className={`text-base sm:text-xl font-bold mt-0.5 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                 {summaryStats.total}
               </span>
             </div>
-            <div className={`p-3 rounded-2xl border text-center flex flex-col justify-center min-w-[85px] ${
+            <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[10px] font-semibold text-slate-400">&gt; 1.5 Goals</span>
-              <span className="text-lg font-black text-emerald-400 mt-0.5">{summaryStats.highOver15Count}</span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">&gt; 1.5 Goals</span>
+              <span className="text-base sm:text-xl font-bold text-emerald-400 mt-0.5">{summaryStats.highOver15Count}</span>
             </div>
-            <div className={`p-3 rounded-2xl border text-center flex flex-col justify-center min-w-[85px] ${
+            <div className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border text-center flex flex-col justify-center min-w-0 ${
               darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <span className="text-[10px] font-semibold text-slate-400">&gt; 2.5 Goals</span>
-              <span className="text-lg font-black text-cyan-400 mt-0.5">{summaryStats.highOver25Count}</span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider">&gt; 2.5 Goals</span>
+              <span className="text-base sm:text-xl font-bold text-cyan-400 mt-0.5">{summaryStats.highOver25Count}</span>
             </div>
           </div>
         </section>
 
         {/* FEATURED TABLE 1: TOP 10 DAILY OVER 1.5 GOALS PICKS (PERCENTAGE COLUMN AFTER MATCHUP) */}
-        <section className={`rounded-3xl border p-6 space-y-4 shadow-2xl relative overflow-hidden transition-colors ${
+        <section className={`rounded-2xl sm:rounded-3xl border p-4 sm:p-6 space-y-4 shadow-2xl relative overflow-hidden transition-colors ${
           darkMode 
             ? 'bg-gradient-to-br from-slate-900 via-slate-900/90 to-emerald-950/30 border-emerald-500/40' 
             : 'bg-gradient-to-br from-white via-emerald-50/30 to-emerald-100/40 border-emerald-300'
         }`}>
           
           {/* Header & Particular Day Selector */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b pb-4 border-emerald-500/20">
-            <div className="flex items-center space-x-3">
-              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 shrink-0">
-                <Crown className="w-6 h-6 animate-pulse" />
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4 border-b pb-3.5 border-emerald-500/20">
+            <div className="flex items-center space-x-2.5 sm:space-x-3">
+              <div className="p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 shrink-0">
+                <Crown className="w-5 h-5 sm:w-6 sm:h-6 animate-pulse" />
               </div>
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className={`text-lg font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
                     Table 1: Top 10 Daily Picks
                   </h2>
-                  <span className="text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950">
+                  <span className="text-[9px] sm:text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950">
                     {selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)}
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
                   Top 10 daily picks sorted strictly from highest percentage down for {selectedPickDay === 'ALL_DAYS' ? 'all days' : formatDayTitle(selectedPickDay)}.
                 </p>
               </div>
             </div>
 
             {/* Particular Day Filter Dropdown */}
-            <div className={`flex items-center gap-2 border px-3 py-1.5 rounded-xl shadow-sm shrink-0 ${
+            <div className={`flex items-center gap-2 border px-2.5 sm:px-3 py-1.5 rounded-xl shadow-sm shrink-0 w-full sm:w-auto justify-between sm:justify-start ${
               darkMode ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-300'
             }`}>
-              <Calendar className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-bold text-slate-400">Match Day:</span>
+              <div className="flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
+                <span className="text-xs font-semibold text-slate-400">Match Day:</span>
+              </div>
               <select
                 value={selectedPickDay}
                 onChange={(e) => setSelectedPickDay(e.target.value)}
-                className={`bg-transparent text-xs font-extrabold cursor-pointer focus:outline-none ${
+                className={`bg-transparent text-xs font-bold cursor-pointer focus:outline-none ${
                   darkMode ? 'text-emerald-400' : 'text-emerald-800'
                 }`}
               >
