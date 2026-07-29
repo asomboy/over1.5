@@ -495,7 +495,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 ${
+    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 relative overflow-x-hidden w-full max-w-full ${
       darkMode ? 'bg-slate-950 text-slate-100 pitch-grid' : 'bg-slate-50 text-slate-900'
     }`}>
       {/* Background Glow Blobs */}
@@ -1621,47 +1621,47 @@ export default function App() {
 
       {/* FULL MATCH DETAILS MODAL */}
       {selectedFixture && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
-          <div className={`rounded-3xl p-4 sm:p-8 max-w-2xl w-full border space-y-6 relative shadow-2xl max-h-[92vh] overflow-y-auto custom-scrollbar ${
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn overflow-x-hidden">
+          <div className={`rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 w-[95vw] sm:w-full max-w-2xl border space-y-4 sm:space-y-6 relative shadow-2xl max-h-[90vh] sm:max-h-[92vh] overflow-y-auto overflow-x-hidden custom-scrollbar ${
             darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'
           }`}>
             
             {/* Header */}
-            <div className={`flex items-center justify-between pb-4 border-b ${
+            <div className={`flex items-start justify-between pb-3.5 border-b gap-2 ${
               darkMode ? 'border-slate-800' : 'border-slate-200'
             }`}>
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-extrabold text-emerald-500 uppercase tracking-wider">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span className="text-[10px] sm:text-xs font-extrabold text-emerald-500 uppercase tracking-wider">
                     {selectedFixture.league?.name} &bull; {formatDateGMT1(selectedFixture.match_date)}
                   </span>
                   {renderLiveStatusBadge(selectedFixture)}
                 </div>
-                <h3 className="text-xl font-black mt-1 flex items-center gap-3">
+                <h3 className="text-base sm:text-lg md:text-xl font-black mt-1 flex flex-wrap items-center gap-2">
                   <span>{selectedFixture.home_team?.name}</span>
                   {(isMatchLive(selectedFixture) || selectedFixture.status === 'FINISHED') ? (
-                    <span className="px-3.5 py-1 rounded-xl bg-rose-600 text-white font-mono font-black text-xl shadow-lg border border-rose-400 animate-pulse">
+                    <span className="px-2.5 py-0.5 rounded-lg bg-rose-600 text-white font-mono font-black text-sm sm:text-lg shadow border border-rose-400 animate-pulse">
                       {selectedFixture.home_score ?? 0} - {selectedFixture.away_score ?? 0}
                     </span>
                   ) : (
-                    <span className="text-slate-500 text-sm">vs</span>
+                    <span className="text-slate-400 font-extrabold text-xs px-1.5 py-0.5 rounded bg-slate-800/60">VS</span>
                   )}
                   <span>{selectedFixture.away_team?.name}</span>
                 </h3>
                 {selectedFixture.venue && (
-                  <p className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5 text-slate-500" />
-                    <span>{selectedFixture.venue}</span>
+                  <p className="text-[11px] sm:text-xs text-slate-400 mt-1 flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span className="truncate">{selectedFixture.venue}</span>
                   </p>
                 )}
               </div>
               <button
                 onClick={() => setSelectedFixture(null)}
-                className={`p-2 rounded-xl border transition-colors ${
+                className={`p-1.5 sm:p-2 rounded-xl border transition-colors shrink-0 ${
                   darkMode ? 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
 
@@ -1670,27 +1670,27 @@ export default function App() {
               const pred = selectedFixture.prediction || {};
               const best = getBestOutcome(pred);
               return (
-                <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-500/20 via-emerald-600/10 to-cyan-500/20 border border-emerald-500/40 space-y-2">
-                  <div className="flex items-center justify-between">
+                <div className="p-3 sm:p-4 rounded-xl sm:rounded-2xl bg-gradient-to-r from-emerald-500/20 via-emerald-600/10 to-cyan-500/20 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center space-x-2">
-                      <Award className="w-5 h-5 text-amber-400" />
-                      <span className="text-xs font-extrabold uppercase text-emerald-400 tracking-wide">
+                      <Award className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400 shrink-0" />
+                      <span className="text-[10px] sm:text-xs font-extrabold uppercase text-emerald-400 tracking-wide">
                         Best Recommended Outcome
                       </span>
                     </div>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500 text-slate-950">
+                    <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase bg-emerald-500 text-slate-950">
                       {best.badge}
                     </span>
                   </div>
-                  <div className="flex items-baseline justify-between">
-                    <h4 className="text-lg font-black text-white">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <h4 className="text-base sm:text-lg font-black text-white">
                       {best.label}
                     </h4>
-                    <span className="text-2xl font-black text-emerald-400 font-mono">
+                    <span className="text-xl sm:text-2xl font-black text-emerald-400 font-mono">
                       {best.pct}%
                     </span>
                   </div>
-                  <p className="text-xs text-slate-300">
+                  <p className="text-[10px] sm:text-xs text-slate-300">
                     Calculated for {selectedFixture.league?.name || 'this competition'} kicking off at {formatDateGMT1(selectedFixture.match_date)}.
                   </p>
                 </div>
@@ -1698,89 +1698,89 @@ export default function App() {
             })()}
 
             {/* FULL GOAL THRESHOLD OUTCOMES */}
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <h4 className="text-xs font-bold uppercase text-slate-400 flex items-center gap-2">
                 <Target className="w-4 h-4 text-emerald-500" />
                 Match Total Goal Probabilities
               </h4>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div className={`p-3 rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[11px] font-semibold text-slate-400 block">Over 0.5 Goals</span>
-                  <span className="text-lg font-black text-slate-100 font-mono">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+                <div className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400 block">Over 0.5 Goals</span>
+                  <span className="text-base sm:text-lg font-black text-slate-100 font-mono">
                     {Math.round((selectedFixture.prediction?.over_0_5_probability || 0) * 100)}%
                   </span>
                 </div>
 
-                <div className="p-3 rounded-2xl border bg-emerald-500/10 border-emerald-500/30">
-                  <span className="text-[11px] font-bold text-emerald-400 block">Over 1.5 Goals</span>
-                  <span className="text-lg font-black text-emerald-400 font-mono">
+                <div className="p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border bg-emerald-500/10 border-emerald-500/30">
+                  <span className="text-[10px] sm:text-[11px] font-bold text-emerald-400 block">Over 1.5 Goals</span>
+                  <span className="text-base sm:text-lg font-black text-emerald-400 font-mono">
                     {Math.round((selectedFixture.prediction?.over_1_5_probability || 0) * 100)}%
                   </span>
                 </div>
 
-                <div className={`p-3 rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[11px] font-semibold text-slate-400 block">Over 2.5 Goals</span>
-                  <span className="text-lg font-black text-cyan-400 font-mono">
+                <div className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400 block">Over 2.5 Goals</span>
+                  <span className="text-base sm:text-lg font-black text-cyan-400 font-mono">
                     {Math.round((selectedFixture.prediction?.over_2_5_probability || 0) * 100)}%
                   </span>
                 </div>
 
-                <div className={`p-3 rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[11px] font-semibold text-slate-400 block">Over 3.5 Goals</span>
-                  <span className="text-lg font-black text-indigo-400 font-mono">
+                <div className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400 block">Over 3.5 Goals</span>
+                  <span className="text-base sm:text-lg font-black text-indigo-400 font-mono">
                     {Math.round((selectedFixture.prediction?.over_3_5_probability || 0) * 100)}%
                   </span>
                 </div>
 
-                <div className={`p-3 rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[11px] font-semibold text-slate-400 block">Under 2.5 Goals</span>
-                  <span className="text-lg font-black text-amber-400 font-mono">
+                <div className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400 block">Under 2.5 Goals</span>
+                  <span className="text-base sm:text-lg font-black text-amber-400 font-mono">
                     {Math.round((selectedFixture.prediction?.under_2_5_probability || 0) * 100)}%
                   </span>
                 </div>
 
-                <div className={`p-3 rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-                  <span className="text-[11px] font-semibold text-slate-400 block">Both Teams to Score</span>
-                  <span className="text-lg font-black text-emerald-400 font-mono">
+                <div className={`p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400 block">Both Teams to Score</span>
+                  <span className="text-base sm:text-lg font-black text-emerald-400 font-mono">
                     {Math.round((selectedFixture.prediction?.btts_probability || 0) * 100)}%
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* TEAM SPECIFIC GOAL THRESHOLDS (HOME TEAM GOALS & AWAY TEAM GOALS) */}
-            <div className="space-y-3">
+            {/* TEAM SPECIFIC GOAL THRESHOLDS */}
+            <div className="space-y-2.5">
               <h4 className="text-xs font-bold uppercase text-slate-400 flex items-center gap-2">
                 <Shield className="w-4 h-4 text-cyan-400" />
                 Team Specific Goal Predictions
               </h4>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 
                 {/* Home Team Goals */}
-                <div className={`p-4 rounded-2xl border space-y-3 ${
+                <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                   darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
                 }`}>
-                  <span className="text-xs font-bold text-emerald-400 block">
+                  <span className="text-xs font-bold text-emerald-400 block truncate">
                     {selectedFixture.home_team?.name} (Home) Goals
                   </span>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 0.5</span>
-                      <span className="text-sm font-black text-emerald-400 font-mono">
+                  <div className="grid grid-cols-3 gap-1.5 text-center">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 0.5</span>
+                      <span className="text-xs sm:text-sm font-black text-emerald-400 font-mono">
                         {Math.round((selectedFixture.prediction?.home_over_0_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 1.5</span>
-                      <span className="text-sm font-black text-emerald-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 1.5</span>
+                      <span className="text-xs sm:text-sm font-black text-emerald-400 font-mono">
                         {Math.round((selectedFixture.prediction?.home_over_1_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 2.5</span>
-                      <span className="text-sm font-black text-emerald-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 2.5</span>
+                      <span className="text-xs sm:text-sm font-black text-emerald-400 font-mono">
                         {Math.round((selectedFixture.prediction?.home_over_2_5_probability || 0) * 100)}%
                       </span>
                     </div>
@@ -1788,28 +1788,28 @@ export default function App() {
                 </div>
 
                 {/* Away Team Goals */}
-                <div className={`p-4 rounded-2xl border space-y-3 ${
+                <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                   darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
                 }`}>
-                  <span className="text-xs font-bold text-cyan-400 block">
+                  <span className="text-xs font-bold text-cyan-400 block truncate">
                     {selectedFixture.away_team?.name} (Away) Goals
                   </span>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 0.5</span>
-                      <span className="text-sm font-black text-cyan-400 font-mono">
+                  <div className="grid grid-cols-3 gap-1.5 text-center">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 0.5</span>
+                      <span className="text-xs sm:text-sm font-black text-cyan-400 font-mono">
                         {Math.round((selectedFixture.prediction?.away_over_0_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 1.5</span>
-                      <span className="text-sm font-black text-cyan-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 1.5</span>
+                      <span className="text-xs sm:text-sm font-black text-cyan-400 font-mono">
                         {Math.round((selectedFixture.prediction?.away_over_1_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">Over 2.5</span>
-                      <span className="text-sm font-black text-cyan-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">Over 2.5</span>
+                      <span className="text-xs sm:text-sm font-black text-cyan-400 font-mono">
                         {Math.round((selectedFixture.prediction?.away_over_2_5_probability || 0) * 100)}%
                       </span>
                     </div>
@@ -1818,35 +1818,35 @@ export default function App() {
               </div>
             </div>
 
-            {/* HALF-BY-HALF BREAKDOWN (1st HALF VS 2nd HALF GOALS & xG) */}
-            <div className="space-y-3">
+            {/* HALF-BY-HALF BREAKDOWN */}
+            <div className="space-y-2.5">
               <h4 className="text-xs font-bold uppercase text-slate-400 flex items-center gap-2">
                 <Split className="w-4 h-4 text-amber-400" />
                 1st Half & 2nd Half Goal Breakdown
               </h4>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 
                 {/* 1st Half Goals */}
-                <div className={`p-4 rounded-2xl border space-y-3 ${
+                <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                   darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
                 }`}>
-                  <div className="flex items-center justify-between border-b pb-2 border-slate-800">
+                  <div className="flex items-center justify-between border-b pb-1.5 border-slate-800">
                     <span className="text-xs font-extrabold text-amber-400">1st Half Expectations</span>
-                    <span className="text-[11px] font-mono text-slate-300">
+                    <span className="text-[10px] sm:text-[11px] font-mono text-slate-300">
                       xG: {selectedFixture.prediction?.first_half_xg?.toFixed(2) || '0.00'}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-center">
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">1H Over 0.5 Goals</span>
-                      <span className="text-base font-black text-amber-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">1H Over 0.5 Goals</span>
+                      <span className="text-xs sm:text-base font-black text-amber-400 font-mono">
                         {Math.round((selectedFixture.prediction?.first_half_over_0_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">1H Over 1.5 Goals</span>
-                      <span className="text-base font-black text-amber-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">1H Over 1.5 Goals</span>
+                      <span className="text-xs sm:text-base font-black text-amber-400 font-mono">
                         {Math.round((selectedFixture.prediction?.first_half_over_1_5_probability || 0) * 100)}%
                       </span>
                     </div>
@@ -1854,25 +1854,25 @@ export default function App() {
                 </div>
 
                 {/* 2nd Half Goals */}
-                <div className={`p-4 rounded-2xl border space-y-3 ${
+                <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                   darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
                 }`}>
-                  <div className="flex items-center justify-between border-b pb-2 border-slate-800">
+                  <div className="flex items-center justify-between border-b pb-1.5 border-slate-800">
                     <span className="text-xs font-extrabold text-emerald-400">2nd Half Expectations</span>
-                    <span className="text-[11px] font-mono text-slate-300">
+                    <span className="text-[10px] sm:text-[11px] font-mono text-slate-300">
                       xG: {selectedFixture.prediction?.second_half_xg?.toFixed(2) || '0.00'}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-center">
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">2H Over 0.5 Goals</span>
-                      <span className="text-base font-black text-emerald-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">2H Over 0.5 Goals</span>
+                      <span className="text-xs sm:text-base font-black text-emerald-400 font-mono">
                         {Math.round((selectedFixture.prediction?.second_half_over_0_5_probability || 0) * 100)}%
                       </span>
                     </div>
-                    <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800">
-                      <span className="text-[10px] text-slate-400 block">2H Over 1.5 Goals</span>
-                      <span className="text-base font-black text-emerald-400 font-mono">
+                    <div className="p-1.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <span className="text-[9px] sm:text-[10px] text-slate-400 block">2H Over 1.5 Goals</span>
+                      <span className="text-xs sm:text-base font-black text-emerald-400 font-mono">
                         {Math.round((selectedFixture.prediction?.second_half_over_1_5_probability || 0) * 100)}%
                       </span>
                     </div>
@@ -1882,29 +1882,29 @@ export default function App() {
             </div>
 
             {/* EXPECTED GOALS (xG) & 1X2 PROBABILITIES */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               
               {/* xG Card */}
-              <div className={`p-4 rounded-2xl border space-y-3 ${
+              <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                 darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
               }`}>
                 <span className="text-xs font-bold uppercase text-slate-400 block">Expected Goals (xG)</span>
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="grid grid-cols-3 gap-1.5 text-center">
                   <div>
-                    <span className="text-[10px] text-slate-400 block">Home xG</span>
-                    <span className="text-base font-black text-emerald-400 font-mono">
+                    <span className="text-[9px] sm:text-[10px] text-slate-400 block">Home xG</span>
+                    <span className="text-sm sm:text-base font-black text-emerald-400 font-mono">
                       {selectedFixture.prediction?.predicted_home_score?.toFixed(2) || '0.00'}
                     </span>
                   </div>
                   <div className="border-x border-slate-800">
-                    <span className="text-[10px] text-slate-400 block">Away xG</span>
-                    <span className="text-base font-black text-cyan-400 font-mono">
+                    <span className="text-[9px] sm:text-[10px] text-slate-400 block">Away xG</span>
+                    <span className="text-sm sm:text-base font-black text-cyan-400 font-mono">
                       {selectedFixture.prediction?.predicted_away_score?.toFixed(2) || '0.00'}
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-slate-400 block">Total xG</span>
-                    <span className="text-base font-black text-white font-mono">
+                    <span className="text-[9px] sm:text-[10px] text-slate-400 block">Total xG</span>
+                    <span className="text-sm sm:text-base font-black text-white font-mono">
                       {selectedFixture.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
                     </span>
                   </div>
@@ -1912,11 +1912,11 @@ export default function App() {
               </div>
 
               {/* 1X2 Probabilities */}
-              <div className={`p-4 rounded-2xl border space-y-3 ${
+              <div className={`p-3 sm:p-4 rounded-xl sm:rounded-2xl border space-y-2 ${
                 darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
               }`}>
                 <span className="text-xs font-bold uppercase text-slate-400 block">1X2 Match Result Probabilities</span>
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-emerald-400 font-bold">1 ({selectedFixture.home_team?.short_code}):</span>
                     <span className="font-mono font-bold">{Math.round((selectedFixture.prediction?.home_win_probability || 0) * 100)}%</span>
@@ -1934,29 +1934,29 @@ export default function App() {
             </div>
 
             {/* TOP 5 SCIPY POISSON SCORELINE PROBABILITIES */}
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <h4 className="text-xs font-bold uppercase text-slate-400 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-amber-500" />
                 Top 5 SciPy Poisson Scoreline Predictions
               </h4>
 
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {(selectedFixture.prediction?.top_scorelines || []).map((sc, idx) => (
                   <div 
                     key={sc.score || idx}
-                    className={`flex items-center justify-between p-3 rounded-2xl border ${
+                    className={`flex items-center justify-between p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border ${
                       darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'
                     }`}
                   >
-                    <div className="flex items-center space-x-3">
-                      <span className={`w-6 h-6 rounded-lg font-bold text-xs flex items-center justify-center ${
+                    <div className="flex items-center space-x-2.5">
+                      <span className={`w-5 h-5 sm:w-6 sm:h-6 rounded-lg font-bold text-[10px] sm:text-xs flex items-center justify-center ${
                         darkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'
                       }`}>
                         #{idx + 1}
                       </span>
-                      <span className="text-base font-black font-mono">{sc.score}</span>
+                      <span className="text-sm sm:text-base font-black font-mono">{sc.score}</span>
                     </div>
-                    <span className="text-sm font-black text-emerald-400 font-mono">
+                    <span className="text-xs sm:text-sm font-black text-emerald-400 font-mono">
                       {(sc.probability * 100).toFixed(1)}%
                     </span>
                   </div>
@@ -1968,7 +1968,7 @@ export default function App() {
             <div className="pt-2 flex justify-end">
               <button
                 onClick={() => setSelectedFixture(null)}
-                className={`px-5 py-2.5 rounded-xl text-xs font-bold border transition-colors ${
+                className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold border transition-colors ${
                   darkMode ? 'bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-300' : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
                 }`}
               >
