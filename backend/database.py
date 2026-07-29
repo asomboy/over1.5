@@ -53,4 +53,3 @@ def init_db():
                         col_type = column.type.compile(engine.dialect)
                         sql = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type}"
                         conn.execute(text(sql))
-

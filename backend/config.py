@@ -43,14 +43,9 @@ PORT = int(port_env) if port_env and port_env.isdigit() else 8000
 # External API Keys
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "")
 
-# CORS origins list parsing
+# CORS origins list parsing (allow * in production for Render cross-origin requests)
 cors_origins_env = os.getenv("CORS_ORIGINS")
 if cors_origins_env:
     CORS_ORIGINS = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 else:
-    CORS_ORIGINS = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    CORS_ORIGINS = ["*"]

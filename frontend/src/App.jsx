@@ -43,6 +43,10 @@ const getApiBaseUrl = () => {
     if (host === 'localhost' || host === '127.0.0.1') {
       return `${window.location.protocol}//${host}:8000`;
     }
+    if (host.includes('.onrender.com')) {
+      const apiHost = host.replace(/-web\.onrender\.com$/, '-api.onrender.com');
+      return `${window.location.protocol}//${apiHost}`;
+    }
     return ''; // Relative path for production deployment
   }
   return 'http://127.0.0.1:8000';
