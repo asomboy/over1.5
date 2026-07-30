@@ -43,7 +43,9 @@ const getApiBaseUrl = () => {
   if (typeof window !== 'undefined' && window.location.hostname) {
     const host = window.location.hostname;
     if (host.includes('.onrender.com')) {
-      const apiHost = host.replace(/-web\.onrender\.com$/, '-api.onrender.com');
+      const apiHost = host.includes('-web.onrender.com') 
+        ? host.replace(/-web\.onrender\.com$/, '-api.onrender.com')
+        : 'soccer-goal-predictor-api.onrender.com';
       return `${window.location.protocol}//${apiHost}`;
     }
     if (window.location.port === '5173' || window.location.port === '3000' || host === 'localhost' || host === '127.0.0.1') {
@@ -56,10 +58,14 @@ const getApiBaseUrl = () => {
 
 const API_BASE_URL = getApiBaseUrl();
 
-// Resilient API Request helper with multi-URL candidate fallbacks
+// Resilient API Request helper with multi-URL candidate fallbacks & Render cold start allowance (35s timeout)
 const apiRequest = async (method, path, data = null, options = {}) => {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
   const candidates = [
     `${API_BASE_URL}${path}`,
+    `https://soccer-goal-predictor-api.onrender.com${path}`,
+    host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/-web\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
+    host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
     `http://127.0.0.1:8000${path}`,
     `http://localhost:8000${path}`,
     path
@@ -70,9 +76,9 @@ const apiRequest = async (method, path, data = null, options = {}) => {
   for (const url of urls) {
     try {
       if (method === 'get') {
-        return await axios.get(url, { timeout: 10000, ...options });
+        return await axios.get(url, { timeout: 35000, ...options });
       } else if (method === 'post') {
-        return await axios.post(url, data, { timeout: 15000, ...options });
+        return await axios.post(url, data, { timeout: 35000, ...options });
       }
     } catch (err) {
       lastErr = err;
