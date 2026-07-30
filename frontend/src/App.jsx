@@ -42,19 +42,44 @@ const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
   if (typeof window !== 'undefined' && window.location.hostname) {
     const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return `${window.location.protocol}//${host}:8000`;
-    }
     if (host.includes('.onrender.com')) {
       const apiHost = host.replace(/-web\.onrender\.com$/, '-api.onrender.com');
       return `${window.location.protocol}//${apiHost}`;
     }
-    return ''; // Relative path for production deployment
+    if (window.location.port === '5173' || window.location.port === '3000' || host === 'localhost' || host === '127.0.0.1') {
+      return `${window.location.protocol}//${host}:8000`;
+    }
+    return `${window.location.protocol}//${host}:8000`;
   }
   return 'http://127.0.0.1:8000';
 };
 
 const API_BASE_URL = getApiBaseUrl();
+
+// Resilient API Request helper with multi-URL candidate fallbacks
+const apiRequest = async (method, path, data = null, options = {}) => {
+  const candidates = [
+    `${API_BASE_URL}${path}`,
+    `http://127.0.0.1:8000${path}`,
+    `http://localhost:8000${path}`,
+    path
+  ];
+  const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
+
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      if (method === 'get') {
+        return await axios.get(url, { timeout: 10000, ...options });
+      } else if (method === 'post') {
+        return await axios.post(url, data, { timeout: 15000, ...options });
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('Unable to connect to FastAPI backend server');
+};
 
 export default function App() {
   const [fixtures, setFixtures] = useState([]);
@@ -107,17 +132,12 @@ export default function App() {
     lastChecked: null,
   });
 
-  // Check Backend Health with retry and 10s timeout to prevent false offline status
+  // Check Backend Health with retry and multi-URL candidates
   const checkHealth = async (retries = 2) => {
     const startTime = performance.now();
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        let res;
-        try {
-          res = await axios.get(`${API_BASE_URL}/health`, { timeout: 10000 });
-        } catch {
-          res = await axios.get('/health', { timeout: 10000 });
-        }
+        const res = await apiRequest('get', '/health', null, { timeout: 5000 });
         const endTime = performance.now();
         if (res.data?.status === 'ok') {
           setBackendHealth({
@@ -131,23 +151,18 @@ export default function App() {
         if (attempt === retries) {
           setBackendHealth(prev => ({ ...prev, online: false }));
         } else {
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 600));
         }
       }
     }
   };
 
-  // Fetch upcoming fixtures from FastAPI with relative fallback (support silent background refresh)
+  // Fetch upcoming fixtures from FastAPI with multi-URL fallback
   const fetchUpcomingFixtures = async (isSilent = false) => {
     if (!isSilent) setLoading(true);
     setError(null);
     try {
-      let response;
-      try {
-        response = await axios.get(`${API_BASE_URL}/api/fixtures/upcoming`);
-      } catch {
-        response = await axios.get('/api/fixtures/upcoming');
-      }
+      const response = await apiRequest('get', '/api/fixtures/upcoming');
       if (response.data?.status === 'ok') {
         setFixtures(response.data.data || []);
       } else {
@@ -164,12 +179,7 @@ export default function App() {
   const fetchFinishedFixtures = async () => {
     setLoadingFinished(true);
     try {
-      let response;
-      try {
-        response = await axios.get(`${API_BASE_URL}/api/fixtures/finished`);
-      } catch {
-        response = await axios.get('/api/fixtures/finished');
-      }
+      const response = await apiRequest('get', '/api/fixtures/finished');
       if (response.data?.status === 'ok') {
         setFinishedFixtures(response.data.data || []);
       }
@@ -185,13 +195,8 @@ export default function App() {
     setSyncing(true);
     setNotification(null);
     try {
-      try {
-        await axios.post(`${API_BASE_URL}/api/ingest/sync`);
-        await axios.post(`${API_BASE_URL}/api/predictions/predict-all`);
-      } catch {
-        await axios.post('/api/ingest/sync');
-        await axios.post('/api/predictions/predict-all');
-      }
+      await apiRequest('post', '/api/ingest/sync');
+      await apiRequest('post', '/api/predictions/predict-all');
       await fetchUpcomingFixtures(true);
       await fetchFinishedFixtures();
       setNotification({ type: 'success', message: 'Live global fixtures & predictions refreshed successfully!' });
