@@ -99,9 +99,13 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("APScheduler initialized: Midnight cron & 6-hour interval refresh jobs registered.")
 
-    # Trigger background data refresh on application startup
+    # Trigger delayed background data refresh after 20s so health checks respond instantly on startup
     import asyncio
-    asyncio.create_task(scheduled_data_refresh())
+    async def delayed_startup_refresh():
+        await asyncio.sleep(20)
+        await scheduled_data_refresh()
+    
+    asyncio.create_task(delayed_startup_refresh())
 
     yield
 
