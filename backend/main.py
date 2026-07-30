@@ -55,21 +55,21 @@ scheduler = AsyncIOScheduler()
 
 async def scheduled_data_refresh():
     """
-    Automated 12-hour background job:
+    Automated background job:
     1. Fetches/ingests latest competitions, teams, match results, and upcoming fixtures.
     2. Recalculates team and league statistics.
     3. Recalculates Poisson goal predictions for all upcoming fixtures.
     """
-    logger.info("Executing scheduled 12-hour data refresh and prediction recalculation cycle...")
+    logger.info("Executing scheduled data refresh and prediction recalculation cycle...")
     db = SessionLocal()
     try:
         await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
         calculate_all_league_statistics(db)
         calculate_all_team_statistics(db)
         PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
-        logger.info("Scheduled 12-hour data refresh completed successfully.")
+        logger.info("Scheduled data refresh completed successfully.")
     except Exception as e:
-        logger.error(f"Error during scheduled 12-hour data refresh: {str(e)}")
+        logger.error(f"Error during scheduled data refresh: {str(e)}")
     finally:
         db.close()
 
@@ -78,16 +78,30 @@ async def lifespan(app: FastAPI):
     # Create SQLite database and tables on application startup
     init_db()
 
-    # Schedule 12-hour automated refresh with APScheduler
+    # Schedule daily midnight refresh at 00:00 UTC
+    scheduler.add_job(
+        scheduled_data_refresh,
+        'cron',
+        hour=0,
+        minute=0,
+        id='automated_midnight_refresh',
+        replace_existing=True
+    )
+
+    # Schedule 6-hour automated refresh interval
     scheduler.add_job(
         scheduled_data_refresh,
         'interval',
-        hours=12,
-        id='automated_12h_refresh',
+        hours=6,
+        id='automated_6h_refresh',
         replace_existing=True
     )
     scheduler.start()
-    logger.info("APScheduler initialized: 12-hour data refresh job registered.")
+    logger.info("APScheduler initialized: Midnight cron & 6-hour interval refresh jobs registered.")
+
+    # Trigger background data refresh on application startup
+    import asyncio
+    asyncio.create_task(scheduled_data_refresh())
 
     yield
 
@@ -259,7 +273,7 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     Retrieve all upcoming/scheduled global fixtures starting from present date
     with full team, league, and Poisson goal prediction details.
     """
-    now_cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None)
+    now_cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
     fixtures = db.query(models.Fixture).filter(
         models.Fixture.status != "FINISHED",
         models.Fixture.match_date >= now_cutoff

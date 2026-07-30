@@ -362,15 +362,15 @@ export default function App() {
   useEffect(() => {
     if (availableMatchDays.length > 0) {
       const todayKey = getGMT1DayKey(new Date().toISOString());
-      if (!availableMatchDays.includes(selectedPickDay) && selectedPickDay !== 'ALL_DAYS') {
-        if (availableMatchDays.includes(todayKey)) {
+      if (availableMatchDays.includes(todayKey)) {
+        if (!selectedPickDay || !availableMatchDays.includes(selectedPickDay)) {
           setSelectedPickDay(todayKey);
-        } else {
-          setSelectedPickDay(availableMatchDays[0]);
         }
+      } else if (!availableMatchDays.includes(selectedPickDay) && selectedPickDay !== 'ALL_DAYS') {
+        setSelectedPickDay(availableMatchDays[0]);
       }
     }
-  }, [availableMatchDays, selectedPickDay]);
+  }, [availableMatchDays]);
 
   // TOP 5 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
   const top5Over15Picks = useMemo(() => {
