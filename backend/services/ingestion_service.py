@@ -384,7 +384,7 @@ class DataIngestionService:
                 logger.warning(f"Error fetching ESPN feed {code} ({date_str}): {str(ex)}")
             return (code, default_name, country, None)
 
-        espn_fixtures_count = 0
+        all_espn_payloads = []
         async with httpx.AsyncClient(timeout=10.0) as client:
             feed_tasks = [fetch_espn_feed(client, code, default_name, country) for code, default_name, country in espn_leagues if code != "all"]
             feed_tasks.extend([fetch_espn_feed(client, "all", "Global Matches & Cup Competitions", "Global", d_str) for d_str in target_dates])
@@ -425,16 +425,15 @@ class DataIngestionService:
                                 league_name = "French Ligue 1"
                             elif "major-league-soccer" in season_slug or "mls" in season_slug:
                                 league_name = "Major League Soccer"
-                            elif season_slug:
-                                clean_parts = [p for p in season_slug.split("-") if not p.isdigit() and p not in ["club", "friendly"]]
-                                league_name = " ".join(clean_parts).title() if clean_parts else default_name
+                            elif api_league_name:
+                                league_name = api_league_name
                             else:
-                                league_name = default_name
+                                league_name = "Global Cup Competitions & Friendlies"
                         else:
                             league_name = api_league_name or default_name
                         
                         league_obj = cls.ingest_leagues(db, [{
-                            "external_id": f"ESPN-{code}-{league_name.replace(' ', '_')}",
+                            "external_id": f"ESPN-{code}-{season_slug or '2025'}",
                             "name": league_name,
                             "country": country,
                             "season": "2025/2026"
@@ -444,38 +443,41 @@ class DataIngestionService:
                         if len(competitors) < 2:
                             continue
 
-                        home_data = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
-                        away_data = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
-
-                        home_info = home_data.get("team", {})
-                        away_info = away_data.get("team", {})
+                        home_data = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
+                        away_data = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
 
                         h_team = cls.ingest_teams(db, [{
-                            "external_id": f"ESPN-T-{home_info.get('id')}",
-                            "name": home_info.get("displayName") or home_info.get("name"),
-                            "short_code": home_info.get("abbreviation") or home_info.get("name", "")[:3].upper(),
-                            "logo_url": home_info.get("logo"),
+                            "external_id": f"ESPN-TEAM-{home_data.get('id')}",
+                            "name": home_data.get("team", {}).get("displayName", "Home Team"),
+                            "short_code": home_data.get("team", {}).get("abbreviation", "HOM"),
+                            "logo_url": home_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
                         }])[0]
 
                         a_team = cls.ingest_teams(db, [{
-                            "external_id": f"ESPN-T-{away_info.get('id')}",
-                            "name": away_info.get("displayName") or away_info.get("name"),
-                            "short_code": away_info.get("abbreviation") or away_info.get("name", "")[:3].upper(),
-                            "logo_url": away_info.get("logo"),
+                            "external_id": f"ESPN-TEAM-{away_data.get('id')}",
+                            "name": away_data.get("team", {}).get("displayName", "Away Team"),
+                            "short_code": away_data.get("team", {}).get("abbreviation", "AWY"),
+                            "logo_url": away_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
                         }])[0]
 
-                        match_date = ev.get("date")
+                        date_str_raw = ev.get("date")
+                        if not date_str_raw:
+                            continue
+                        dt_parsed = datetime.fromisoformat(date_str_raw.replace("Z", "+00:00"))
+                        match_date = dt_parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
                         status_type = ev.get("status", {}).get("type", {})
-                        status_name = status_type.get("name", "SCHEDULED").upper()
-                        state = status_type.get("state", "").lower()
-                        live_clock = status_type.get("shortDetail") or f"{ev.get('status', {}).get('displayClock', '')}'"
-                        
-                        if state == "post" or any(s in status_name for s in ["FINAL", "FULL_TIME", "FT"]):
+                        status_name = status_type.get("name", "STATUS_SCHEDULED")
+                        live_clock = ev.get("status", {}).get("displayClock")
+
+                        if status_name in ["STATUS_FINAL", "STATUS_FULL_TIME", "STATUS_FINISHED"]:
                             status = "FINISHED"
-                        elif state == "in" or any(s in status_name for s in ["IN_PROGRESS", "HALFTIME", "LIVE", "FIRST_HALF", "SECOND_HALF"]):
+                        elif status_name in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME", "STATUS_FIRST_HALF", "STATUS_SECOND_HALF"]:
                             status = "LIVE"
+                        elif status_name in ["STATUS_POSTPONED", "STATUS_CANCELLED"]:
+                            status = "POSTPONED"
                         else:
                             status = "SCHEDULED"
 
@@ -490,7 +492,7 @@ class DataIngestionService:
                             parsed_h_score = extract_score_value(raw_h_score)
                             parsed_a_score = extract_score_value(raw_a_score)
 
-                        f_payload = [{
+                        all_espn_payloads.append({
                             "external_id": f"ESPN-FIX-{ev.get('id')}",
                             "league_id": league_obj.id,
                             "home_team_id": h_team.id,
@@ -501,12 +503,15 @@ class DataIngestionService:
                             "home_score": parsed_h_score,
                             "away_score": parsed_a_score,
                             "live_clock": live_clock if status == "LIVE" else None,
-                        }]
-
-                        ingested = cls.ingest_fixtures(db, f_payload)
-                        espn_fixtures_count += len(ingested)
+                        })
                     except Exception as ev_ex:
                         logger.warning(f"Error processing ESPN event {ev.get('id')}: {str(ev_ex)}")
+
+        if all_espn_payloads:
+            ingested = cls.ingest_fixtures(db, all_espn_payloads)
+            espn_fixtures_count = len(ingested)
+        else:
+            espn_fixtures_count = 0
 
         if espn_fixtures_count > 0:
             return {

@@ -58,17 +58,17 @@ const getApiBaseUrl = () => {
 
 const API_BASE_URL = getApiBaseUrl();
 
-// Resilient API Request helper with multi-URL candidate fallbacks & Render cold start allowance (35s timeout)
+// Resilient API Request helper with multi-URL candidate fallbacks & relative-first routing
 const apiRequest = async (method, path, data = null, options = {}) => {
   const host = typeof window !== 'undefined' ? window.location.hostname : '';
   const candidates = [
+    path, // Relative path first (uses Vite dev server proxy or unified host proxy)
     `${API_BASE_URL}${path}`,
+    `http://127.0.0.1:8000${path}`,
+    `http://localhost:8000${path}`,
     `https://soccer-goal-predictor-api.onrender.com${path}`,
     host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/-web\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
     host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
-    `http://127.0.0.1:8000${path}`,
-    `http://localhost:8000${path}`,
-    path
   ];
   const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
 
@@ -76,9 +76,9 @@ const apiRequest = async (method, path, data = null, options = {}) => {
   for (const url of urls) {
     try {
       if (method === 'get') {
-        return await axios.get(url, { timeout: 35000, ...options });
+        return await axios.get(url, { timeout: 10000, ...options });
       } else if (method === 'post') {
-        return await axios.post(url, data, { timeout: 35000, ...options });
+        return await axios.post(url, data, { timeout: 15000, ...options });
       }
     } catch (err) {
       lastErr = err;

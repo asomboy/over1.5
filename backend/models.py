@@ -1,8 +1,8 @@
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from typing import Optional
+from sqlalchemy import Integer, String, Float, DateTime, ForeignKey
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +17,7 @@ except ImportError:
 
 class League(Base):
     __tablename__ = "leagues"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
@@ -33,6 +34,7 @@ class League(Base):
 
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
@@ -51,6 +53,7 @@ class Team(Base):
 
 class Fixture(Base):
     __tablename__ = "fixtures"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
@@ -75,6 +78,7 @@ class Fixture(Base):
 
 class HistoricalResult(Base):
     __tablename__ = "historical_results"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False)
@@ -91,6 +95,7 @@ class HistoricalResult(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False)
@@ -116,6 +121,7 @@ class Prediction(Base):
 
 class TeamStatistics(Base):
     __tablename__ = "team_statistics"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), unique=True, nullable=False, index=True)
@@ -137,6 +143,7 @@ class TeamStatistics(Base):
 
 class LeagueStatistics(Base):
     __tablename__ = "league_statistics"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     league_id: Mapped[int] = mapped_column(Integer, ForeignKey("leagues.id"), unique=True, nullable=False, index=True)

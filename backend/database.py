@@ -1,6 +1,6 @@
 import os
 import sys
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Database connection and session setup for SQLite
@@ -16,11 +16,19 @@ except ImportError:
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
 
-# check_same_thread: False is needed for SQLite when used with FastAPI multi-threaded contexts
-connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+# check_same_thread: False and timeout: 30 are needed for SQLite concurrent reads/writes
+connect_args = {"check_same_thread": False, "timeout": 30} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args=connect_args
 )
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

@@ -2,12 +2,13 @@ import os
 import sys
 import json
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -55,23 +56,32 @@ scheduler = AsyncIOScheduler()
 
 async def scheduled_data_refresh():
     """
-    Automated background job:
+    Automated background worker job that executes periodically:
     1. Fetches/ingests latest competitions, teams, match results, and upcoming fixtures.
     2. Recalculates team and league statistics.
     3. Recalculates Poisson goal predictions for all upcoming fixtures.
     """
     logger.info("Executing scheduled data refresh and prediction recalculation cycle...")
-    db = SessionLocal()
-    try:
-        await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
-        calculate_all_league_statistics(db)
-        calculate_all_team_statistics(db)
-        PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
-        logger.info("Scheduled data refresh completed successfully.")
-    except Exception as e:
-        logger.error(f"Error during scheduled data refresh: {str(e)}")
-    finally:
-        db.close()
+    def run_full_refresh():
+        calc_db = SessionLocal()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
+            finally:
+                loop.close()
+
+            calculate_all_league_statistics(calc_db)
+            calculate_all_team_statistics(calc_db)
+            PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
+            logger.info("Scheduled data refresh completed successfully.")
+        except Exception as e:
+            logger.error(f"Error during scheduled data refresh: {str(e)}")
+        finally:
+            calc_db.close()
+
+    await asyncio.to_thread(run_full_refresh)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -127,8 +137,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+FRONTEND_DIST = os.path.join(os.path.dirname(BACKEND_DIR), "frontend", "dist")
+if os.path.exists(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+
 @app.get("/")
-def read_root():
+async def read_root():
+    if os.path.exists(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
     return {
         "app": "Soccer Goal Predictor API",
         "status": "online",
@@ -278,24 +297,25 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     with full team, league, and Poisson goal prediction details.
     """
     now_cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
-    fixtures = db.query(models.Fixture).filter(
+    fixtures = db.query(models.Fixture).options(
+        joinedload(models.Fixture.league),
+        joinedload(models.Fixture.home_team),
+        joinedload(models.Fixture.away_team)
+    ).filter(
         models.Fixture.status != "FINISHED",
         models.Fixture.match_date >= now_cutoff
     ).order_by(models.Fixture.match_date.asc()).all()
 
     if not fixtures or len(fixtures) < 5:
-        await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
-        fixtures = db.query(models.Fixture).filter(
-            models.Fixture.status != "FINISHED",
-            models.Fixture.match_date >= now_cutoff
-        ).order_by(models.Fixture.match_date.asc()).all()
+        import asyncio
+        asyncio.create_task(DataIngestionService.fetch_and_ingest_from_api(SessionLocal(), api_key=FOOTBALL_API_KEY))
+
+    # Bulk load all stored predictions into dictionary to eliminate N+1 query performance bottleneck
+    all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
 
     result_data = []
     for fix in fixtures:
-        pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fix.id).first()
-        if not pred:
-            pred = PoissonPredictionEngine.predict_fixture(db, fix.id)
-
+        pred = all_preds.get(fix.id)
         top_scorelines = []
         if pred and pred.top_scorelines_json:
             try:
@@ -303,9 +323,23 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
             except Exception:
                 top_scorelines = []
 
-        h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
-        a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
-        pois = PoissonPredictionEngine.calculate_poisson_probabilities(h_xg, a_xg)
+        if pred:
+            h_xg = round(float(pred.predicted_home_score), 2) if pred.predicted_home_score is not None else 1.45
+            a_xg = round(float(pred.predicted_away_score), 2) if pred.predicted_away_score is not None else 1.15
+            home_win = float(pred.home_win_probability or 0.45)
+            draw_prob = float(pred.draw_probability or 0.25)
+            away_win = float(pred.away_win_probability or 0.30)
+            o05 = float(pred.over_0_5_probability or 0.90)
+            o15 = float(pred.over_1_5_probability or 0.78)
+            o25 = float(pred.over_2_5_probability or 0.52)
+            o35 = float(pred.over_3_5_probability or 0.28)
+            u25 = float(pred.under_2_5_probability or 0.48)
+            most_likely = pred.most_likely_score or "2-1"
+        else:
+            h_xg, a_xg = 1.45, 1.15
+            home_win, draw_prob, away_win = 0.45, 0.25, 0.30
+            o05, o15, o25, o35, u25 = 0.90, 0.78, 0.52, 0.28, 0.48
+            most_likely = "2-1"
 
         btts_prob = round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
 
@@ -349,37 +383,37 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
                 "predicted_home_score": h_xg,
                 "predicted_away_score": a_xg,
                 "expected_goals_xg": round(h_xg + a_xg, 2),
-                "home_win_probability": pois.get("home_win_probability", 0.0),
-                "draw_probability": pois.get("draw_probability", 0.0),
-                "away_win_probability": pois.get("away_win_probability", 0.0),
-                "over_0_5_probability": pois.get("over_0_5_probability", 0.0),
-                "over_1_5_probability": pois.get("over_1_5_probability", 0.0),
-                "over_2_5_probability": pois.get("over_2_5_probability", 0.0),
-                "over_3_5_probability": pois.get("over_3_5_probability", 0.0),
-                "under_2_5_probability": pois.get("under_2_5_probability", 0.0),
+                "home_win_probability": home_win,
+                "draw_probability": draw_prob,
+                "away_win_probability": away_win,
+                "over_0_5_probability": o05,
+                "over_1_5_probability": o15,
+                "over_2_5_probability": o25,
+                "over_3_5_probability": o35,
+                "under_2_5_probability": u25,
                 "btts_probability": btts_prob,
                 
                 # Home Team Specific Goal Thresholds
-                "home_over_0_5_probability": pois.get("home_over_0_5_probability", 0.0),
-                "home_over_1_5_probability": pois.get("home_over_1_5_probability", 0.0),
-                "home_over_2_5_probability": pois.get("home_over_2_5_probability", 0.0),
+                "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
+                "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
+                "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
 
                 # Away Team Specific Goal Thresholds
-                "away_over_0_5_probability": pois.get("away_over_0_5_probability", 0.0),
-                "away_over_1_5_probability": pois.get("away_over_1_5_probability", 0.0),
-                "away_over_2_5_probability": pois.get("away_over_2_5_probability", 0.0),
+                "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
+                "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
+                "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
 
-                # Half Breakdown (1st Half / 2nd Half xG & Over 0.5/1.5)
-                "first_half_xg": pois.get("first_half_xg", 0.0),
-                "first_half_over_0_5_probability": pois.get("first_half_over_0_5_probability", 0.0),
-                "first_half_over_1_5_probability": pois.get("first_half_over_1_5_probability", 0.0),
+                # Half Breakdown
+                "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
+                "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
+                "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
 
-                "second_half_xg": pois.get("second_half_xg", 0.0),
-                "second_half_over_0_5_probability": pois.get("second_half_over_0_5_probability", 0.0),
-                "second_half_over_1_5_probability": pois.get("second_half_over_1_5_probability", 0.0),
+                "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
+                "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
+                "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
 
-                "most_likely_score": pois.get("most_likely_score", "1-1"),
-                "top_scorelines": top_scorelines or pois.get("top_5_scorelines", [])
+                "most_likely_score": most_likely,
+                "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
             }
         })
 
@@ -391,15 +425,21 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
     """
     Retrieve completed match results with final scores and Over 1.5 goal prediction outcomes.
     """
-    fixtures = db.query(models.Fixture).filter(
+    fixtures = db.query(models.Fixture).options(
+        joinedload(models.Fixture.league),
+        joinedload(models.Fixture.home_team),
+        joinedload(models.Fixture.away_team)
+    ).filter(
         models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
     ).order_by(models.Fixture.match_date.desc()).limit(150).all()
+
+    all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
 
     result_data = []
     need_commit = False
 
     for fix in fixtures:
-        pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fix.id).first()
+        pred = all_preds.get(fix.id)
         if not pred:
             pred = PoissonPredictionEngine.predict_fixture(db, fix.id)
 

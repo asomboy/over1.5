@@ -12,11 +12,11 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from backend.models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team
-    from backend.services.statistics_service import calculate_team_statistics, calculate_league_statistics
-except ImportError:
     from models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
+except ImportError:
+    from ..models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team
+    from .statistics_service import calculate_team_statistics, calculate_league_statistics
 
 logger = logging.getLogger(__name__)
 
