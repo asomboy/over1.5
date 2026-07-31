@@ -61,24 +61,40 @@ const API_BASE_URL = getApiBaseUrl();
 // Resilient API Request helper with multi-URL candidate fallbacks & relative-first routing
 const apiRequest = async (method, path, data = null, options = {}) => {
   const host = typeof window !== 'undefined' ? window.location.hostname : '';
-  const candidates = [
-    path, // Relative path first (uses Vite dev server proxy or unified host proxy)
-    `${API_BASE_URL}${path}`,
-    `http://127.0.0.1:8000${path}`,
-    `http://localhost:8000${path}`,
-    `https://soccer-goal-predictor-api.onrender.com${path}`,
-    host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/-web\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
-    host.includes('.onrender.com') ? `${window.location.protocol}//${host.replace(/\.onrender\.com$/, '-api.onrender.com')}${path}` : null,
-  ];
+  const isRender = host.includes('.onrender.com');
+
+  const candidates = isRender
+    ? [
+        `${API_BASE_URL}${path}`,
+        `https://soccer-goal-predictor-api.onrender.com${path}`,
+        path,
+      ]
+    : [
+        path,
+        `${API_BASE_URL}${path}`,
+        `http://127.0.0.1:8000${path}`,
+        `http://localhost:8000${path}`,
+        `https://soccer-goal-predictor-api.onrender.com${path}`,
+      ];
+
   const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
 
   let lastErr = null;
+  const timeoutMs = options.timeout || (isRender ? 25000 : 10000);
+
   for (const url of urls) {
     try {
+      let res;
       if (method === 'get') {
-        return await axios.get(url, { timeout: 10000, ...options });
+        res = await axios.get(url, { timeout: timeoutMs, ...options });
       } else if (method === 'post') {
-        return await axios.post(url, data, { timeout: 15000, ...options });
+        res = await axios.post(url, data, { timeout: timeoutMs, ...options });
+      }
+      // Ensure valid JSON API payload object (rejects HTML fallback strings from static server rewrites)
+      if (res && res.data && typeof res.data === 'object' && res.data.status === 'ok') {
+        return res;
+      } else if (res && res.data && typeof res.data === 'object') {
+        return res;
       }
     } catch (err) {
       lastErr = err;
