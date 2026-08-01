@@ -4,11 +4,12 @@
       "root": "backend",
       "extraPaths": [
         "backend",
-        "backend/venv/Lib/site-packages"
+        "backend/venv/Lib/site-packages",
+        "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
       ]
     }
   ],
-  "venvPath": "backend",
+  "venvPath": "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend",
   "venv": "venv",
   "include": [
     "backend"
@@ -20,6 +21,7 @@
   ],
   "extraPaths": [
     "backend",
-    "backend/venv/Lib/site-packages"
+    "backend/venv/Lib/site-packages",
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
   ]
 }

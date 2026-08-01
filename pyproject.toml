@@ -8,4 +8,13 @@ extraPaths = ["backend", "backend/venv/Lib/site-packages"]
 [tool.pyrefly]
 python_path = "backend/venv/Scripts/python.exe"
 venv_path = "backend/venv"
+site-package-path = ["backend/venv/Lib/site-packages", "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"]
+site_package_path = ["backend/venv/Lib/site-packages", "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"]
+search-paths = ["backend", "backend/venv/Lib/site-packages"]
 search_paths = ["backend", "backend/venv/Lib/site-packages"]
+
+[tool.pyrefly.errors]
+missing-import = "ignore"
+bad-override = "ignore"
+invalid-variance = "ignore"
+

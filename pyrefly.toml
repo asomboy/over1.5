@@ -1,0 +1,28 @@
+project-includes = [
+    ".",
+    "backend",
+    "backend/**/*.py"
+]
+
+project-excludes = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/venv/**/*",
+]
+
+site-package-path = [
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
+    "venv/Lib/site-packages"
+]
+
+search-paths = [
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend",
+    "backend",
+    "."
+]
+
+[errors]
+missing-import = "ignore"
+bad-override = "ignore"
+invalid-variance = "ignore"

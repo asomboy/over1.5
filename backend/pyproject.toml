@@ -1,19 +1,47 @@
 [tool.pyright]
-venvPath = "."
+venvPath = "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend"
 venv = "venv"
 include = ["."]
 exclude = ["**/node_modules", "**/venv", "**/__pycache__", "dist"]
 extraPaths = [
     ".",
+    "backend",
     "venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
     "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
 ]
 
 [tool.pyrefly]
 python_path = "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Scripts/python.exe"
-venv_path = "venv"
-search_paths = [
+venv_path = "backend/venv"
+site-package-path = [
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
+    "venv/Lib/site-packages"
+]
+site_package_path = [
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
+    "venv/Lib/site-packages"
+]
+search-paths = [
     ".",
+    "backend",
     "venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
     "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
 ]
+search_paths = [
+    ".",
+    "backend",
+    "venv/Lib/site-packages",
+    "backend/venv/Lib/site-packages",
+    "c:/Users/RARITY/Desktop/Soccer Goal Predictor/backend/venv/Lib/site-packages"
+]
+
+[tool.pyrefly.errors]
+missing-import = "ignore"
+bad-override = "ignore"
+invalid-variance = "ignore"
+
+

@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 from datetime import datetime, timezone
 from typing import List, Optional, cast
 from sqlalchemy.orm import Session
@@ -49,16 +50,43 @@ def calculate_team_statistics(
     home_count = len(home_results)
     away_count = len(away_results)
 
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    decay_factor = 0.0035
+
     if home_count > 0:
-        avg_home_scored = round(float(sum(res.home_score for res in home_results)) / home_count, 2)
-        avg_home_conceded = round(float(sum(res.away_score for res in home_results)) / home_count, 2)
+        weight_sum = 0.0
+        scored_weighted = 0.0
+        conceded_weighted = 0.0
+        for res in home_results:
+            match_date = res.fixture.match_date
+            m_date = match_date.replace(tzinfo=None) if match_date.tzinfo else match_date
+            days_diff = max(0.0, (now_dt - m_date).total_seconds() / 86400.0)
+            weight = math.exp(-decay_factor * days_diff)
+            weight_sum += weight
+            scored_weighted += float(res.home_score) * weight
+            conceded_weighted += float(res.away_score) * weight
+        
+        avg_home_scored = round(scored_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
+        avg_home_conceded = round(conceded_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
     else:
         avg_home_scored = 0.0
         avg_home_conceded = 0.0
 
     if away_count > 0:
-        avg_away_scored = round(float(sum(res.away_score for res in away_results)) / away_count, 2)
-        avg_away_conceded = round(float(sum(res.home_score for res in away_results)) / away_count, 2)
+        weight_sum = 0.0
+        scored_weighted = 0.0
+        conceded_weighted = 0.0
+        for res in away_results:
+            match_date = res.fixture.match_date
+            m_date = match_date.replace(tzinfo=None) if match_date.tzinfo else match_date
+            days_diff = max(0.0, (now_dt - m_date).total_seconds() / 86400.0)
+            weight = math.exp(-decay_factor * days_diff)
+            weight_sum += weight
+            scored_weighted += float(res.away_score) * weight
+            conceded_weighted += float(res.home_score) * weight
+            
+        avg_away_scored = round(scored_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
+        avg_away_conceded = round(conceded_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
     else:
         avg_away_scored = 0.0
         avg_away_conceded = 0.0
