@@ -80,7 +80,7 @@ const apiRequest = async (method, path, data = null, options = {}) => {
   const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
 
   let lastErr = null;
-  const timeoutMs = options.timeout || (isRender ? 25000 : 10000);
+  const timeoutMs = options.timeout || (isRender ? 60000 : 10000);
 
   for (const url of urls) {
     try {
