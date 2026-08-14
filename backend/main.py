@@ -200,13 +200,13 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule early-morning 00:30 Telegram digest broadcast (for early morning/overnight matches)
+    # Schedule early-morning 12:50 AM & 12:30 AM Telegram digest broadcast (for early morning/overnight matches)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour=0,
-        minute=30,
-        id='daily_telegram_0030_digest',
+        hour='0,23',
+        minute='30,50',
+        id='daily_telegram_early_digest',
         replace_existing=True
     )
 
@@ -222,7 +222,7 @@ async def lifespan(app: FastAPI):
 
     try:
         scheduler.start()
-        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 00:30 AM & 08:00 AM Telegram digest jobs registered.")
+        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 12:50 AM & 08:00 AM Telegram digest jobs registered.")
     except Exception as e:
         logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
@@ -642,9 +642,21 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
         models.Fixture.match_date >= now_cutoff
     ).order_by(models.Fixture.match_date.asc()).all()
 
-    if not fixtures or len(fixtures) < 5:
-        import asyncio
-        asyncio.create_task(DataIngestionService.fetch_and_ingest_from_api(SessionLocal(), api_key=FOOTBALL_API_KEY))
+    if not fixtures:
+        logger.info("No upcoming fixtures found in DB. Executing immediate ingestion from API...")
+        try:
+            await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
+            PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
+            fixtures = db.query(models.Fixture).options(
+                joinedload(models.Fixture.league),
+                joinedload(models.Fixture.home_team),
+                joinedload(models.Fixture.away_team)
+            ).filter(
+                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                models.Fixture.match_date >= now_cutoff
+            ).order_by(models.Fixture.match_date.asc()).all()
+        except Exception as e:
+            logger.error(f"Error during fallback ingestion: {e}")
 
     # Bulk load all stored predictions into dictionary to eliminate N+1 query performance bottleneck
     all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
