@@ -2,7 +2,9 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#059669" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Soccer Goal Predictor | AI Match Analytics & Goal Predictions</title>
     <meta name="description" content="Soccer Goal Predictor application for match goal predictions and advanced analytics." />
@@ -14,6 +16,14 @@
   <body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(err => {
+            console.log('SW registration failed:', err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>
-

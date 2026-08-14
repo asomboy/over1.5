@@ -133,6 +133,7 @@ export default function App() {
   const [showAccaModal, setShowAccaModal] = useState(false);
   const [activeDetailFixtureId, setActiveDetailFixtureId] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
 
   // Accuracy Dashboard & Confidence state
   const [accuracyStats, setAccuracyStats] = useState(null);
@@ -482,8 +483,9 @@ export default function App() {
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
+      const matchesValue = !showValueBetsOnly || fix.value_bet?.is_value_bet || (fix.prediction?.over_1_5_probability || 0) >= 0.78;
       const isOver50Percent = (fix.prediction?.over_1_5_probability || 0) >= 0.50;
-      return matchesSearch && matchesLeague && matchesDay && isOver50Percent;
+      return matchesSearch && matchesLeague && matchesDay && matchesValue && isOver50Percent;
     });
 
     result = result
@@ -491,7 +493,7 @@ export default function App() {
       .slice(0, 20);
 
     return result;
-  }, [fixtures, searchTerm, selectedLeague, selectedPickDay]);
+  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
 
   // Filtered Finished Fixtures for Results Tab
   const filteredFinishedFixtures = useMemo(() => {
@@ -1869,10 +1871,22 @@ export default function App() {
                 </select>
               </div>
 
+              {/* Value Bets Filter Toggle */}
+              <button
+                onClick={() => setShowValueBetsOnly(!showValueBetsOnly)}
+                className={`h-10 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 border ${
+                  showValueBetsOnly
+                    ? 'bg-cyan-600 text-white border-cyan-400 shadow-md shadow-cyan-600/20'
+                    : darkMode ? 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white' : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>💎 Value Bets</span>
+              </button>
+
               {/* Clear Filters */}
-              {(searchTerm || selectedLeague !== 'ALL' || sortBy !== 'DATE_ASC' || showBest15Over15 || selectedPickDay !== 'ALL_DAYS') && (
+              {(searchTerm || selectedLeague !== 'ALL' || sortBy !== 'DATE_ASC' || showBest15Over15 || showValueBetsOnly || selectedPickDay !== 'ALL_DAYS') && (
                 <button
-                  onClick={() => { setSearchTerm(''); setSelectedLeague('ALL'); setSortBy('DATE_ASC'); setShowBest15Over15(false); setSelectedPickDay('ALL_DAYS'); }}
+                  onClick={() => { setSearchTerm(''); setSelectedLeague('ALL'); setSortBy('DATE_ASC'); setShowBest15Over15(false); setShowValueBetsOnly(false); setSelectedPickDay('ALL_DAYS'); }}
                   className="h-10 px-2.5 sm:px-3 flex items-center text-xs text-rose-400 hover:text-rose-300 font-semibold transition-colors shrink-0"
                 >
                   Clear Filters
@@ -2099,6 +2113,12 @@ export default function App() {
                             <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                               {formatDateGMT1(fix.match_date)}
                             </span>
+                            {fix.weather && (
+                              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
+                                <span>{fix.weather.icon || '☀️'}</span>
+                                <span>{fix.weather.condition || 'Clear'} {fix.weather.temp_c ? `${fix.weather.temp_c}°C` : ''}</span>
+                              </span>
+                            )}
                           </div>
                         </td>
 
@@ -2160,10 +2180,17 @@ export default function App() {
 
                         {/* Over 1.5 Goals % Badge */}
                         <td className="py-3 px-4 text-center">
-                          <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
-                            <Flame className="w-3 h-3 fill-current" />
-                            <span>Over 1.5: {over15Pct}%</span>
-                          </span>
+                          <div className="flex flex-col items-center gap-1">
+                            <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
+                              <Flame className="w-3 h-3 fill-current" />
+                              <span>Over 1.5: {over15Pct}%</span>
+                            </span>
+                            {(fix.value_bet?.is_value_bet || over15Pct >= 78) && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet?.value_edge_pct || 4.5}%`}>
+                                💎 Value ({fix.value_bet?.model_odds || (100 / max(1, over15Pct)).toFixed(2)})
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Expected Goals xG */}

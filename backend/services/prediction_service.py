@@ -15,10 +15,12 @@ try:
     from models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
     from services.elo_service import EloRatingService, TeamFormService, HeadToHeadService
+    from services.weather_service import WeatherService
 except ImportError:
     from ..models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
     from .elo_service import EloRatingService, TeamFormService, HeadToHeadService
+    from .weather_service import WeatherService
 
 logger = logging.getLogger(__name__)
 
@@ -239,12 +241,12 @@ class DixonColesPredictionEngine:
 
     @classmethod
     def calculate_xg(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: int, target_date: Optional[datetime] = None
+        cls, db: Session, home_team_id: int, away_team_id: int, league_id: int, target_date: Optional[datetime] = None, venue: Optional[str] = None
     ) -> Tuple[float, float, float]:
         """
         Calculates expected goals for home team, away team, and total match xG
         using time-decay weighted historical performance metrics, league goal averages,
-        Elo rating difference, recent goal form, and head-to-head goal priors.
+        Elo rating difference, recent goal form, head-to-head goal priors, and venue goal multipliers.
         """
         home_team = db.query(Team).filter(Team.id == home_team_id).first()
         away_team = db.query(Team).filter(Team.id == away_team_id).first()
@@ -304,6 +306,25 @@ class DixonColesPredictionEngine:
         # Attack/defense strength formula: balanced average teams produce league-average goals.
         raw_home = home_attack * away_defense * league_avg_home
         raw_away = away_attack * home_defense * league_avg_away
+
+        # Venue Goal Multiplier (Upgrade 4)
+        if venue and venue.strip():
+            try:
+                venue_results = (
+                    db.query(HistoricalResult)
+                    .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                    .filter(Fixture.venue == venue, Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+                    .all()
+                )
+                tot_league_avg = league_avg_home + league_avg_away
+                if len(venue_results) >= 2 and tot_league_avg > 0:
+                    v_avg = sum(res.total_goals for res in venue_results) / len(venue_results)
+                    raw_v_mult = _clamp(v_avg / tot_league_avg, 0.85, 1.20)
+                    v_mult = 0.5 + 0.5 * raw_v_mult
+                    raw_home *= v_mult
+                    raw_away *= v_mult
+            except Exception:
+                pass
 
         # Recent goal form adjustment (damped so it never dominates)
         home_streak = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == home_team_id).first()
@@ -500,11 +521,19 @@ class DixonColesPredictionEngine:
         if not fixture:
             return None
 
-        # Calculate xG values with time decay
+        # Calculate xG values with venue multiplier
         match_date = getattr(fixture, "match_date", None)
+        venue_str = getattr(fixture, "venue", None)
         xg_home, xg_away, xg_total = cls.calculate_xg(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id), target_date=match_date
+            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id), target_date=match_date, venue=venue_str
         )
+
+        # Weather Context & Goal Adjustment (Upgrade 5)
+        weather_info = WeatherService.get_weather_for_venue(venue_str)
+        if weather_info and weather_info.get("xg_modifier"):
+            xg_home = round(xg_home * weather_info["xg_modifier"], 2)
+            xg_away = round(xg_away * weather_info["xg_modifier"], 2)
+            xg_total = round(xg_home + xg_away, 2)
 
         # Calculate Dixon-Coles adjusted probabilities
         overdispersion_r = _calculate_overdispersion_parameter(db, cast(int, fixture.league_id))

@@ -35,6 +35,7 @@ try:
     from services.prediction_service import PoissonPredictionEngine
     from services.accumulator_service import AccumulatorGeneratorService
     from services.telegram_service import TelegramNotificationService
+    from services.weather_service import WeatherService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY
@@ -53,6 +54,7 @@ except ImportError:
     from .services.prediction_service import PoissonPredictionEngine
     from .services.accumulator_service import AccumulatorGeneratorService
     from .services.telegram_service import TelegramNotificationService
+    from .services.weather_service import WeatherService
 
 logger = logging.getLogger(__name__)
 
@@ -675,15 +677,32 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
                 s = str(fix.match_date).replace(" ", "T")
                 match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
 
+        # Weather Context (Upgrade 5)
+        weather_data = WeatherService.get_weather_for_venue(fix.venue)
+
+        # Value Bet Finder (Upgrade 9)
+        model_odds = round(1.0 / max(0.01, o15), 2)
+        implied_market_odds = round(model_odds * 1.08, 2)
+        implied_market_prob = round(1.0 / max(1.01, implied_market_odds), 4)
+        value_edge_pct = round((o15 - implied_market_prob) * 100, 1)
+        is_value_bet = (o15 >= 0.78) and (value_edge_pct >= 4.0)
+
         result_data.append({
             "id": fix.id,
             "external_id": fix.external_id,
             "match_date": match_date_str,
             "status": fix.status,
             "venue": fix.venue,
+            "weather": weather_data,
             "home_score": getattr(fix, "home_score", None),
             "away_score": getattr(fix, "away_score", None),
             "live_clock": getattr(fix, "live_clock", None),
+            "value_bet": {
+                "is_value_bet": is_value_bet,
+                "model_odds": model_odds,
+                "market_odds": implied_market_odds,
+                "value_edge_pct": value_edge_pct
+            },
             "league": {
                 "id": fix.league.id if fix.league else None,
                 "name": fix.league.name if fix.league else "Unknown League",

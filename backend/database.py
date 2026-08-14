@@ -14,13 +14,17 @@ try:
 except ImportError:
     from .config import DATABASE_URL
 
-SQLALCHEMY_DATABASE_URL = DATABASE_URL
+db_url = DATABASE_URL
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-# check_same_thread: False and timeout: 30 are needed for SQLite concurrent reads/writes
-connect_args = {"check_same_thread": False, "timeout": 30} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args=connect_args
-)
+SQLALCHEMY_DATABASE_URL = db_url
+
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    connect_args = {"check_same_thread": False, "timeout": 30}
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args)
+else:
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
 
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):

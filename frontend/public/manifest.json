@@ -1,0 +1,18 @@
+{
+  "name": "Soccer Goal Predictor",
+  "short_name": "GoalPredictor",
+  "description": "State-of-the-art predictive analytics engine for soccer goal expectations and match odds",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#059669",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
