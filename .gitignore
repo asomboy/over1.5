@@ -23,3 +23,6 @@ build/
 # Environment & Logs
 .env
 *.log
+*.db-shm
+*.db-wal
+
