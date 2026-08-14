@@ -1,0 +1,59 @@
+name: Keep Render Alive & Daily Sync
+
+on:
+  schedule:
+    # Ping every 14 minutes to prevent Render free tier spin-down
+    - cron: '*/14 * * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+env:
+  # Replace with your actual Render backend URL
+  RENDER_API_URL: https://soccer-goal-predictor-api.onrender.com
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API to prevent spin-down
+        run: |
+          echo "Pinging Render API at $(date -u)..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ env.RENDER_API_URL }}/api/fixtures/upcoming" --max-time 60)
+          echo "Response status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 500 ]; then
+            echo "✅ Server is alive (HTTP $HTTP_STATUS)"
+          else
+            echo "⚠️ Server returned HTTP $HTTP_STATUS"
+          fi
+
+  daily-sync:
+    runs-on: ubuntu-latest
+    # Only run the full sync at midnight UTC and noon UTC
+    if: github.event.schedule == '*/14 * * * *' && (github.event.schedule == '*/14 * * * *')
+    steps:
+      - name: Check if sync is needed (runs at ~00:00 and ~12:00 UTC)
+        id: check_time
+        run: |
+          HOUR=$(date -u +%H)
+          MINUTE=$(date -u +%M)
+          echo "Current UTC time: ${HOUR}:${MINUTE}"
+          if [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; then
+            echo "sync_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "sync_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger full data sync
+        if: steps.check_time.outputs.sync_needed == 'true'
+        run: |
+          echo "Triggering full data sync at $(date -u)..."
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+            -X POST "${{ env.RENDER_API_URL }}/api/ingest/sync" \
+            --max-time 120)
+          echo "Sync response status: $HTTP_STATUS"
+          cat response.json 2>/dev/null || true
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Daily sync completed successfully"
+          else
+            echo "❌ Sync failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
