@@ -33,6 +33,8 @@ try:
     )
     from services.ingestion_service import DataIngestionService
     from services.prediction_service import PoissonPredictionEngine
+    from services.accumulator_service import AccumulatorGeneratorService
+    from services.telegram_service import TelegramNotificationService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY
@@ -49,6 +51,8 @@ except ImportError:
     )
     from .services.ingestion_service import DataIngestionService
     from .services.prediction_service import PoissonPredictionEngine
+    from .services.accumulator_service import AccumulatorGeneratorService
+    from .services.telegram_service import TelegramNotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,75 @@ async def scheduled_data_refresh():
     global LAST_SYNC_TIME
     LAST_SYNC_TIME = datetime.now(timezone.utc)
 
+
+async def scheduled_live_score_refresh():
+    """
+    Automated background worker job executing every 60 seconds
+    to fetch real-time score updates, live clocks, and auto-settle finished matches.
+    """
+    def run_live_refresh():
+        calc_db = SessionLocal()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Error in scheduled live score refresh: {e}")
+        finally:
+            calc_db.close()
+
+    await asyncio.to_thread(run_live_refresh)
+
+
+async def scheduled_telegram_daily_digest():
+    """
+    Automated background worker job executing daily at 08:00 UTC:
+    Gathers top 10 Over 1.5 goal predictions and dispatches Telegram notification.
+    """
+    logger.info("Executing scheduled Telegram daily top picks broadcast...")
+    calc_db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
+        fixtures = (
+            calc_db.query(models.Fixture)
+            .options(
+                joinedload(models.Fixture.league),
+                joinedload(models.Fixture.home_team),
+                joinedload(models.Fixture.away_team)
+            )
+            .filter(models.Fixture.status != "FINISHED", models.Fixture.match_date >= now_cutoff)
+            .order_by(models.Fixture.match_date.asc())
+            .all()
+        )
+        all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
+        picks = []
+        for fix in fixtures:
+            pred = all_preds.get(fix.id)
+            if not pred:
+                continue
+            match_date_str = fix.match_date.isoformat() + "Z" if fix.match_date else ""
+            picks.append({
+                "home_team": {"name": fix.home_team.name if fix.home_team else "Home"},
+                "away_team": {"name": fix.away_team.name if fix.away_team else "Away"},
+                "league": {"name": fix.league.name if fix.league else "League"},
+                "match_date": match_date_str,
+                "prediction": {
+                    "over_1_5_probability": float(pred.over_1_5_probability or 0.75),
+                    "most_likely_score": pred.most_likely_score or "2-1"
+                }
+            })
+        picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
+        await TelegramNotificationService.broadcast_daily_top_picks(picks[:10])
+    except Exception as e:
+        logger.error(f"Error executing scheduled Telegram broadcast: {e}")
+    finally:
+        calc_db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create SQLite database and tables on application startup
@@ -112,9 +185,29 @@ async def lifespan(app: FastAPI):
         id='automated_6h_refresh',
         replace_existing=True
     )
+
+    # Schedule 60-second automated live score refresh
+    scheduler.add_job(
+        scheduled_live_score_refresh,
+        'interval',
+        seconds=60,
+        id='live_score_60s_refresh',
+        replace_existing=True
+    )
+
+    # Schedule daily 08:00 UTC Telegram digest broadcast
+    scheduler.add_job(
+        scheduled_telegram_daily_digest,
+        'cron',
+        hour=8,
+        minute=0,
+        id='daily_telegram_0800_digest',
+        replace_existing=True
+    )
+
     try:
         scheduler.start()
-        logger.info("APScheduler initialized: Midnight cron & 6-hour interval refresh jobs registered.")
+        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh & 08:00 UTC Telegram digest jobs registered.")
     except Exception as e:
         logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
@@ -298,7 +391,8 @@ def trigger_predict_all_upcoming(db: Session = Depends(get_db)):
 @app.get("/api/predictions/accuracy")
 def get_prediction_accuracy(db: Session = Depends(get_db)):
     """
-    Calculates historical hit rates and accuracy metrics for finished fixtures.
+    Calculates historical hit rates and accuracy metrics for finished fixtures,
+    including overall precision and per-league hit-rate breakdown.
     """
     finished_preds = (
         db.query(models.Prediction, models.HistoricalResult)
@@ -309,6 +403,33 @@ def get_prediction_accuracy(db: Session = Depends(get_db)):
     )
 
     total = len(finished_preds)
+
+    league_breakdown = {}
+    for p, h in finished_preds:
+        l_name = p.fixture.league.name if (p.fixture and p.fixture.league) else "Unknown League"
+        if l_name not in league_breakdown:
+            league_breakdown[l_name] = {"total": 0, "hits": 0, "predicted_75": 0, "hits_75": 0}
+        league_breakdown[l_name]["total"] += 1
+        if h.total_goals >= 2:
+            league_breakdown[l_name]["hits"] += 1
+        if (p.over_1_5_probability or 0) >= 0.75:
+            league_breakdown[l_name]["predicted_75"] += 1
+            if h.total_goals >= 2:
+                league_breakdown[l_name]["hits_75"] += 1
+
+    per_league_stats = {}
+    for l_name, counts in league_breakdown.items():
+        tot = counts["total"]
+        hit_rate = round(counts["hits"] / max(1, tot), 4)
+        prec_75 = round(counts["hits_75"] / max(1, counts["predicted_75"]), 4) if counts["predicted_75"] > 0 else hit_rate
+        per_league_stats[l_name] = {
+            "total_matches": tot,
+            "over_1_5_hit_rate": hit_rate,
+            "hit_rate_pct": round(hit_rate * 100),
+            "precision_75": prec_75,
+            "precision_75_pct": round(prec_75 * 100)
+        }
+
     if total == 0:
         return {
             "status": "ok",
@@ -319,6 +440,7 @@ def get_prediction_accuracy(db: Session = Depends(get_db)):
             "actual_over_1_5_rate": 0.0,
             "avg_xg": 0.0,
             "avg_actual_goals": 0.0,
+            "per_league": per_league_stats,
         }
 
     o15_p75 = [p for p, h in finished_preds if (p.over_1_5_probability or 0) >= 0.75]
@@ -361,6 +483,7 @@ def get_prediction_accuracy(db: Session = Depends(get_db)):
         "actual_over_1_5_rate": round(actual_o15 / total, 4),
         "avg_xg": round(avg_xg, 2),
         "avg_actual_goals": round(avg_goals, 2),
+        "per_league": per_league_stats,
     }
 
 
@@ -371,6 +494,111 @@ def read_fixture_prediction(fixture_id: int, db: Session = Depends(get_db)):
     if not pred:
         return {"status": "error", "message": f"No prediction found for fixture {fixture_id}"}
     return {"status": "ok", "data": pred}
+
+
+@app.get("/api/accumulators/generate")
+def generate_smart_accumulators(day: Optional[str] = None, db: Session = Depends(get_db)):
+    """Generates 3 curated betting accumulator options (Safe Double, 5-Fold, High Yield)."""
+    return AccumulatorGeneratorService.generate_accumulators(db, match_day=day)
+
+
+@app.get("/api/fixtures/{fixture_id}/details")
+def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
+    """Retrieves deep H2H history, recent form streaks, xG breakdown, and top scorelines for a fixture."""
+    fixture = (
+        db.query(models.Fixture)
+        .options(
+            joinedload(models.Fixture.league),
+            joinedload(models.Fixture.home_team),
+            joinedload(models.Fixture.away_team)
+        )
+        .filter(models.Fixture.id == fixture_id)
+        .first()
+    )
+    if not fixture:
+        return {"status": "error", "message": f"Fixture {fixture_id} not found."}
+
+    pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fixture_id).first()
+    home_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.home_team_id).first()
+    away_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.away_team_id).first()
+    home_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.home_team_id).first()
+    away_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.away_team_id).first()
+
+    top_scorelines = []
+    if pred and pred.top_scorelines_json:
+        try:
+            top_scorelines = json.loads(pred.top_scorelines_json)
+        except Exception:
+            top_scorelines = []
+
+    # Fetch last 5 head-to-head completed matches
+    h2h_fixtures = (
+        db.query(models.Fixture)
+        .filter(
+            models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+            ((models.Fixture.home_team_id == fixture.home_team_id) & (models.Fixture.away_team_id == fixture.away_team_id)) |
+            ((models.Fixture.home_team_id == fixture.away_team_id) & (models.Fixture.away_team_id == fixture.home_team_id))
+        )
+        .order_by(models.Fixture.match_date.desc())
+        .limit(5)
+        .all()
+    )
+
+    h2h_data = []
+    for h in h2h_fixtures:
+        h2h_data.append({
+            "match_date": h.match_date.isoformat() if h.match_date else "",
+            "home_team_name": h.home_team.name if h.home_team else "Home",
+            "away_team_name": h.away_team.name if h.away_team else "Away",
+            "score": f"{h.home_score if h.home_score is not None else '-'}-{h.away_score if h.away_score is not None else '-'}",
+            "total_goals": (h.home_score or 0) + (h.away_score or 0)
+        })
+
+    return {
+        "status": "ok",
+        "fixture_id": fixture_id,
+        "league_name": fixture.league.name if fixture.league else "League",
+        "home_team": {
+            "name": fixture.home_team.name if fixture.home_team else "Home Team",
+            "elo_rating": round(home_elo.rating, 1) if home_elo else 1500.0,
+            "last_5_results": json.loads(home_streak.last_5_results) if (home_streak and home_streak.last_5_results) else [],
+            "goals_scored_last_5": home_streak.goals_scored_last_5 if home_streak else 0,
+            "goals_conceded_last_5": home_streak.goals_conceded_last_5 if home_streak else 0,
+        },
+        "away_team": {
+            "name": fixture.away_team.name if fixture.away_team else "Away Team",
+            "elo_rating": round(away_elo.rating, 1) if away_elo else 1500.0,
+            "last_5_results": json.loads(away_streak.last_5_results) if (away_streak and away_streak.last_5_results) else [],
+            "goals_scored_last_5": away_streak.goals_scored_last_5 if away_streak else 0,
+            "goals_conceded_last_5": away_streak.goals_conceded_last_5 if away_streak else 0,
+        },
+        "h2h_history": h2h_data,
+        "prediction": {
+            "predicted_home_score": pred.predicted_home_score if pred else 1.45,
+            "predicted_away_score": pred.predicted_away_score if pred else 1.15,
+            "expected_goals_xg": pred.expected_goals_xg if pred else 2.60,
+            "over_1_5_probability": pred.over_1_5_probability if pred else 0.78,
+            "over_2_5_probability": pred.over_2_5_probability if pred else 0.52,
+            "btts_probability": pred.btts_probability if pred else 0.55,
+            "confidence_score": pred.confidence_score if pred else 0.50,
+            "most_likely_score": pred.most_likely_score if pred else "2-1",
+            "top_scorelines": top_scorelines
+        }
+    }
+
+
+@app.post("/api/notifications/telegram/test")
+async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
+    """Sends a test Telegram notification message."""
+    test_msg = (
+        "🟢 <b>SOCCER GOAL PREDICTOR TEST NOTIFICATION</b>\n\n"
+        "Your Telegram Bot connection is successfully configured!\n"
+        "You will receive daily top predictions at 08:00 UTC."
+    )
+    success = await TelegramNotificationService.send_message(test_msg, bot_token=bot_token, chat_id=chat_id)
+    if success:
+        return {"status": "ok", "message": "Test Telegram message sent successfully!"}
+    return {"status": "error", "message": "Failed to send Telegram message. Please verify BOT_TOKEN and CHAT_ID."}
 
 
 @app.get("/api/fixtures/upcoming")

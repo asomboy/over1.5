@@ -33,6 +33,8 @@ import {
   Split,
   Radio
 } from 'lucide-react';
+import AccumulatorModal from './components/AccumulatorModal';
+import MatchDetailModal from './components/MatchDetailModal';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -126,6 +128,11 @@ export default function App() {
   const [loadingFinished, setLoadingFinished] = useState(false);
   // Notification Banner State
   const [notification, setNotification] = useState(null);
+
+  // Smart Accumulator Generator & Match Detail Modal state
+  const [showAccaModal, setShowAccaModal] = useState(false);
+  const [activeDetailFixtureId, setActiveDetailFixtureId] = useState(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
 
   // Accuracy Dashboard & Confidence state
   const [accuracyStats, setAccuracyStats] = useState(null);
@@ -271,6 +278,7 @@ export default function App() {
     checkHealth();
     fetchUpcomingFixtures(false);
     fetchFinishedFixtures();
+    fetchAccuracyStats();
     // Auto refresh live scores silently every 20 seconds
     const interval = setInterval(() => {
       checkHealth();
@@ -709,6 +717,16 @@ export default function App() {
                 {backendHealth.online ? `Live (${backendHealth.latency}ms)` : 'Offline'}
               </span>
             </div>
+
+            {/* Smart Acca Button */}
+            <button
+              onClick={() => setShowAccaModal(true)}
+              className="flex items-center space-x-1 px-2.5 sm:px-3.5 py-1 sm:py-1.5 text-xs font-bold bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white rounded-xl transition-all shadow-md active:scale-95 border border-emerald-400/30"
+              title="Generate Smart Accumulators"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+              <span className="hidden sm:inline">Smart Accas</span>
+            </button>
 
             {/* Sync Button */}
             <button
@@ -1816,9 +1834,14 @@ export default function App() {
                   }`}
                 >
                   <option value="ALL" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All Competitions</option>
-                  {leaguesList.map(l => (
-                    <option key={l} value={l} className={darkMode ? 'bg-slate-900' : 'bg-white'}>{l}</option>
-                  ))}
+                  {leaguesList.map(l => {
+                    const ratePct = accuracyStats?.per_league?.[l]?.hit_rate_pct;
+                    return (
+                      <option key={l} value={l} className={darkMode ? 'bg-slate-900' : 'bg-white'}>
+                        {l} {ratePct ? `(🔥 ${ratePct}% Hit Rate)` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -2010,12 +2033,16 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Action Button */}
                         <button
-                          onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                          onClick={(e) => { 
+                            e.stopPropagation(); 
+                            setSelectedFixture(fix);
+                            setActiveDetailFixtureId(fix.id);
+                            setShowDetailModal(true);
+                          }}
                           className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
                         >
-                          <span>View Full Odds & Match Analytics</span>
+                          <span>View Full H2H & Match Analytics</span>
                           <ArrowUpRight className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -2054,7 +2081,11 @@ export default function App() {
                     return (
                       <tr 
                         key={fix.id} 
-                        onClick={() => setSelectedFixture(fix)}
+                        onClick={() => {
+                          setSelectedFixture(fix);
+                          setActiveDetailFixtureId(fix.id);
+                          setShowDetailModal(true);
+                        }}
                         className={`group cursor-pointer transition-all ${
                           isLive
                             ? 'bg-rose-500/20 border-l-4 border-l-rose-500 shadow-lg font-bold'
@@ -2073,9 +2104,16 @@ export default function App() {
 
                         {/* Competition / League Name */}
                         <td className="py-3 px-4">
-                          <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-                            {fix.league?.name || 'League'}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
+                              {fix.league?.name || 'League'}
+                            </span>
+                            {accuracyStats?.per_league?.[fix.league?.name]?.hit_rate_pct ? (
+                              <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap">
+                                🔥 {accuracyStats.per_league[fix.league.name].hit_rate_pct}%
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
 
                         {/* Teams Matchup & Live Score */}
@@ -2157,10 +2195,15 @@ export default function App() {
                         {/* Detail Button */}
                         <td className="py-3 px-4 text-right">
                           <button 
-                            onClick={(e) => { e.stopPropagation(); setSelectedFixture(fix); }}
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              setSelectedFixture(fix);
+                              setActiveDetailFixtureId(fix.id);
+                              setShowDetailModal(true);
+                            }}
                             className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
                           >
-                            <span>Details</span>
+                            <span>H2H & Details</span>
                             <ArrowUpRight className="w-3.5 h-3.5" />
                           </button>
                         </td>
@@ -2728,6 +2771,26 @@ export default function App() {
           </div>
         </div>
       </footer>
+      {/* Smart Accumulator Generator Modal */}
+      <AccumulatorModal
+        isOpen={showAccaModal}
+        onClose={() => setShowAccaModal(false)}
+        apiRequest={apiRequest}
+        selectedPickDay={selectedPickDay}
+        darkMode={darkMode}
+      />
+
+      {/* Deep Match Detail & H2H Modal */}
+      <MatchDetailModal
+        fixtureId={activeDetailFixtureId}
+        isOpen={showDetailModal}
+        onClose={() => {
+          setShowDetailModal(false);
+          setActiveDetailFixtureId(null);
+        }}
+        apiRequest={apiRequest}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
