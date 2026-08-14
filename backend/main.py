@@ -126,8 +126,8 @@ async def scheduled_telegram_daily_digest():
     logger.info("Executing scheduled Telegram daily top picks broadcast...")
     calc_db = SessionLocal()
     try:
-        now = datetime.now(timezone.utc)
-        now_naive = now.replace(tzinfo=None)
+        now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
+        gmt1_start_of_day = now_gmt1.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
         fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -137,7 +137,7 @@ async def scheduled_telegram_daily_digest():
             )
             .filter(
                 models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                models.Fixture.match_date >= now_naive
+                models.Fixture.match_date >= gmt1_start_of_day
             )
             .order_by(models.Fixture.match_date.asc())
             .all()

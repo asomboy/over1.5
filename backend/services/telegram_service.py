@@ -3,7 +3,7 @@ import sys
 import logging
 import httpx
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKEND_DIR not in sys.path:
@@ -57,7 +57,8 @@ class TelegramNotificationService:
         if not picks:
             return False
 
-        now_str = datetime.now(timezone.utc).strftime("%A, %b %d, %Y")
+        now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
+        now_str = now_gmt1.strftime("%A, %b %d, %Y")
         lines = [
             f"🔥 <b>SOCCER GOAL PREDICTOR — DAILY TOP PICKS</b> 🔥",
             f"📅 <i>{now_str} (GMT+1)</i>\n",
@@ -70,7 +71,15 @@ class TelegramNotificationService:
             league = item.get("league", {}).get("name", "League")
             prob = round((item.get("prediction", {}).get("over_1_5_probability") or 0.75) * 100)
             score = item.get("prediction", {}).get("most_likely_score", "2-1")
-            match_time = item.get("match_date", "")[11:16] if item.get("match_date") else "TBD"
+
+            match_time = "TBD"
+            if item.get("match_date"):
+                try:
+                    dt = datetime.fromisoformat(item["match_date"].replace("Z", "+00:00"))
+                    dt_gmt1 = dt.astimezone(timezone.utc) + timedelta(hours=1)
+                    match_time = dt_gmt1.strftime("%I:%M %p")
+                except Exception:
+                    match_time = item["match_date"][11:16]
 
             lines.append(
                 f"{idx}. ⚽ <b>{home} vs {away}</b>\n"
