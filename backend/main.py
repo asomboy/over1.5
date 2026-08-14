@@ -200,29 +200,31 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule early-morning 12:50 AM & 12:30 AM Telegram digest broadcast (for early morning/overnight matches)
+    # Schedule early-morning 01:00 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour='0,23',
-        minute='30,50',
-        id='daily_telegram_early_digest',
+        hour=1,
+        minute=0,
+        timezone='Europe/London',
+        id='daily_telegram_0100_digest',
         replace_existing=True
     )
 
-    # Schedule morning 08:00 Telegram digest broadcast
+    # Schedule morning 08:00 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
         hour=8,
         minute=0,
+        timezone='Europe/London',
         id='daily_telegram_0800_digest',
         replace_existing=True
     )
 
     try:
         scheduler.start()
-        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 12:50 AM & 08:00 AM Telegram digest jobs registered.")
+        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 01:00 AM & 08:00 AM Telegram digest jobs registered.")
     except Exception as e:
         logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
