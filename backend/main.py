@@ -127,7 +127,7 @@ async def scheduled_telegram_daily_digest():
     calc_db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
+        now_naive = now.replace(tzinfo=None)
         fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -135,7 +135,10 @@ async def scheduled_telegram_daily_digest():
                 joinedload(models.Fixture.home_team),
                 joinedload(models.Fixture.away_team)
             )
-            .filter(models.Fixture.status != "FINISHED", models.Fixture.match_date >= now_cutoff)
+            .filter(
+                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                models.Fixture.match_date >= now_naive
+            )
             .order_by(models.Fixture.match_date.asc())
             .all()
         )
@@ -635,7 +638,7 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
         joinedload(models.Fixture.home_team),
         joinedload(models.Fixture.away_team)
     ).filter(
-        models.Fixture.status != "FINISHED",
+        models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
         models.Fixture.match_date >= now_cutoff
     ).order_by(models.Fixture.match_date.asc()).all()
 
