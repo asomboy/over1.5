@@ -16,7 +16,7 @@ except ImportError:
 
 
 def calculate_team_statistics(
-    db: Session, team_id: int, last_n_matches: int = 10
+    db: Session, team_id: int, last_n_matches: int = 10, commit: bool = True
 ) -> Optional[TeamStatistics]:
     """
     Calculates average home/away goals scored and conceded for a team based on its
@@ -123,8 +123,11 @@ def calculate_team_statistics(
     stats.away_defense_strength = away_defense_strength
     stats.updated_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(stats)
+    if commit:
+        db.commit()
+        db.refresh(stats)
+    else:
+        db.flush()
     return stats
 
 
@@ -157,7 +160,7 @@ def get_all_team_statistics(db: Session) -> List[TeamStatistics]:
     return db.query(TeamStatistics).all()
 
 
-def calculate_league_statistics(db: Session, league_id: int) -> Optional[LeagueStatistics]:
+def calculate_league_statistics(db: Session, league_id: int, commit: bool = True) -> Optional[LeagueStatistics]:
     """
     Calculates average home goals and average away goals across ALL completed matches
     for a specific league. Saves and updates the result in the LeagueStatistics table.
@@ -193,8 +196,11 @@ def calculate_league_statistics(db: Session, league_id: int) -> Optional[LeagueS
     stats.avg_away_goals = avg_away_goals
     stats.updated_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(stats)
+    if commit:
+        db.commit()
+        db.refresh(stats)
+    else:
+        db.flush()
     return stats
 
 

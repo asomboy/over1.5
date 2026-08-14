@@ -52,7 +52,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler()
+# Track the last successful sync time to prevent redundant API calls
+# while ensuring daily updates are loaded automatically on request.
+LAST_SYNC_TIME: Optional[datetime] = None
+
+scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
 async def scheduled_data_refresh():
     """
@@ -82,6 +86,8 @@ async def scheduled_data_refresh():
             calc_db.close()
 
     await asyncio.to_thread(run_full_refresh)
+    global LAST_SYNC_TIME
+    LAST_SYNC_TIME = datetime.now(timezone.utc)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -281,6 +287,75 @@ def trigger_predict_all_upcoming(db: Session = Depends(get_db)):
     return {"status": "ok", "count": len(preds), "data": preds}
 
 
+@app.get("/api/predictions/accuracy")
+def get_prediction_accuracy(db: Session = Depends(get_db)):
+    """
+    Calculates historical hit rates and accuracy metrics for finished fixtures.
+    """
+    finished_preds = (
+        db.query(models.Prediction, models.HistoricalResult)
+        .join(models.Fixture, models.Fixture.id == models.Prediction.fixture_id)
+        .join(models.HistoricalResult, models.HistoricalResult.fixture_id == models.Fixture.id)
+        .filter(models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+        .all()
+    )
+
+    total = len(finished_preds)
+    if total == 0:
+        return {
+            "status": "ok",
+            "total_evaluated": 0,
+            "over_1_5": {"total_predicted_75": 0, "hits_75": 0, "precision_75": 0.0, "total_predicted_65": 0, "hits_65": 0, "precision_65": 0.0},
+            "over_2_5": {"total_predicted_50": 0, "hits_50": 0, "precision_50": 0.0},
+            "btts": {"total_predicted_55": 0, "hits_55": 0, "precision_55": 0.0},
+            "actual_over_1_5_rate": 0.0,
+            "avg_xg": 0.0,
+            "avg_actual_goals": 0.0,
+        }
+
+    o15_p75 = [p for p, h in finished_preds if (p.over_1_5_probability or 0) >= 0.75]
+    o15_p75_hits = sum(1 for p, h in finished_preds if (p.over_1_5_probability or 0) >= 0.75 and h.total_goals >= 2)
+
+    o15_p65 = [p for p, h in finished_preds if (p.over_1_5_probability or 0) >= 0.65]
+    o15_p65_hits = sum(1 for p, h in finished_preds if (p.over_1_5_probability or 0) >= 0.65 and h.total_goals >= 2)
+
+    o25_p50 = [p for p, h in finished_preds if (p.over_2_5_probability or 0) >= 0.50]
+    o25_p50_hits = sum(1 for p, h in finished_preds if (p.over_2_5_probability or 0) >= 0.50 and h.total_goals >= 3)
+
+    btts_p55 = [p for p, h in finished_preds if (p.btts_probability or 0) >= 0.55]
+    btts_p55_hits = sum(1 for p, h in finished_preds if (p.btts_probability or 0) >= 0.55 and (h.home_score > 0 and h.away_score > 0))
+
+    actual_o15 = sum(1 for p, h in finished_preds if h.total_goals >= 2)
+    avg_xg = sum((p.expected_goals_xg or 0) for p, h in finished_preds) / total
+    avg_goals = sum(h.total_goals for p, h in finished_preds) / total
+
+    return {
+        "status": "ok",
+        "total_evaluated": total,
+        "over_1_5": {
+            "total_predicted_75": len(o15_p75),
+            "hits_75": o15_p75_hits,
+            "precision_75": round(o15_p75_hits / max(1, len(o15_p75)), 4),
+            "total_predicted_65": len(o15_p65),
+            "hits_65": o15_p65_hits,
+            "precision_65": round(o15_p65_hits / max(1, len(o15_p65)), 4),
+        },
+        "over_2_5": {
+            "total_predicted_50": len(o25_p50),
+            "hits_50": o25_p50_hits,
+            "precision_50": round(o25_p50_hits / max(1, len(o25_p50)), 4),
+        },
+        "btts": {
+            "total_predicted_55": len(btts_p55),
+            "hits_55": btts_p55_hits,
+            "precision_55": round(btts_p55_hits / max(1, len(btts_p55)), 4),
+        },
+        "actual_over_1_5_rate": round(actual_o15 / total, 4),
+        "avg_xg": round(avg_xg, 2),
+        "avg_actual_goals": round(avg_goals, 2),
+    }
+
+
 @app.get("/api/predictions/{fixture_id}")
 def read_fixture_prediction(fixture_id: int, db: Session = Depends(get_db)):
     """Retrieve stored prediction for a specific fixture."""
@@ -296,7 +371,17 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     Retrieve all upcoming/scheduled global fixtures starting from present date
     with full team, league, and Poisson goal prediction details.
     """
-    now_cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    global LAST_SYNC_TIME
+    now = datetime.now(timezone.utc)
+    
+    # Auto-sync if last sync was > 12 hours ago or never happened (e.g. server restarted)
+    if LAST_SYNC_TIME is None or (now - LAST_SYNC_TIME) > timedelta(hours=12):
+        logger.info("Auto-sync triggered via upcoming fixtures endpoint (data stale or initial request)...")
+        LAST_SYNC_TIME = now
+        import asyncio
+        asyncio.create_task(DataIngestionService.fetch_and_ingest_from_api(SessionLocal(), api_key=FOOTBALL_API_KEY))
+
+    now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
     fixtures = db.query(models.Fixture).options(
         joinedload(models.Fixture.league),
         joinedload(models.Fixture.home_team),
@@ -334,14 +419,16 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
             o25 = float(pred.over_2_5_probability or 0.52)
             o35 = float(pred.over_3_5_probability or 0.28)
             u25 = float(pred.under_2_5_probability or 0.48)
+            btts_prob = float(pred.btts_probability) if (getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+            confidence_score = float(pred.confidence_score) if (getattr(pred, 'confidence_score', None) is not None) else 0.50
             most_likely = pred.most_likely_score or "2-1"
         else:
             h_xg, a_xg = 1.45, 1.15
             home_win, draw_prob, away_win = 0.45, 0.25, 0.30
             o05, o15, o25, o35, u25 = 0.90, 0.78, 0.52, 0.28, 0.48
+            btts_prob = 0.55
+            confidence_score = 0.50
             most_likely = "2-1"
-
-        btts_prob = round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
 
         match_date_str = None
         if fix.match_date:
@@ -392,6 +479,7 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
                 "over_3_5_probability": o35,
                 "under_2_5_probability": u25,
                 "btts_probability": btts_prob,
+                "confidence_score": confidence_score,
                 
                 # Home Team Specific Goal Thresholds
                 "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
@@ -453,27 +541,22 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
         h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
         a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
 
-        # Populate realistic scoreline if home_score or away_score is missing or 0-0 in database
-        if fix.home_score is None or fix.away_score is None or (fix.home_score == 0 and fix.away_score == 0):
-            h_base = max(1, int(round(h_xg + ((fix.id * 7) % 3 - 1) * 0.5)))
-            a_base = max(0, int(round(a_xg + ((fix.id * 13) % 3 - 1) * 0.5)))
-            if h_base == 0 and a_base == 0:
-                if (fix.id % 2) == 0:
-                    h_base = 2
-                    a_base = 1
-                else:
-                    h_base = 1
-                    a_base = 0
-            fix.home_score = h_base
-            fix.away_score = a_base
-            need_commit = True
-
         h_score = fix.home_score
         a_score = fix.away_score
-        total_actual_goals = h_score + a_score
+        has_scores = h_score is not None and a_score is not None
+        total_actual_goals = (h_score + a_score) if has_scores else None
 
-        pois = PoissonPredictionEngine.calculate_poisson_probabilities(h_xg, a_xg)
-        btts_prob = round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+        home_win = float(pred.home_win_probability or 0.45) if pred else 0.45
+        draw_prob = float(pred.draw_probability or 0.25) if pred else 0.25
+        away_win = float(pred.away_win_probability or 0.30) if pred else 0.30
+        o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
+        o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
+        o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
+        o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
+        u25 = float(pred.under_2_5_probability or 0.48) if pred else 0.48
+        btts_prob = float(pred.btts_probability) if (pred and getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+        confidence_score = float(pred.confidence_score) if (pred and getattr(pred, 'confidence_score', None) is not None) else 0.50
+        most_likely = (pred.most_likely_score if pred else None) or "1-1"
 
         match_date_str = None
         if fix.match_date:
@@ -493,8 +576,8 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
             "home_score": h_score,
             "away_score": a_score,
             "total_goals": total_actual_goals,
-            "over_1_5_hit": total_actual_goals >= 2,
-            "over_2_5_hit": total_actual_goals >= 3,
+            "over_1_5_hit": (total_actual_goals >= 2) if total_actual_goals is not None else None,
+            "over_2_5_hit": (total_actual_goals >= 3) if total_actual_goals is not None else None,
             "live_clock": "FT",
             "league": {
                 "id": fix.league.id if fix.league else None,
@@ -518,36 +601,37 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
                 "predicted_home_score": h_xg,
                 "predicted_away_score": a_xg,
                 "expected_goals_xg": round(h_xg + a_xg, 2),
-                "home_win_probability": pois.get("home_win_probability", 0.0),
-                "draw_probability": pois.get("draw_probability", 0.0),
-                "away_win_probability": pois.get("away_win_probability", 0.0),
-                "over_0_5_probability": pois.get("over_0_5_probability", 0.0),
-                "over_1_5_probability": pois.get("over_1_5_probability", 0.0),
-                "over_2_5_probability": pois.get("over_2_5_probability", 0.0),
-                "over_3_5_probability": pois.get("over_3_5_probability", 0.0),
-                "under_2_5_probability": pois.get("under_2_5_probability", 0.0),
+                "home_win_probability": home_win,
+                "draw_probability": draw_prob,
+                "away_win_probability": away_win,
+                "over_0_5_probability": o05,
+                "over_1_5_probability": o15,
+                "over_2_5_probability": o25,
+                "over_3_5_probability": o35,
+                "under_2_5_probability": u25,
                 "btts_probability": btts_prob,
-                "home_over_0_5_probability": pois.get("home_over_0_5_probability", 0.0),
-                "home_over_1_5_probability": pois.get("home_over_1_5_probability", 0.0),
-                "home_over_2_5_probability": pois.get("home_over_2_5_probability", 0.0),
-                "away_over_0_5_probability": pois.get("away_over_0_5_probability", 0.0),
-                "away_over_1_5_probability": pois.get("away_over_1_5_probability", 0.0),
-                "away_over_2_5_probability": pois.get("away_over_2_5_probability", 0.0),
-                "first_half_xg": pois.get("first_half_xg", 0.0),
-                "first_half_over_0_5_probability": pois.get("first_half_over_0_5_probability", 0.0),
-                "first_half_over_1_5_probability": pois.get("first_half_over_1_5_probability", 0.0),
-                "second_half_xg": pois.get("second_half_xg", 0.0),
-                "second_half_over_0_5_probability": pois.get("second_half_over_0_5_probability", 0.0),
-                "second_half_over_1_5_probability": pois.get("second_half_over_1_5_probability", 0.0),
-                "most_likely_score": pois.get("most_likely_score", "1-1"),
-                "top_scorelines": top_scorelines or pois.get("top_5_scorelines", [])
+                "confidence_score": confidence_score,
+                "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
+                "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
+                "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
+                "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
+                "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
+                "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
+                "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
+                "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
+                "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
+                "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
+                "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
+                "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
+                "most_likely_score": most_likely,
+                "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
             }
         })
 
-    if need_commit:
-        db.commit()
-
     return {"status": "ok", "count": len(result_data), "data": result_data}
+
+
+
 
 
 

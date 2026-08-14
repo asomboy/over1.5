@@ -4,12 +4,10 @@ import {
   Activity, 
   XCircle, 
   RefreshCw, 
-  Server, 
   Search, 
   Calendar, 
   MapPin, 
   Target, 
-  TrendingUp, 
   BarChart2, 
   Zap, 
   Sparkles, 
@@ -28,12 +26,10 @@ import {
   CheckCircle2,
   Award,
   Flame,
-  Info,
   ArrowUpRight,
   Trophy,
   Clock,
   Crown,
-  PieChart,
   Split,
   Radio
 } from 'lucide-react';
@@ -80,7 +76,7 @@ const apiRequest = async (method, path, data = null, options = {}) => {
   const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
 
   let lastErr = null;
-  const timeoutMs = options.timeout || (isRender ? 60000 : 10000);
+  const timeoutMs = options.timeout || 60000;
 
   for (const url of urls) {
     try {
@@ -128,9 +124,49 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('upcoming');
   const [finishedFixtures, setFinishedFixtures] = useState([]);
   const [loadingFinished, setLoadingFinished] = useState(false);
-
   // Notification Banner State
   const [notification, setNotification] = useState(null);
+
+  // Accuracy Dashboard & Confidence state
+  const [accuracyStats, setAccuracyStats] = useState(null);
+  const [loadingAccuracy, setLoadingAccuracy] = useState(false);
+
+  const fetchAccuracyStats = async () => {
+    setLoadingAccuracy(true);
+    try {
+      const response = await apiRequest('get', '/api/predictions/accuracy');
+      if (response.data?.status === 'ok') {
+        setAccuracyStats(response.data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch prediction accuracy stats:', err);
+    } finally {
+      setLoadingAccuracy(false);
+    }
+  };
+
+  const renderConfidenceBadge = (score) => {
+    const s = score ?? 0.50;
+    if (s >= 0.75) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] sm:text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 whitespace-nowrap" title={`High Confidence (${Math.round(s * 100)}%)`}>
+          🟢 <span className="hidden sm:inline">High Data</span> ({Math.round(s * 100)}%)
+        </span>
+      );
+    }
+    if (s >= 0.55) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] sm:text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap" title={`Medium Confidence (${Math.round(s * 100)}%)`}>
+          🟡 <span className="hidden sm:inline">Med Data</span> ({Math.round(s * 100)}%)
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] sm:text-xs font-medium bg-rose-500/20 text-rose-300 border border-rose-500/30 whitespace-nowrap" title={`Low Confidence (${Math.round(s * 100)}%)`}>
+        🔴 <span className="hidden sm:inline">Low Data</span> ({Math.round(s * 100)}%)
+      </span>
+    );
+  };
 
   // Mobile Accordion state to track expanded fixture IDs
   const [expandedMobileRows, setExpandedMobileRows] = useState(new Set());
@@ -169,7 +205,7 @@ export default function App() {
           });
           return;
         }
-      } catch (err) {
+      } catch {
         if (attempt === retries) {
           setBackendHealth(prev => ({ ...prev, online: false }));
         } else {
@@ -250,10 +286,6 @@ export default function App() {
     return st === 'LIVE' || st === 'IN_PROGRESS' || st === 'HALFTIME' || st === 'FIRST_HALF' || st === 'SECOND_HALF';
   };
 
-  // Count live matches
-  const liveCount = useMemo(() => {
-    return fixtures.filter(f => isMatchLive(f)).length;
-  }, [fixtures]);
 
   // Unique list of leagues for filter dropdown
   const leaguesList = useMemo(() => {
@@ -397,7 +429,7 @@ export default function App() {
         setSelectedPickDay(availableMatchDays[0]);
       }
     }
-  }, [availableMatchDays]);
+  }, [availableMatchDays, selectedPickDay]);
 
   // TOP 5 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
   const top5Over15Picks = useMemo(() => {
@@ -420,7 +452,10 @@ export default function App() {
     
     let dayMatches = [...finishedFixtures];
     if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
-      dayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+      const matchingDayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+      if (matchingDayMatches.length > 0) {
+        dayMatches = matchingDayMatches;
+      }
     }
     
     return dayMatches
@@ -450,7 +485,7 @@ export default function App() {
     return result;
   }, [fixtures, searchTerm, selectedLeague, selectedPickDay]);
 
-  // Filtered Finished Fixtures for Results Tab (Table 2: Up to 20 finished matches >= 50% Over 1.5 Goal probability sorted descending)
+  // Filtered Finished Fixtures for Results Tab
   const filteredFinishedFixtures = useMemo(() => {
     let result = finishedFixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
@@ -459,14 +494,20 @@ export default function App() {
       const query = searchTerm.toLowerCase();
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
-      const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
-      const isOver50Percent = (fix.prediction?.over_1_5_probability || 0) >= 0.50;
-      return matchesSearch && matchesLeague && matchesDay && isOver50Percent;
+      
+      let matchesDay = true;
+      if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
+        const matchesOnSelectedDay = finishedFixtures.some(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+        if (matchesOnSelectedDay) {
+          matchesDay = getGMT1DayKey(fix.match_date) === selectedPickDay;
+        }
+      }
+      
+      return matchesSearch && matchesLeague && matchesDay;
     });
 
     result = result
-      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
-      .slice(0, 20);
+      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0));
 
     return result;
   }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay]);
@@ -738,9 +779,123 @@ export default function App() {
               {filteredFinishedFixtures.length}
             </span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('accuracy');
+              fetchAccuracyStats();
+            }}
+            className={`px-4 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all shrink-0 ${
+              activeTab === 'accuracy'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
+                : darkMode ? 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+            }`}
+          >
+            <BarChart2 className="w-4 h-4 text-cyan-400" />
+            <span>Accuracy & Calibration</span>
+          </button>
         </div>
 
-        {activeTab === 'finished' ? (
+        {activeTab === 'accuracy' ? (
+          <section className="space-y-6">
+            <div className={`rounded-2xl sm:rounded-3xl p-6 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 transition-colors ${
+              darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
+            }`}>
+              <div className="space-y-2 max-w-2xl">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
+                    <BarChart2 className="w-6 h-6" />
+                  </div>
+                  <h1 className={`text-xl sm:text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Prediction Accuracy & Calibration Dashboard
+                  </h1>
+                </div>
+                <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  Real-time empirical evaluation of model precision, hit rates across probability thresholds (Over 1.5, Over 2.5, BTTS), and expected vs actual goal calibration.
+                </p>
+              </div>
+
+              <button
+                onClick={fetchAccuracyStats}
+                disabled={loadingAccuracy}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-all shadow flex items-center gap-2"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingAccuracy ? 'animate-spin' : ''}`} />
+                <span>{loadingAccuracy ? 'Evaluating...' : 'Refresh Metrics'}</span>
+              </button>
+            </div>
+
+            {accuracyStats && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Metric Card 1: Over 1.5 Precision (>=75%) */}
+                <div className={`p-5 rounded-2xl border flex flex-col justify-between ${darkMode ? 'bg-slate-900/80 border-emerald-500/30' : 'bg-white border-emerald-200'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Over 1.5 Precision (≥75%)</span>
+                    <Flame className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div className="mt-3">
+                    <span className="text-3xl font-black text-emerald-400">
+                      {Math.round((accuracyStats.over_1_5?.precision_75 || 0) * 100)}%
+                    </span>
+                    <p className="text-xs text-slate-400 mt-1 font-medium">
+                      {accuracyStats.over_1_5?.hits_75 || 0} / {accuracyStats.over_1_5?.total_predicted_75 || 0} high-probability picks hit
+                    </p>
+                  </div>
+                </div>
+
+                {/* Metric Card 2: Over 2.5 Precision (>=50%) */}
+                <div className={`p-5 rounded-2xl border flex flex-col justify-between ${darkMode ? 'bg-slate-900/80 border-cyan-500/30' : 'bg-white border-cyan-200'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Over 2.5 Precision (≥50%)</span>
+                    <Target className="w-5 h-5 text-cyan-400" />
+                  </div>
+                  <div className="mt-3">
+                    <span className="text-3xl font-black text-cyan-400">
+                      {Math.round((accuracyStats.over_2_5?.precision_50 || 0) * 100)}%
+                    </span>
+                    <p className="text-xs text-slate-400 mt-1 font-medium">
+                      {accuracyStats.over_2_5?.hits_50 || 0} / {accuracyStats.over_2_5?.total_predicted_50 || 0} picks hit
+                    </p>
+                  </div>
+                </div>
+
+                {/* Metric Card 3: Both Teams To Score (>=55%) */}
+                <div className={`p-5 rounded-2xl border flex flex-col justify-between ${darkMode ? 'bg-slate-900/80 border-amber-500/30' : 'bg-white border-amber-200'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">BTTS Precision (≥55%)</span>
+                    <Split className="w-5 h-5 text-amber-400" />
+                  </div>
+                  <div className="mt-3">
+                    <span className="text-3xl font-black text-amber-400">
+                      {Math.round((accuracyStats.btts?.precision_55 || 0) * 100)}%
+                    </span>
+                    <p className="text-xs text-slate-400 mt-1 font-medium">
+                      {accuracyStats.btts?.hits_55 || 0} / {accuracyStats.btts?.total_predicted_55 || 0} picks hit
+                    </p>
+                  </div>
+                </div>
+
+                {/* Metric Card 4: Goal Calibration (xG vs Actual) */}
+                <div className={`p-5 rounded-2xl border flex flex-col justify-between ${darkMode ? 'bg-slate-900/80 border-indigo-500/30' : 'bg-white border-indigo-200'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">xG vs Actual Goals</span>
+                    <Activity className="w-5 h-5 text-indigo-400" />
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-black text-white">{accuracyStats.avg_xg || 0.0}</span>
+                      <span className="text-xs text-slate-400">Avg xG</span>
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-0.5">
+                      <span className="text-2xl font-black text-indigo-400">{accuracyStats.avg_actual_goals || 0.0}</span>
+                      <span className="text-xs text-slate-400">Avg Goals</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        ) : activeTab === 'finished' ? (
           <section className="space-y-6">
             {/* Finished Matches Banner Header */}
             <div className={`rounded-2xl sm:rounded-3xl p-4 sm:p-8 border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 transition-colors ${
@@ -1611,6 +1766,7 @@ export default function App() {
                               <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                                 {formatDateGMT1(fix.match_date)}
                               </span>
+                              {renderConfidenceBadge(fix.prediction?.confidence_score)}
                             </div>
                           </td>
 

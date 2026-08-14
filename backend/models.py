@@ -49,6 +49,8 @@ class Team(Base):
     home_fixtures = relationship("Fixture", foreign_keys="[Fixture.home_team_id]", back_populates="home_team")
     away_fixtures = relationship("Fixture", foreign_keys="[Fixture.away_team_id]", back_populates="away_team")
     statistics = relationship("TeamStatistics", back_populates="team", uselist=False, cascade="all, delete-orphan")
+    elo_rating = relationship("EloRating", back_populates="team", uselist=False, cascade="all, delete-orphan")
+    form_streak = relationship("TeamFormStreak", back_populates="team", uselist=False, cascade="all, delete-orphan")
 
 
 class Fixture(Base):
@@ -111,6 +113,8 @@ class Prediction(Base):
     over_3_5_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     over_4_5_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     under_2_5_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    btts_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confidence_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     most_likely_score: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     top_scorelines_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -154,3 +158,41 @@ class LeagueStatistics(Base):
 
     # Relationships
     league = relationship("League", back_populates="statistics")
+
+
+class EloRating(Base):
+    __tablename__ = "elo_ratings"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), unique=True, nullable=False, index=True)
+    rating: Mapped[float] = mapped_column(Float, default=1500.0, nullable=False)
+    matches_played: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    home_wins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    away_wins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    draws: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    goals_scored: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    goals_conceded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    team = relationship("Team", back_populates="elo_rating")
+
+
+class TeamFormStreak(Base):
+    __tablename__ = "team_form_streaks"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), unique=True, nullable=False, index=True)
+    last_3_results: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # JSON: ["W","D","L"]
+    last_5_results: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # JSON: ["W","D","L","W","D"]
+    last_10_results: Mapped[Optional[str]] = mapped_column(String, nullable=True) # JSON: ["W","D","L",...]
+    goals_scored_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    goals_conceded_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    clean_sheets_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_to_score_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    team = relationship("Team", back_populates="form_streak")

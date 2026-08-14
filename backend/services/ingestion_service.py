@@ -14,9 +14,11 @@ if BACKEND_DIR not in sys.path:
 try:
     from models import League, Team, Fixture, HistoricalResult, Prediction, TeamStatistics, LeagueStatistics
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
+    from services.elo_service import EloRatingService, TeamFormService
 except ImportError:
     from ..models import League, Team, Fixture, HistoricalResult, Prediction, TeamStatistics, LeagueStatistics
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
+    from .elo_service import EloRatingService, TeamFormService
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class DataIngestionService:
     """
 
     @staticmethod
-    def ingest_leagues(db: Session, leagues_data: List[Dict[str, Any]]) -> List[League]:
+    def ingest_leagues(db: Session, leagues_data: List[Dict[str, Any]], commit: bool = True) -> List[League]:
         """
         Ingests a list of league dictionaries. Prevents duplicates using external_id
         or (name, season) unique key pair.
@@ -91,14 +93,17 @@ class DataIngestionService:
                 )
                 db.add(league)
 
-            db.commit()
-            db.refresh(league)
+            if commit:
+                db.commit()
+                db.refresh(league)
+            else:
+                db.flush()
             ingested_leagues.append(league)
 
         return ingested_leagues
 
     @staticmethod
-    def ingest_teams(db: Session, teams_data: List[Dict[str, Any]]) -> List[Team]:
+    def ingest_teams(db: Session, teams_data: List[Dict[str, Any]], commit: bool = True) -> List[Team]:
         """
         Ingests a list of team dictionaries. Prevents duplicates using external_id
         or (name, league_id) key pair.
@@ -145,14 +150,17 @@ class DataIngestionService:
                 )
                 db.add(team)
 
-            db.commit()
-            db.refresh(team)
+            if commit:
+                db.commit()
+                db.refresh(team)
+            else:
+                db.flush()
             ingested_teams.append(team)
 
         return ingested_teams
 
     @staticmethod
-    def ingest_fixtures(db: Session, fixtures_data: List[Dict[str, Any]]) -> List[Fixture]:
+    def ingest_fixtures(db: Session, fixtures_data: List[Dict[str, Any]], commit: bool = True) -> List[Fixture]:
         """
         Ingests historical results and upcoming fixtures. Deduplicates records,
         updates status and scores for existing fixtures, and triggers statistics
@@ -254,8 +262,11 @@ class DataIngestionService:
                 )
                 db.add(fixture)
 
-            db.commit()
-            db.refresh(fixture)
+            if commit:
+                db.commit()
+                db.refresh(fixture)
+            else:
+                db.flush()
 
             # Ingest/update historical scores if status is FINISHED and scores are provided
             home_score = f_data.get("home_score")
@@ -287,7 +298,10 @@ class DataIngestionService:
                     db.add(result)
 
                 fixture.status = "FINISHED"
-                db.commit()
+                if commit:
+                    db.commit()
+                else:
+                    db.flush()
 
                 affected_team_ids.add(home_team_id)
                 affected_team_ids.add(away_team_id)
@@ -297,10 +311,19 @@ class DataIngestionService:
 
         # Trigger statistics recalculation for affected leagues & teams
         for l_id in affected_league_ids:
-            calculate_league_statistics(db, l_id)
+            calculate_league_statistics(db, l_id, commit=commit)
 
         for t_id in affected_team_ids:
-            calculate_team_statistics(db, t_id)
+            calculate_team_statistics(db, t_id, commit=commit)
+
+        # Keep Elo ratings and form streaks fresh (the prediction model reads them).
+        # recalculate_all_elo is deterministic and idempotent (resets, then replays all
+        # finished matches in chronological order), so re-ingesting a finished fixture
+        # never double-counts.
+        if affected_team_ids:
+            EloRatingService.recalculate_all_elo(db, commit=commit)
+            for t_id in affected_team_ids:
+                TeamFormService.calculate_form_streaks(db, t_id, commit=commit)
 
         return ingested_fixtures
 
@@ -312,15 +335,18 @@ class DataIngestionService:
         Fetches competitions, teams, historical results, and upcoming fixtures
         from external HTTP endpoint (or ingests fallback seed dataset if offline).
         """
-        # Purge any old synthetic mock/demo fixture placeholders
         try:
             db.query(Prediction).filter(Prediction.fixture_id.in_(
                 db.query(Fixture.id).filter(
-                    (Fixture.external_id.like("FIX-%")) | (Fixture.external_id.like("HIST-%"))
+                    (Fixture.external_id.like("FIX-%")) | 
+                    (Fixture.external_id.like("HIST-%")) | 
+                    (Fixture.external_id.like("SEED-%"))
                 )
             )).delete(synchronize_session=False)
             db.query(Fixture).filter(
-                (Fixture.external_id.like("FIX-%")) | (Fixture.external_id.like("HIST-%"))
+                (Fixture.external_id.like("FIX-%")) | 
+                (Fixture.external_id.like("HIST-%")) | 
+                (Fixture.external_id.like("SEED-%"))
             ).delete(synchronize_session=False)
             db.commit()
         except Exception as e:
@@ -437,7 +463,7 @@ class DataIngestionService:
                             "name": league_name,
                             "country": country,
                             "season": "2025/2026"
-                        }])[0]
+                        }], commit=False)[0]
 
                         competitors = comp_info.get("competitors", [])
                         if len(competitors) < 2:
@@ -452,7 +478,7 @@ class DataIngestionService:
                             "short_code": home_data.get("team", {}).get("abbreviation", "HOM"),
                             "logo_url": home_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
-                        }])[0]
+                        }], commit=False)[0]
 
                         a_team = cls.ingest_teams(db, [{
                             "external_id": f"ESPN-TEAM-{away_data.get('id')}",
@@ -460,7 +486,7 @@ class DataIngestionService:
                             "short_code": away_data.get("team", {}).get("abbreviation", "AWY"),
                             "logo_url": away_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
-                        }])[0]
+                        }], commit=False)[0]
 
                         date_str_raw = ev.get("date")
                         if not date_str_raw:
@@ -508,12 +534,13 @@ class DataIngestionService:
                         logger.warning(f"Error processing ESPN event {ev.get('id')}: {str(ev_ex)}")
 
         if all_espn_payloads:
-            ingested = cls.ingest_fixtures(db, all_espn_payloads)
+            ingested = cls.ingest_fixtures(db, all_espn_payloads, commit=False)
             espn_fixtures_count = len(ingested)
         else:
             espn_fixtures_count = 0
 
         if espn_fixtures_count > 0:
+            db.commit()
             return {
                 "status": "ok",
                 "source": "espn_realtime_api",
