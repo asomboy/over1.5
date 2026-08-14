@@ -112,21 +112,29 @@ async def lifespan(app: FastAPI):
         id='automated_6h_refresh',
         replace_existing=True
     )
-    scheduler.start()
-    logger.info("APScheduler initialized: Midnight cron & 6-hour interval refresh jobs registered.")
+    try:
+        scheduler.start()
+        logger.info("APScheduler initialized: Midnight cron & 6-hour interval refresh jobs registered.")
+    except Exception as e:
+        logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
-    # Trigger delayed background data refresh after 20s so health checks respond instantly on startup
-    import asyncio
-    async def delayed_startup_refresh():
-        await asyncio.sleep(20)
-        await scheduled_data_refresh()
-    
-    asyncio.create_task(delayed_startup_refresh())
+    try:
+        import asyncio
+        async def delayed_startup_refresh():
+            await asyncio.sleep(20)
+            await scheduled_data_refresh()
+        
+        asyncio.create_task(delayed_startup_refresh())
+    except Exception as e:
+        logger.warning(f"Delayed startup task skipped under WSGI: {e}")
 
     yield
 
-    scheduler.shutdown()
-    logger.info("APScheduler shutdown cleanly.")
+    try:
+        scheduler.shutdown()
+        logger.info("APScheduler shutdown cleanly.")
+    except Exception:
+        pass
 
 app = FastAPI(
     title="Soccer Goal Predictor API",
