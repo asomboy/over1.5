@@ -11,8 +11,18 @@ if BACKEND_DIR not in sys.path:
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+try:
+    from config import BASE_DIR
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
+except Exception:
+    pass
+
+def get_telegram_token() -> str:
+    return os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+def get_telegram_chat_id() -> str:
+    return os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 class TelegramNotificationService:
@@ -23,11 +33,11 @@ class TelegramNotificationService:
     @classmethod
     async def send_message(cls, text: str, bot_token: Optional[str] = None, chat_id: Optional[str] = None) -> bool:
         """Sends a plain text or HTML formatted message via Telegram Bot API."""
-        token = bot_token or TELEGRAM_BOT_TOKEN
-        cid = chat_id or TELEGRAM_CHAT_ID
+        token = bot_token or get_telegram_token()
+        cid = chat_id or get_telegram_chat_id()
 
         if not token or not cid:
-            logger.info("Telegram Bot Token or Chat ID not configured. Skipping message dispatch.")
+            logger.info(f"Telegram Bot Token ({'set' if token else 'missing'}) or Chat ID ({'set' if cid else 'missing'}) not configured. Skipping message dispatch.")
             return False
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -52,7 +62,7 @@ class TelegramNotificationService:
             return False
 
     @classmethod
-    async def broadcast_daily_top_picks(cls, picks: List[Dict[str, Any]]) -> bool:
+    async def broadcast_daily_top_picks(cls, picks: List[Dict[str, Any]], bot_token: Optional[str] = None, chat_id: Optional[str] = None) -> bool:
         """Formats and broadcasts Top 10 Over 1.5 Goal Picks for the day."""
         if not picks:
             return False
@@ -89,4 +99,4 @@ class TelegramNotificationService:
 
         lines.append("⚡ <i>Powered by Dixon-Coles Goal Expectation Engine</i>")
         msg = "\n".join(lines)
-        return await cls.send_message(msg)
+        return await cls.send_message(msg, bot_token=bot_token, chat_id=chat_id)

@@ -120,7 +120,7 @@ async def scheduled_live_score_refresh():
     await asyncio.to_thread(run_live_refresh)
 
 
-async def scheduled_telegram_daily_digest():
+async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """
     Automated background worker job executing daily at 08:00 UTC:
     Gathers top 10 Over 1.5 goal predictions and dispatches Telegram notification.
@@ -162,7 +162,7 @@ async def scheduled_telegram_daily_digest():
                 }
             })
         picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
-        await TelegramNotificationService.broadcast_daily_top_picks(picks[:10])
+        await TelegramNotificationService.broadcast_daily_top_picks(picks[:10], bot_token=bot_token, chat_id=chat_id)
         await WhatsAppNotificationService.broadcast_daily_top_picks(picks[:10])
     except Exception as e:
         logger.error(f"Error executing scheduled Telegram broadcast: {e}")
@@ -203,14 +203,14 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule early-morning 01:25 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
+    # Schedule early-morning 01:35 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
         hour=1,
-        minute=25,
+        minute=35,
         timezone='Europe/London',
-        id='daily_telegram_0125_digest',
+        id='daily_telegram_0135_digest',
         replace_existing=True
     )
 
@@ -636,9 +636,9 @@ async def send_whatsapp_test_notification(phone: Optional[str] = None, api_key: 
 
 
 @app.post("/api/notifications/broadcast")
-async def trigger_manual_broadcast():
+async def trigger_manual_broadcast(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Triggers immediate prediction broadcast to Telegram and WhatsApp."""
-    await scheduled_telegram_daily_digest()
+    await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id)
     return {"status": "ok", "message": "Broadcast triggered successfully to Telegram and WhatsApp!"}
 
 
