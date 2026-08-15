@@ -1,0 +1,25 @@
+name: Automated Daily Goal Predictions Broadcast
+
+on:
+  schedule:
+    # Runs at 00:00 UTC (01:00 AM GMT+1) and 07:00 UTC (08:00 AM GMT+1)
+    - cron: '0 0,7 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions UI
+
+jobs:
+  broadcast-predictions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Daily Goal Predictions Broadcast
+        run: |
+          echo "Triggering automated predictions broadcast at $(date -u)..."
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+            -X POST "https://soccer-goal-predictor-web.onrender.com/api/notifications/broadcast" \
+            --max-time 120)
+          echo "Broadcast response status: $HTTP_STATUS"
+          cat response.json || true
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Daily predictions broadcast executed successfully!"
+          else
+            echo "⚠️ Broadcast returned status $HTTP_STATUS"
+          fi

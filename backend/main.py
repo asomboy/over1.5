@@ -36,6 +36,7 @@ try:
     from services.accumulator_service import AccumulatorGeneratorService
     from services.telegram_service import TelegramNotificationService
     from services.weather_service import WeatherService
+    from services.whatsapp_service import WhatsAppNotificationService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY
@@ -55,6 +56,7 @@ except ImportError:
     from .services.accumulator_service import AccumulatorGeneratorService
     from .services.telegram_service import TelegramNotificationService
     from .services.weather_service import WeatherService
+    from .services.whatsapp_service import WhatsAppNotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,7 @@ async def scheduled_telegram_daily_digest():
             })
         picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
         await TelegramNotificationService.broadcast_daily_top_picks(picks[:10])
+        await WhatsAppNotificationService.broadcast_daily_top_picks(picks[:10])
     except Exception as e:
         logger.error(f"Error executing scheduled Telegram broadcast: {e}")
     finally:
@@ -616,6 +619,27 @@ async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_
     if success:
         return {"status": "ok", "message": "Test Telegram message sent successfully!"}
     return {"status": "error", "message": "Failed to send Telegram message. Please verify BOT_TOKEN and CHAT_ID."}
+
+
+@app.post("/api/notifications/whatsapp/test")
+async def send_whatsapp_test_notification(phone: Optional[str] = None, api_key: Optional[str] = None):
+    """Sends a test WhatsApp notification message via CallMeBot API."""
+    test_msg = (
+        "⚽ *SOCCER GOAL PREDICTOR TEST NOTIFICATION*\n\n"
+        "Your WhatsApp Bot connection is successfully configured!\n"
+        "You will receive daily top prediction broadcasts on WhatsApp."
+    )
+    success = await WhatsAppNotificationService.send_message(test_msg, phone=phone, api_key=api_key)
+    if success:
+        return {"status": "ok", "message": "Test WhatsApp message sent successfully!"}
+    return {"status": "error", "message": "Failed to send WhatsApp message. Please verify WHATSAPP_PHONE_NUMBER and WHATSAPP_API_KEY."}
+
+
+@app.post("/api/notifications/broadcast")
+async def trigger_manual_broadcast():
+    """Triggers immediate prediction broadcast to Telegram and WhatsApp."""
+    await scheduled_telegram_daily_digest()
+    return {"status": "ok", "message": "Broadcast triggered successfully to Telegram and WhatsApp!"}
 
 
 @app.get("/api/fixtures/upcoming")
