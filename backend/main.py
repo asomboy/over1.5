@@ -203,14 +203,14 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule early-morning 01:00 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
+    # Schedule early-morning 01:10 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
         hour=1,
-        minute=0,
+        minute=10,
         timezone='Europe/London',
-        id='daily_telegram_0100_digest',
+        id='daily_telegram_0110_digest',
         replace_existing=True
     )
 
