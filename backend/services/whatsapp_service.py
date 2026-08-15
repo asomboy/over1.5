@@ -12,41 +12,94 @@ if BACKEND_DIR not in sys.path:
 
 logger = logging.getLogger(__name__)
 
+# CallMeBot configuration
 WHATSAPP_PHONE_NUMBER = os.getenv("WHATSAPP_PHONE_NUMBER", "")
 WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY", "")
+
+# Twilio WhatsApp configuration
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+
+# Green-API configuration
+GREENAPI_INSTANCE_ID = os.getenv("GREENAPI_INSTANCE_ID", "")
+GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN", "")
 
 
 class WhatsAppNotificationService:
     """
-    WhatsApp Notification Bot Service for automated goal prediction broadcasts
-    via CallMeBot API or Twilio WhatsApp API.
+    Multi-provider WhatsApp Notification Bot Service for automated goal prediction broadcasts
+    supporting CallMeBot, Twilio WhatsApp API, and Green-API.
     """
 
     @classmethod
     async def send_message(cls, text: str, phone: Optional[str] = None, api_key: Optional[str] = None) -> bool:
-        """Sends a text message to WhatsApp via CallMeBot free API."""
+        """
+        Sends a WhatsApp message using configured provider (CallMeBot, Twilio, or Green-API).
+        """
         p_num = phone or WHATSAPP_PHONE_NUMBER
         key = api_key or WHATSAPP_API_KEY
 
-        if not p_num or not key:
-            logger.info("WhatsApp Phone Number or API Key not configured. Skipping WhatsApp message dispatch.")
-            return False
+        # 1. Try CallMeBot API if phone and api_key are set
+        if p_num and key:
+            encoded_text = urllib.parse.quote(text)
+            url = f"https://api.callmebot.com/whatsapp.php?phone={p_num}&text={encoded_text}&apikey={key}"
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        logger.info("CallMeBot WhatsApp notification dispatched successfully.")
+                        return True
+                    else:
+                        logger.warning(f"CallMeBot responded with status {resp.status_code}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Error sending CallMeBot WhatsApp notification: {e}")
 
-        encoded_text = urllib.parse.quote(text)
-        url = f"https://api.callmebot.com/whatsapp.php?phone={p_num}&text={encoded_text}&apikey={key}"
+        # 2. Try Twilio WhatsApp API if Account SID and Auth Token are set
+        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and p_num:
+            twilio_url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+            to_number = f"whatsapp:{p_num}" if not p_num.startswith("whatsapp:") else p_num
+            payload = {
+                "From": TWILIO_WHATSAPP_NUMBER,
+                "To": to_number,
+                "Body": text
+            }
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        twilio_url,
+                        data=payload,
+                        auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                    )
+                    if resp.status_code in [200, 201]:
+                        logger.info("Twilio WhatsApp notification dispatched successfully.")
+                        return True
+                    else:
+                        logger.warning(f"Twilio WhatsApp responded with status {resp.status_code}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Error sending Twilio WhatsApp notification: {e}")
 
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    logger.info("WhatsApp notification dispatched successfully.")
-                    return True
-                else:
-                    logger.warning(f"WhatsApp API responded with status {resp.status_code}: {resp.text}")
-                    return False
-        except Exception as e:
-            logger.error(f"Error sending WhatsApp notification: {e}")
-            return False
+        # 3. Try Green-API if Instance ID and Token are set
+        if GREENAPI_INSTANCE_ID and GREENAPI_TOKEN and p_num:
+            clean_phone = p_num.replace("+", "").replace("-", "").replace(" ", "")
+            green_url = f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}/sendMessage/{GREENAPI_TOKEN}"
+            payload = {
+                "chatId": f"{clean_phone}@c.us",
+                "message": text
+            }
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(green_url, json=payload)
+                    if resp.status_code == 200:
+                        logger.info("Green-API WhatsApp notification dispatched successfully.")
+                        return True
+                    else:
+                        logger.warning(f"Green-API responded with status {resp.status_code}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Error sending Green-API WhatsApp notification: {e}")
+
+        logger.info("No WhatsApp provider credentials configured or dispatch failed.")
+        return False
 
     @classmethod
     async def broadcast_daily_top_picks(cls, picks: List[Dict[str, Any]]) -> bool:
