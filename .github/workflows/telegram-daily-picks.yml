@@ -2,9 +2,10 @@ name: Automated Daily Goal Predictions Broadcast
 
 on:
   schedule:
-    # Test cron schedule (22:15, 22:16 UTC / 23:15, 23:16 GMT+1)
-    - cron: '15 22 * * *'
-    - cron: '16 22 * * *'
+    # Test cron schedule (22:17, 22:18, 22:19 UTC / 23:17, 23:18, 23:19 GMT+1)
+    - cron: '17 22 * * *'
+    - cron: '18 22 * * *'
+    - cron: '19 22 * * *'
     # Regular daily schedules (00:35 UTC & 07:00 UTC)
     - cron: '35 0,7 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions UI
