@@ -825,7 +825,7 @@ def get_finished_fixtures(db: Session = Depends(get_db)):
         joinedload(models.Fixture.away_team)
     ).filter(
         models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
-    ).order_by(models.Fixture.match_date.desc()).limit(150).all()
+    ).order_by(models.Fixture.match_date.desc()).all()
 
     all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
 

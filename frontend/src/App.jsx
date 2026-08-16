@@ -280,10 +280,11 @@ export default function App() {
     fetchUpcomingFixtures(false);
     fetchFinishedFixtures();
     fetchAccuracyStats();
-    // Auto refresh live scores silently every 20 seconds
+    // Auto refresh live scores & finished matches silently every 20 seconds
     const interval = setInterval(() => {
       checkHealth();
       fetchUpcomingFixtures(true);
+      fetchFinishedFixtures();
     }, 20000);
     return () => clearInterval(interval);
   }, []);
@@ -296,11 +297,12 @@ export default function App() {
   };
 
 
-  // Unique list of leagues for filter dropdown
+  // Unique list of leagues for filter dropdown (combined across upcoming and finished)
   const leaguesList = useMemo(() => {
-    const leagues = new Set(fixtures.map(f => f.league?.name).filter(Boolean));
-    return Array.from(leagues);
-  }, [fixtures]);
+    const allMatches = [...fixtures, ...finishedFixtures];
+    const leagues = new Set(allMatches.map(f => f.league?.name).filter(Boolean));
+    return Array.from(leagues).sort();
+  }, [fixtures, finishedFixtures]);
   const parseMatchDate = (dateStr) => {
     if (!dateStr) return null;
     let s = String(dateStr).trim();
@@ -461,10 +463,7 @@ export default function App() {
     
     let dayMatches = [...finishedFixtures];
     if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
-      const matchingDayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
-      if (matchingDayMatches.length > 0) {
-        dayMatches = matchingDayMatches;
-      }
+      dayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
     }
     
     return dayMatches
@@ -495,7 +494,7 @@ export default function App() {
     return result;
   }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
 
-  // Filtered Finished Fixtures for Results Tab
+  // Filtered Finished Fixtures for Results Tab (Strict Day & League Filtering)
   const filteredFinishedFixtures = useMemo(() => {
     let result = finishedFixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
@@ -504,14 +503,7 @@ export default function App() {
       const query = searchTerm.toLowerCase();
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
-      
-      let matchesDay = true;
-      if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
-        const matchesOnSelectedDay = finishedFixtures.some(f => getGMT1DayKey(f.match_date) === selectedPickDay);
-        if (matchesOnSelectedDay) {
-          matchesDay = getGMT1DayKey(fix.match_date) === selectedPickDay;
-        }
-      }
+      const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
       
       return matchesSearch && matchesLeague && matchesDay;
     });
