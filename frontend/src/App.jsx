@@ -2187,7 +2187,7 @@ export default function App() {
                             </span>
                             {(fix.value_bet?.is_value_bet || over15Pct >= 78) && (
                               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet?.value_edge_pct || 4.5}%`}>
-                                💎 Value ({fix.value_bet?.model_odds || (100 / max(1, over15Pct)).toFixed(2)})
+                                💎 Value ({fix.value_bet?.model_odds || (100 / Math.max(1, over15Pct)).toFixed(2)})
                               </span>
                             )}
                           </div>
