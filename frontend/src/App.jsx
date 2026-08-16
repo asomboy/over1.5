@@ -2793,8 +2793,8 @@ export default function App() {
             <Zap className="w-4 h-4 text-emerald-500" />
             <span>Soccer Goal Predictor &bull; GMT+1 Timings & Goal Analytics</span>
           </div>
-          <div>
-            <span>FastAPI &bull; SciPy Poisson &bull; React &bull; Tailwind CSS</span>
+          <div className="flex items-center space-x-2">
+            <span>FastAPI &bull; SciPy Poisson &bull; React &bull; Developed by Asomonye</span>
           </div>
         </div>
       </footer>
