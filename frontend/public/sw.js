@@ -1,4 +1,4 @@
-const CACHE_NAME = 'soccer-goal-predictor-v1';
+const CACHE_NAME = 'soccer-goal-predictor-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -6,16 +6,17 @@ const STATIC_ASSETS = [
   '/manifest.json'
 ];
 
-// Install Event - Pre-cache static assets
+// Install Event - Pre-cache essential assets & activate immediately
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS);
-    }).then(() => self.skipWaiting())
+    })
   );
 });
 
-// Activate Event - Clean up stale caches
+// Activate Event - Clean up stale caches & claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
@@ -26,14 +27,14 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch Event - Network First with Cache Fallback for API, Cache First for Static Assets
+// Fetch Event
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
   if (request.method !== 'GET') return;
 
-  // Handle API Requests: Network First, Fallback to Cached API Response
+  // Handle API Requests: Network First, Fallback to Cache
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(request)
@@ -44,18 +45,31 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => {
-          return caches.match(request);
-        })
+        .catch(() => caches.match(request))
     );
     return;
   }
 
-  // Handle Static Assets: Cache First, Fallback to Network
+  // Handle HTML & JS Application Bundles: Network First to ensure latest deployments are loaded
+  if (request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname.endsWith('.js')) {
+    event.respondWith(
+      fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Handle CSS, Images, Fonts: Cache First with Network update
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Asynchronously update cache in background
         fetch(request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             caches.open(CACHE_NAME).then((cache) => cache.put(request, networkResponse));
