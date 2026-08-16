@@ -472,7 +472,7 @@ export default function App() {
       .slice(0, 5);
   }, [finishedFixtures, selectedPickDay]);
 
-  // Filter & Sort Logic for Main Fixtures Table (Table 2: Up to 20 matches >= 50% Over 1.5 Goal probability sorted descending)
+  // Filter & Sort Logic for Main Fixtures Table (Upcoming / Live)
   const filteredFixtures = useMemo(() => {
     let result = fixtures.filter(fix => {
       const homeName = fix.home_team?.name?.toLowerCase() || '';
@@ -483,16 +483,25 @@ export default function App() {
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
       const matchesValue = !showValueBetsOnly || fix.value_bet?.is_value_bet || (fix.prediction?.over_1_5_probability || 0) >= 0.78;
-      const isOver50Percent = (fix.prediction?.over_1_5_probability || 0) >= 0.50;
-      return matchesSearch && matchesLeague && matchesDay && matchesValue && isOver50Percent;
+      return matchesSearch && matchesLeague && matchesDay && matchesValue;
     });
 
-    result = result
-      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0))
-      .slice(0, 20);
+    result = result.sort((a, b) => {
+      if (sortBy === 'OVER_1_5_DESC') return (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0);
+      if (sortBy === 'HOME_OVER_1_5_DESC') return (b.prediction?.home_over_1_5_probability || 0) - (a.prediction?.home_over_1_5_probability || 0);
+      if (sortBy === 'AWAY_OVER_1_5_DESC') return (b.prediction?.away_over_1_5_probability || 0) - (a.prediction?.away_over_1_5_probability || 0);
+      if (sortBy === 'FIRST_HALF_OVER_0_5_DESC') return (b.prediction?.first_half_over_0_5_probability || 0) - (a.prediction?.first_half_over_0_5_probability || 0);
+      if (sortBy === 'SECOND_HALF_OVER_0_5_DESC') return (b.prediction?.second_half_over_0_5_probability || 0) - (a.prediction?.second_half_over_0_5_probability || 0);
+      if (sortBy === 'OVER_2_5_DESC') return (b.prediction?.over_2_5_probability || 0) - (a.prediction?.over_2_5_probability || 0);
+      if (sortBy === 'XG_DESC') return (b.prediction?.expected_goals_xg || 0) - (a.prediction?.expected_goals_xg || 0);
+      
+      const tA = parseMatchDate(a.match_date)?.getTime() || 0;
+      const tB = parseMatchDate(b.match_date)?.getTime() || 0;
+      return tA - tB;
+    });
 
     return result;
-  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
+  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, sortBy]);
 
   // Filtered Finished Fixtures for Results Tab (Strict Day & League Filtering)
   const filteredFinishedFixtures = useMemo(() => {
@@ -504,15 +513,19 @@ export default function App() {
       const matchesSearch = homeName.includes(query) || awayName.includes(query) || leagueName.includes(query);
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
+      const matchesValue = !showValueBetsOnly || fix.value_bet?.is_value_bet || (fix.prediction?.over_1_5_probability || 0) >= 0.78;
       
-      return matchesSearch && matchesLeague && matchesDay;
+      return matchesSearch && matchesLeague && matchesDay && matchesValue;
     });
 
-    result = result
-      .sort((a, b) => (b.prediction?.over_1_5_probability || 0) - (a.prediction?.over_1_5_probability || 0));
+    result = result.sort((a, b) => {
+      const tA = parseMatchDate(a.match_date)?.getTime() || 0;
+      const tB = parseMatchDate(b.match_date)?.getTime() || 0;
+      return tB - tA;
+    });
 
     return result;
-  }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay]);
+  }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
 
   // Table 2 Pagination State (Default: 50 matches per page for fast DOM render)
   const [currentPage, setCurrentPage] = useState(1);
@@ -540,65 +553,20 @@ export default function App() {
 
   // Summary metrics calculated for the currently selected match day & active/upcoming matches
   const summaryStats = useMemo(() => {
-    if (!fixtures.length) return { total: 0, highOver15Count: 0, highOver25Count: 0 };
-    
-    // Filter for selected match day
-    let dayFixtures = fixtures;
-    if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
-      dayFixtures = fixtures.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
-    }
-    
-    // Exclude finished fixtures so available counts decrease dynamically as each match ends
-    const activeFixtures = dayFixtures.filter(f => 
-      f.status !== 'FINISHED' && f.status !== 'FT' && f.status !== 'AET' && f.status !== 'PEN'
-    );
-    
-    const total = activeFixtures.length;
-    const highOver15Count = activeFixtures.filter(f => (f.prediction?.over_1_5_probability || 0) >= 0.75).length;
-    const highOver25Count = activeFixtures.filter(f => (f.prediction?.over_2_5_probability || 0) >= 0.50).length;
+    const total = filteredFixtures.length;
+    const highOver15Count = filteredFixtures.filter(f => (f.prediction?.over_1_5_probability || 0) >= 0.75).length;
+    const highOver25Count = filteredFixtures.filter(f => (f.prediction?.over_2_5_probability || 0) >= 0.50).length;
     
     return {
       total,
       highOver15Count,
       highOver25Count,
     };
-  }, [fixtures, selectedPickDay]);
+  }, [filteredFixtures]);
 
-  // Total upcoming fixtures for the selected date, league & search filter
-  const dayUpcomingFixturesCount = useMemo(() => {
-    let matches = fixtures;
-    if (selectedLeague !== 'ALL') {
-      matches = matches.filter(f => f.league?.name === selectedLeague);
-    }
-    if (searchTerm) {
-      const query = searchTerm.toLowerCase();
-      matches = matches.filter(f => (
-        (f.home_team?.name?.toLowerCase() || '').includes(query) ||
-        (f.away_team?.name?.toLowerCase() || '').includes(query) ||
-        (f.league?.name?.toLowerCase() || '').includes(query)
-      ));
-    }
-    if (selectedPickDay === 'ALL_DAYS') return matches.length;
-    return matches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
-  }, [fixtures, selectedPickDay, selectedLeague, searchTerm]);
-
-  // Total finished fixtures for the selected date, league & search filter
-  const dayFinishedFixturesCount = useMemo(() => {
-    let matches = finishedFixtures;
-    if (selectedLeague !== 'ALL') {
-      matches = matches.filter(f => f.league?.name === selectedLeague);
-    }
-    if (searchTerm) {
-      const query = searchTerm.toLowerCase();
-      matches = matches.filter(f => (
-        (f.home_team?.name?.toLowerCase() || '').includes(query) ||
-        (f.away_team?.name?.toLowerCase() || '').includes(query) ||
-        (f.league?.name?.toLowerCase() || '').includes(query)
-      ));
-    }
-    if (selectedPickDay === 'ALL_DAYS') return matches.length;
-    return matches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
-  }, [finishedFixtures, selectedPickDay, selectedLeague, searchTerm]);
+  // Exact counts matching filtered lists 1:1
+  const dayUpcomingFixturesCount = filteredFixtures.length;
+  const dayFinishedFixturesCount = filteredFinishedFixtures.length;
 
   // Helper for outcome badges
   const getBestOutcome = (pred) => {
