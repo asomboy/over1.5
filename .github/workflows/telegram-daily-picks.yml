@@ -14,7 +14,7 @@ jobs:
         run: |
           echo "Triggering automated predictions broadcast at $(date -u)..."
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
-            -X POST "https://soccer-goal-predictor-web.onrender.com/api/notifications/broadcast?bot_token=8917826403:AAHnXYEicw76o_lPljmb6yy0LRGI8sC0S7Q&chat_id=568393640" \
+            -X POST "https://soccer-goal-predictor-api.onrender.com/api/notifications/broadcast?bot_token=8917826403:AAHnXYEicw76o_lPljmb6yy0LRGI8sC0S7Q&chat_id=568393640" \
             --max-time 120)
           echo "Broadcast response status: $HTTP_STATUS"
           cat response.json || true

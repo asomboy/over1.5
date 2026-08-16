@@ -63,19 +63,22 @@ class TelegramNotificationService:
 
     @classmethod
     async def broadcast_daily_top_picks(cls, picks: List[Dict[str, Any]], bot_token: Optional[str] = None, chat_id: Optional[str] = None) -> bool:
-        """Formats and broadcasts Top 10 Over 1.5 Goal Picks for the day."""
+        """Formats and broadcasts Top 7 Over 1.5 Goal Picks (2+ Goals) for the day."""
         if not picks:
+            logger.info("No picks available to broadcast via Telegram.")
             return False
 
         now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
         now_str = now_gmt1.strftime("%A, %b %d, %Y")
+        top_picks = picks[:7]
+
         lines = [
-            f"🔥 <b>SOCCER GOAL PREDICTOR — DAILY TOP PICKS</b> 🔥",
+            f"🎯 <b>SOCCER GOAL PREDICTOR — TOP 7 DAILY PICKS</b> 🎯",
             f"📅 <i>{now_str} (GMT+1)</i>\n",
-            "Top High-Probability Over 1.5 Goal Predictions:\n"
+            f"🔥 <b>Best {len(top_picks)} Matches Most Likely To Have 2+ Goals (Over 1.5):</b>\n"
         ]
 
-        for idx, item in enumerate(picks[:10], 1):
+        for idx, item in enumerate(top_picks, 1):
             home = item.get("home_team", {}).get("name", "Home")
             away = item.get("away_team", {}).get("name", "Away")
             league = item.get("league", {}).get("name", "League")
@@ -89,12 +92,12 @@ class TelegramNotificationService:
                     dt_gmt1 = dt.astimezone(timezone.utc) + timedelta(hours=1)
                     match_time = dt_gmt1.strftime("%I:%M %p")
                 except Exception:
-                    match_time = item["match_date"][11:16]
+                    match_time = str(item["match_date"])[11:16]
 
             lines.append(
                 f"{idx}. ⚽ <b>{home} vs {away}</b>\n"
                 f"   🏆 {league} | ⏰ {match_time} GMT+1\n"
-                f"   🔥 <b>Over 1.5: {prob}%</b> | Scoreline: <b>{score}</b>\n"
+                f"   🔥 <b>Over 1.5 Probability: {prob}%</b> | Expected Score: <b>{score}</b>\n"
             )
 
         lines.append("⚡ <i>Powered by Dixon-Coles Goal Expectation Engine</i>")

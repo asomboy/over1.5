@@ -122,14 +122,17 @@ async def scheduled_live_score_refresh():
 
 async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """
-    Automated background worker job executing daily at 08:00 UTC:
-    Gathers top 10 Over 1.5 goal predictions and dispatches Telegram notification.
+    Automated background worker job executing daily:
+    Gathers top 7 Over 1.5 goal (2+ goals) predictions for the day and dispatches Telegram notification.
     """
-    logger.info("Executing scheduled Telegram daily top picks broadcast...")
+    logger.info("Executing scheduled Telegram daily top 7 picks broadcast...")
     calc_db = SessionLocal()
     try:
         now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
         gmt1_start_of_day = now_gmt1.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        gmt1_end_of_day = now_gmt1.replace(hour=23, minute=59, second=59, microsecond=999999).replace(tzinfo=None)
+        
+        # Primary filter: matches scheduled for today
         fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -139,11 +142,30 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
             )
             .filter(
                 models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                models.Fixture.match_date >= gmt1_start_of_day
+                models.Fixture.match_date >= gmt1_start_of_day,
+                models.Fixture.match_date <= gmt1_end_of_day
             )
             .order_by(models.Fixture.match_date.asc())
             .all()
         )
+        
+        # Fallback if today has fewer than 7 upcoming matches: expand to all upcoming fixtures
+        if len(fixtures) < 7:
+            fixtures = (
+                calc_db.query(models.Fixture)
+                .options(
+                    joinedload(models.Fixture.league),
+                    joinedload(models.Fixture.home_team),
+                    joinedload(models.Fixture.away_team)
+                )
+                .filter(
+                    models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                    models.Fixture.match_date >= gmt1_start_of_day
+                )
+                .order_by(models.Fixture.match_date.asc())
+                .all()
+            )
+
         all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
         picks = []
         for fix in fixtures:
@@ -162,8 +184,9 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
                 }
             })
         picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
-        await TelegramNotificationService.broadcast_daily_top_picks(picks[:10], bot_token=bot_token, chat_id=chat_id)
-        await WhatsAppNotificationService.broadcast_daily_top_picks(picks[:10])
+        top_7_picks = picks[:7]
+        await TelegramNotificationService.broadcast_daily_top_picks(top_7_picks, bot_token=bot_token, chat_id=chat_id)
+        await WhatsAppNotificationService.broadcast_daily_top_picks(top_7_picks)
     except Exception as e:
         logger.error(f"Error executing scheduled Telegram broadcast: {e}")
     finally:
