@@ -564,11 +564,41 @@ export default function App() {
     };
   }, [fixtures, selectedPickDay]);
 
-  // Total upcoming fixtures for the selected date (or all days if ALL_DAYS)
+  // Total upcoming fixtures for the selected date, league & search filter
   const dayUpcomingFixturesCount = useMemo(() => {
-    if (selectedPickDay === 'ALL_DAYS') return fixtures.length;
-    return fixtures.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
-  }, [fixtures, selectedPickDay]);
+    let matches = fixtures;
+    if (selectedLeague !== 'ALL') {
+      matches = matches.filter(f => f.league?.name === selectedLeague);
+    }
+    if (searchTerm) {
+      const query = searchTerm.toLowerCase();
+      matches = matches.filter(f => (
+        (f.home_team?.name?.toLowerCase() || '').includes(query) ||
+        (f.away_team?.name?.toLowerCase() || '').includes(query) ||
+        (f.league?.name?.toLowerCase() || '').includes(query)
+      ));
+    }
+    if (selectedPickDay === 'ALL_DAYS') return matches.length;
+    return matches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
+  }, [fixtures, selectedPickDay, selectedLeague, searchTerm]);
+
+  // Total finished fixtures for the selected date, league & search filter
+  const dayFinishedFixturesCount = useMemo(() => {
+    let matches = finishedFixtures;
+    if (selectedLeague !== 'ALL') {
+      matches = matches.filter(f => f.league?.name === selectedLeague);
+    }
+    if (searchTerm) {
+      const query = searchTerm.toLowerCase();
+      matches = matches.filter(f => (
+        (f.home_team?.name?.toLowerCase() || '').includes(query) ||
+        (f.away_team?.name?.toLowerCase() || '').includes(query) ||
+        (f.league?.name?.toLowerCase() || '').includes(query)
+      ));
+    }
+    if (selectedPickDay === 'ALL_DAYS') return matches.length;
+    return matches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay).length;
+  }, [finishedFixtures, selectedPickDay, selectedLeague, searchTerm]);
 
   // Helper for outcome badges
   const getBestOutcome = (pred) => {
@@ -788,7 +818,7 @@ export default function App() {
             <Trophy className="w-4 h-4 text-amber-400" />
             <span>Finished Matches & Scores</span>
             <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-amber-400 border border-amber-500/30">
-              {filteredFinishedFixtures.length}
+              {dayFinishedFixturesCount}
             </span>
           </button>
         </div>
