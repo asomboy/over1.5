@@ -1125,10 +1125,10 @@ export default function App() {
                   </div>
                   <div>
                     <h2 className={`text-base sm:text-lg font-extrabold tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                      Table 2: Top 20 Finished Fixtures ({selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})
+                      Table 2: Finished Match Results ({selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Top 20 finished matches with &ge; 50% Over 1.5 probability sorted in descending order for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
+                      Completed match results with verified Over 1.5 probability outcomes for {selectedPickDay === 'ALL_DAYS' ? 'all match days' : formatDayTitle(selectedPickDay)}.
                     </p>
                   </div>
                 </div>
@@ -1933,7 +1933,7 @@ export default function App() {
             <div className="p-3 sm:p-4 border-b flex flex-wrap items-center justify-between gap-2 border-slate-800/80">
               <span className="text-xs font-extrabold uppercase text-slate-300 flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-emerald-400" />
-                {`Table 2: Top 20 Over 1.5 Goal Matches (${selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})`}
+                {`Table 2: Upcoming & Live Match Predictions (${selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})`}
               </span>
               <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-bold text-slate-400">
                 <span>Showing {paginatedFixtures.length} of {filteredFixtures.length} matches</span>
