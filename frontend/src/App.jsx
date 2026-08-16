@@ -2794,7 +2794,7 @@ export default function App() {
             <span>Soccer Goal Predictor &bull; GMT+1 Timings & Goal Analytics</span>
           </div>
           <div className="flex items-center space-x-2">
-            <span>FastAPI &bull; SciPy Poisson &bull; React &bull; Developed by Asomonye</span>
+            <span>Developed by Asomonye</span>
           </div>
         </div>
       </footer>
