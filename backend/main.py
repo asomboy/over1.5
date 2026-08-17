@@ -823,21 +823,22 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
         fixtures = []
 
     if not fixtures:
-        logger.info("No upcoming fixtures found in DB. Executing immediate ingestion fallback...")
-        try:
-            await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
-            PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
-            fixtures = db.query(models.Fixture).options(
-                joinedload(models.Fixture.league),
-                joinedload(models.Fixture.home_team),
-                joinedload(models.Fixture.away_team)
-            ).filter(
-                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                models.Fixture.match_date >= now_cutoff
-            ).order_by(models.Fixture.match_date.asc()).all()
-        except Exception as e:
-            logger.error(f"Error during fallback ingestion: {e}")
-            db.rollback()
+        logger.info("No upcoming fixtures found in DB. Triggering non-blocking background ingestion fallback...")
+        def run_bg_sync():
+            bg_db = SessionLocal()
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY))
+                    PoissonPredictionEngine.predict_all_upcoming_fixtures(bg_db)
+                finally:
+                    loop.close()
+            except Exception as ing_err:
+                logger.error(f"Error during background ingestion fallback: {ing_err}")
+            finally:
+                bg_db.close()
+        asyncio.create_task(asyncio.to_thread(run_bg_sync))
 
     try:
         all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
