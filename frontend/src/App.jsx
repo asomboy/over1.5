@@ -428,7 +428,7 @@ export default function App() {
     return getGMT1DayKey(new Date().toISOString()) || 'ALL_DAYS';
   });
 
-  // Automatically default Table 1 to current date (Today) if matches exist, or fallback to closest upcoming match day
+  // Automatically default Table 1 to current date (Today) if matches exist, or fallback gracefully to closest upcoming match day
   useEffect(() => {
     if (availableMatchDays.length > 0) {
       const todayKey = getGMT1DayKey(new Date().toISOString());
@@ -437,7 +437,9 @@ export default function App() {
           setSelectedPickDay(todayKey);
         }
       } else if (!availableMatchDays.includes(selectedPickDay) && selectedPickDay !== 'ALL_DAYS') {
-        setSelectedPickDay(availableMatchDays[0]);
+        const upcomingDays = availableMatchDays.filter(d => d >= todayKey);
+        const fallbackDay = upcomingDays.length > 0 ? upcomingDays[0] : availableMatchDays[availableMatchDays.length - 1];
+        setSelectedPickDay(fallbackDay);
       }
     }
   }, [availableMatchDays, selectedPickDay]);

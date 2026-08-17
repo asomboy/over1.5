@@ -112,6 +112,7 @@ async def scheduled_live_score_refresh():
                 loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
             finally:
                 loop.close()
+            DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
         except Exception as e:
             logger.error(f"Error in scheduled live score refresh: {e}")
         finally:
@@ -120,19 +121,35 @@ async def scheduled_live_score_refresh():
     await asyncio.to_thread(run_live_refresh)
 
 
-async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
+async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_id: Optional[str] = None, is_night_digest: bool = False):
     """
-    Automated background worker job executing daily:
-    Gathers top 7 Over 1.5 goal (2+ goals) predictions for the day and dispatches Telegram notification.
+    Automated background worker job executing twice daily:
+    - Night Digest (10:00 PM GMT / 22:00 UTC): Gathers picks for early morning fixtures (1:00 AM – 6:50 AM GMT) for next day.
+    - Morning Digest (07:00 AM GMT / 07:00 UTC): Gathers picks for the rest of today's fixtures (7:00 AM – 11:59 PM GMT).
     """
-    logger.info("Executing scheduled Telegram daily top 7 picks broadcast...")
+    logger.info("Executing scheduled Telegram picks broadcast...")
     calc_db = SessionLocal()
     try:
-        now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
-        gmt1_start_of_day = now_gmt1.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
-        gmt1_end_of_day = now_gmt1.replace(hour=23, minute=59, second=59, microsecond=999999).replace(tzinfo=None)
-        
-        # Primary filter: matches scheduled for today
+        utc_now = datetime.now(timezone.utc)
+        current_hour = utc_now.hour
+        is_night = is_night_digest or (current_hour >= 20 or current_hour < 3)
+
+        if is_night:
+            title_cat = "EARLY MORNING PICKS"
+            time_win_str = "1:00 AM – 6:50 AM GMT"
+            target_date = (utc_now + timedelta(days=1)).date() if current_hour >= 20 else utc_now.date()
+            start_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 50, 0)
+            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 6, 50, 0)
+        else:
+            title_cat = "DAILY TOP PICKS"
+            target_date = utc_now.date()
+            # If broadcast runs late (e.g. 10:20 AM / 11:00 AM), dynamically filter from current broadcast time onwards (e.g. 11:00 AM - 11:59 PM)
+            start_hour_gmt = max(7, (utc_now + timedelta(hours=1)).hour)
+            time_win_str = f"{start_hour_gmt}:00 AM – 11:59 PM GMT" if start_hour_gmt < 12 else f"{start_hour_gmt - 12 if start_hour_gmt > 12 else 12}:00 PM – 11:59 PM GMT"
+            naive_now_cutoff = (utc_now - timedelta(minutes=15)).replace(tzinfo=None)
+            start_dt_utc = max(datetime(target_date.year, target_date.month, target_date.day, 6, 50, 0), naive_now_cutoff)
+            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59)
+
         fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -142,34 +159,98 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
             )
             .filter(
                 models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                models.Fixture.match_date >= gmt1_start_of_day,
-                models.Fixture.match_date <= gmt1_end_of_day
+                models.Fixture.match_date >= start_dt_utc,
+                models.Fixture.match_date <= end_dt_utc
             )
             .order_by(models.Fixture.match_date.asc())
             .all()
         )
-        
-        # Fallback if today has fewer than 7 upcoming matches: expand to all upcoming fixtures
-        if len(fixtures) < 7:
-            fixtures = (
-                calc_db.query(models.Fixture)
-                .options(
-                    joinedload(models.Fixture.league),
-                    joinedload(models.Fixture.home_team),
-                    joinedload(models.Fixture.away_team)
+
+        if not fixtures:
+            logger.info("No fixtures found for target window. Triggering automatic API ingestion fallback...")
+            try:
+                await DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY)
+                PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
+                fixtures = (
+                    calc_db.query(models.Fixture)
+                    .options(
+                        joinedload(models.Fixture.league),
+                        joinedload(models.Fixture.home_team),
+                        joinedload(models.Fixture.away_team)
+                    )
+                    .filter(
+                        models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                        models.Fixture.match_date >= start_dt_utc,
+                        models.Fixture.match_date <= end_dt_utc
+                    )
+                    .order_by(models.Fixture.match_date.asc())
+                    .all()
                 )
-                .filter(
-                    models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                    models.Fixture.match_date >= gmt1_start_of_day
-                )
-                .order_by(models.Fixture.match_date.asc())
-                .all()
+            except Exception as ing_err:
+                logger.error(f"Error during scheduled digest ingestion fallback: {ing_err}")
+
+        # STEP 1: Process and broadcast Outcome Recap for the PREVIOUS broadcast window
+        all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
+
+        if is_night:
+            # Previous window for 10 PM night broadcast is Today's Daytime/Evening window (7 AM - 9:59 PM GMT)
+            prev_win_title = "Daily Picks"
+            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
+            prev_start_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 6, 50, 0)
+            prev_end_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 21, 59, 59)
+        else:
+            # Previous window for 7 AM morning broadcast is Today's Early Morning window (1 AM - 6:50 AM GMT)
+            prev_win_title = "Early Morning Picks"
+            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
+            prev_start_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 0, 50, 0)
+            prev_end_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 6, 50, 0)
+
+        finished_fixtures = (
+            calc_db.query(models.Fixture)
+            .options(
+                joinedload(models.Fixture.league),
+                joinedload(models.Fixture.home_team),
+                joinedload(models.Fixture.away_team)
+            )
+            .filter(
+                models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                models.Fixture.match_date >= prev_start_utc,
+                models.Fixture.match_date <= prev_end_utc
+            )
+            .order_by(models.Fixture.match_date.asc())
+            .all()
+        )
+
+        if finished_fixtures:
+            recap_items = []
+            for fix in finished_fixtures:
+                pred = all_preds.get(fix.id)
+                h_score = fix.home_score if fix.home_score is not None else 0
+                a_score = fix.away_score if fix.away_score is not None else 0
+                total_goals = h_score + a_score
+                prob = float(pred.over_1_5_probability) if pred and pred.over_1_5_probability is not None else 0.75
+                recap_items.append({
+                    "home": fix.home_team.name if fix.home_team else "Home",
+                    "away": fix.away_team.name if fix.away_team else "Away",
+                    "home_score": h_score,
+                    "away_score": a_score,
+                    "prob": prob,
+                    "is_won": total_goals >= 2
+                })
+            await TelegramNotificationService.broadcast_outcome_recap(
+                recap_items,
+                window_title=prev_win_title,
+                date_str=prev_date_str,
+                bot_token=bot_token,
+                chat_id=chat_id
             )
 
-        all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
+        # STEP 2: Process and broadcast NEW upcoming picks for the upcoming window
         picks = []
         for fix in fixtures:
             pred = all_preds.get(fix.id)
+            if not pred:
+                pred = PoissonPredictionEngine.predict_fixture(calc_db, fix.id)
             if not pred:
                 continue
             match_date_str = fix.match_date.isoformat() + "Z" if fix.match_date else ""
@@ -185,7 +266,57 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
             })
         picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
         top_7_picks = picks[:7]
-        await TelegramNotificationService.broadcast_daily_top_picks(top_7_picks, bot_token=bot_token, chat_id=chat_id)
+
+        # FALLBACK WINDOW: If window returned 0 picks, expand to next 24h upcoming fixtures
+        if not top_7_picks:
+            logger.info(f"No prediction picks available in primary window ({title_cat}). Executing 24-hour fallback search...")
+            now_cutoff = (utc_now - timedelta(minutes=15)).replace(tzinfo=None)
+            next_24h = (utc_now + timedelta(hours=24)).replace(tzinfo=None)
+            fallback_fixtures = (
+                calc_db.query(models.Fixture)
+                .options(
+                    joinedload(models.Fixture.league),
+                    joinedload(models.Fixture.home_team),
+                    joinedload(models.Fixture.away_team)
+                )
+                .filter(
+                    models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                    models.Fixture.match_date >= now_cutoff,
+                    models.Fixture.match_date <= next_24h
+                )
+                .order_by(models.Fixture.match_date.asc())
+                .all()
+            )
+            for fix in fallback_fixtures:
+                pred = all_preds.get(fix.id)
+                if not pred:
+                    pred = PoissonPredictionEngine.predict_fixture(calc_db, fix.id)
+                if pred:
+                    match_date_str = fix.match_date.isoformat() + "Z" if fix.match_date else ""
+                    picks.append({
+                        "home_team": {"name": fix.home_team.name if fix.home_team else "Home"},
+                        "away_team": {"name": fix.away_team.name if fix.away_team else "Away"},
+                        "league": {"name": fix.league.name if fix.league else "League"},
+                        "match_date": match_date_str,
+                        "prediction": {
+                            "over_1_5_probability": float(pred.over_1_5_probability or 0.75),
+                            "most_likely_score": pred.most_likely_score or "2-1"
+                        }
+                    })
+            picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
+            top_7_picks = picks[:7]
+
+        if not top_7_picks:
+            logger.info(f"No prediction picks available to broadcast for window ({title_cat}). Suppressing dispatch.")
+            return
+
+        await TelegramNotificationService.broadcast_daily_top_picks(
+            top_7_picks,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            title_category=title_cat,
+            time_window_str=time_win_str
+        )
         await WhatsAppNotificationService.broadcast_daily_top_picks(top_7_picks)
     except Exception as e:
         logger.error(f"Error executing scheduled Telegram broadcast: {e}")
@@ -226,31 +357,33 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule early-morning 01:35 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
+    # Schedule night 10:00 PM GMT Telegram digest broadcast (22:00 UTC) for Early Morning 1am-6:50am games
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour=1,
-        minute=35,
-        timezone='Europe/London',
-        id='daily_telegram_0135_digest',
+        hour=22,
+        minute=0,
+        timezone='UTC',
+        kwargs={'is_night_digest': True},
+        id='daily_telegram_2200_night_digest',
         replace_existing=True
     )
 
-    # Schedule morning 08:00 AM Telegram digest broadcast (Europe/London GMT+1 timezone)
+    # Schedule morning 07:00 AM GMT Telegram digest broadcast (07:00 UTC) for Rest of Day games
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour=8,
+        hour=7,
         minute=0,
-        timezone='Europe/London',
-        id='daily_telegram_0800_digest',
+        timezone='UTC',
+        kwargs={'is_night_digest': False},
+        id='daily_telegram_0700_morning_digest',
         replace_existing=True
     )
 
     try:
         scheduler.start()
-        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 01:00 AM & 08:00 AM Telegram digest jobs registered.")
+        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 10:00 PM GMT & 07:00 AM GMT Telegram digest jobs registered.")
     except Exception as e:
         logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
@@ -838,17 +971,29 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
 
 
 @app.get("/api/fixtures/finished")
-def get_finished_fixtures(db: Session = Depends(get_db)):
+def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Retrieve completed match results with final scores and Over 1.5 goal prediction outcomes.
+    Supports optional `date` filter (YYYY-MM-DD format).
     """
-    fixtures = db.query(models.Fixture).options(
+    query = db.query(models.Fixture).options(
         joinedload(models.Fixture.league),
         joinedload(models.Fixture.home_team),
         joinedload(models.Fixture.away_team)
     ).filter(
         models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
-    ).order_by(models.Fixture.match_date.desc()).all()
+    )
+
+    if date:
+        try:
+            parsed_dt = datetime.fromisoformat(date)
+            s_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 0, 0, 0)
+            e_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 23, 59, 59)
+            query = query.filter(models.Fixture.match_date >= s_dt, models.Fixture.match_date <= e_dt)
+        except Exception as e:
+            logger.warning(f"Invalid date filter parameter '{date}': {e}")
+
+    fixtures = query.order_by(models.Fixture.match_date.desc()).all()
 
     all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
 

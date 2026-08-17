@@ -106,6 +106,19 @@ class TestSoccerPredictorUpgrades(unittest.TestCase):
         data = resp.json()
         self.assertIn("status", data)
 
+    def test_telegram_zero_pick_suppression(self):
+        from services.telegram_service import TelegramNotificationService
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # Empty picks list should return False immediately without sending any message
+        result = loop.run_until_complete(TelegramNotificationService.broadcast_daily_top_picks([]))
+        self.assertFalse(result)
+        # Outcome recap with empty items should return False
+        recap_res = loop.run_until_complete(TelegramNotificationService.broadcast_outcome_recap([], "Daily Picks", "Monday, Aug 17, 2026"))
+        self.assertFalse(recap_res)
+        loop.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,7 +62,14 @@ class TelegramNotificationService:
             return False
 
     @classmethod
-    async def broadcast_daily_top_picks(cls, picks: List[Dict[str, Any]], bot_token: Optional[str] = None, chat_id: Optional[str] = None) -> bool:
+    async def broadcast_daily_top_picks(
+        cls,
+        picks: List[Dict[str, Any]],
+        bot_token: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        title_category: Optional[str] = None,
+        time_window_str: Optional[str] = None
+    ) -> bool:
         """Formats and broadcasts Top 7 Over 1.5 Goal Picks (2+ Goals) for the day."""
         if not picks:
             logger.info("No picks available to broadcast via Telegram.")
@@ -71,10 +78,12 @@ class TelegramNotificationService:
         now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
         now_str = now_gmt1.strftime("%A, %b %d, %Y")
         top_picks = picks[:7]
+        cat_title = title_category or "TOP 7 DAILY PICKS"
+        window_suffix = f" ({time_window_str})" if time_window_str else " (GMT+1)"
 
         lines = [
-            f"🎯 <b>SOCCER GOAL PREDICTOR — TOP 7 DAILY PICKS</b> 🎯",
-            f"📅 <i>{now_str} (GMT+1)</i>\n",
+            f"🎯 <b>SOCCER GOAL PREDICTOR — {cat_title}</b> 🎯",
+            f"📅 <i>{now_str}{window_suffix}</i>\n",
             f"🔥 <b>Best {len(top_picks)} Matches Most Likely To Have 2+ Goals (Over 1.5):</b>\n"
         ]
 
@@ -101,5 +110,49 @@ class TelegramNotificationService:
             )
 
         lines.append("⚡ <i>Powered by Dixon-Coles Goal Expectation Engine</i>")
+        msg = "\n".join(lines)
+        return await cls.send_message(msg, bot_token=bot_token, chat_id=chat_id)
+
+    @classmethod
+    async def broadcast_outcome_recap(
+        cls,
+        recap_items: List[Dict[str, Any]],
+        window_title: str,
+        date_str: str,
+        bot_token: Optional[str] = None,
+        chat_id: Optional[str] = None
+    ) -> bool:
+        """Formats and broadcasts Outcome Recap Report for previous predictions."""
+        if not recap_items:
+            logger.info("No finished fixtures available for outcome recap broadcast.")
+            return False
+
+        won_count = sum(1 for item in recap_items if item.get("is_won"))
+        total_count = len(recap_items)
+        win_rate = round((won_count / max(1, total_count)) * 100, 1)
+
+        lines = [
+            "📊 <b>SOCCER GOAL PREDICTOR — RESULTS RECAP</b> 📊",
+            f"📅 <i>{date_str} ({window_title} Results)</i>\n"
+        ]
+
+        for idx, item in enumerate(recap_items, 1):
+            home = item.get("home", "Home")
+            away = item.get("away", "Away")
+            h_score = item.get("home_score", 0)
+            a_score = item.get("away_score", 0)
+            total_goals = h_score + a_score
+            prob = round((item.get("prob") or 0.75) * 100)
+            is_won = item.get("is_won", False)
+            status_icon = "✅ WON" if is_won else "❌ LOST"
+
+            lines.append(
+                f"{idx}. ⚽ <b>{home} {h_score} - {a_score} {away}</b>\n"
+                f"   🔥 Over 1.5 Prob: <b>{prob}%</b> | Total Goals: <b>{total_goals}</b> -> <b>{status_icon}</b>\n"
+            )
+
+        lines.append(f"📈 <b>Summary: {won_count}/{total_count} Won ({win_rate}% Accuracy)</b>")
+        lines.append("⚡ <i>Powered by Dixon-Coles Goal Expectation Engine</i>")
+
         msg = "\n".join(lines)
         return await cls.send_message(msg, bot_token=bot_token, chat_id=chat_id)

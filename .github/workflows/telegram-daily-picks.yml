@@ -2,8 +2,8 @@ name: Automated Daily Goal Predictions Broadcast
 
 on:
   schedule:
-    # 2 Daily prediction broadcasts: Midnight GMT+1 (23:00 UTC) and Morning (07:00 UTC)
-    - cron: '0 23,7 * * *'
+    # 2 Daily prediction broadcasts: 10:00 PM GMT (22:00 UTC) for Early Morning 1am-6:50am & 7:00 AM GMT (07:00 UTC) for Rest of Day
+    - cron: '0 22,7 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions UI
 
 jobs:

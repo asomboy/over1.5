@@ -399,7 +399,7 @@ class DataIngestionService:
             if date_str:
                 url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_str}"
             else:
-                d_start = now_utc.strftime("%Y%m%d")
+                d_start = (now_utc - timedelta(days=2)).strftime("%Y%m%d")
                 d_end = (now_utc + timedelta(days=35)).strftime("%Y%m%d")
                 url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={d_start}-{d_end}"
             try:
@@ -498,11 +498,12 @@ class DataIngestionService:
                         status_name = status_type.get("name", "STATUS_SCHEDULED")
                         live_clock = ev.get("status", {}).get("displayClock")
 
-                        if status_name in ["STATUS_FINAL", "STATUS_FULL_TIME", "STATUS_FINISHED"]:
+                        status_name_upper = str(status_name).upper()
+                        if any(k in status_name_upper for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
                             status = "FINISHED"
-                        elif status_name in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME", "STATUS_FIRST_HALF", "STATUS_SECOND_HALF"]:
+                        elif any(k in status_name_upper for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME"]):
                             status = "LIVE"
-                        elif status_name in ["STATUS_POSTPONED", "STATUS_CANCELLED"]:
+                        elif any(k in status_name_upper for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
                             status = "POSTPONED"
                         else:
                             status = "SCHEDULED"
@@ -849,3 +850,42 @@ class DataIngestionService:
             "teams_ingested": len(teams),
             "fixtures_ingested": len(fixtures)
         }
+
+    @classmethod
+    def auto_resolve_expired_live_fixtures(cls, db: Session) -> int:
+        """
+        Scans SQLite database for any fixtures currently marked 'LIVE' or 'SCHEDULED'
+        whose match start date is > 3.5 hours in the past.
+        Automatically updates their status to 'FINISHED' (if scores are populated or defaults to 0-0)
+        and clears live_clock to prevent stale live fixtures from lingering.
+        """
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff_time = now_naive - timedelta(hours=3, minutes=30)
+
+        stale_fixtures = (
+            db.query(Fixture)
+            .filter(
+                Fixture.status.in_(["LIVE", "SCHEDULED"]),
+                Fixture.match_date < cutoff_time
+            )
+            .all()
+        )
+
+        resolved_count = 0
+        for fix in stale_fixtures:
+            # If match was marked LIVE or was SCHEDULED with score or past cutoff, auto-resolve to FINISHED
+            if fix.status == "LIVE" or (fix.status == "SCHEDULED" and (fix.home_score is not None or fix.match_date < cutoff_time)):
+                fix.status = "FINISHED"
+                fix.live_clock = "FT"
+                if fix.home_score is None:
+                    fix.home_score = 0
+                if fix.away_score is None:
+                    fix.away_score = 0
+                resolved_count += 1
+                logger.info(f"Auto-resolved stale fixture #{fix.id} ({fix.external_id}) to FINISHED.")
+
+        if resolved_count > 0:
+            db.commit()
+
+        return resolved_count
+
