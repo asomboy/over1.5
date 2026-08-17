@@ -199,11 +199,11 @@ export default function App() {
   });
 
   // Check Backend Health with retry and multi-URL candidates
-  const checkHealth = async (retries = 2) => {
+  const checkHealth = async (retries = 3) => {
     const startTime = performance.now();
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const res = await apiRequest('get', '/health', null, { timeout: 5000 });
+        const res = await apiRequest('get', '/health', null, { timeout: 30000 });
         const endTime = performance.now();
         if (res.data?.status === 'ok') {
           setBackendHealth({
@@ -217,7 +217,7 @@ export default function App() {
         if (attempt === retries) {
           setBackendHealth(prev => ({ ...prev, online: false }));
         } else {
-          await new Promise(r => setTimeout(r, 600));
+          await new Promise(r => setTimeout(r, 1500));
         }
       }
     }
