@@ -806,26 +806,24 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     """
     global LAST_SYNC_TIME
     now = datetime.now(timezone.utc)
-    
-    # Auto-sync if last sync was > 12 hours ago or never happened (e.g. server restarted)
-    if LAST_SYNC_TIME is None or (now - LAST_SYNC_TIME) > timedelta(hours=12):
-        logger.info("Auto-sync triggered via upcoming fixtures endpoint (data stale or initial request)...")
-        LAST_SYNC_TIME = now
-        import asyncio
-        asyncio.create_task(DataIngestionService.fetch_and_ingest_from_api(SessionLocal(), api_key=FOOTBALL_API_KEY))
-
     now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
-    fixtures = db.query(models.Fixture).options(
-        joinedload(models.Fixture.league),
-        joinedload(models.Fixture.home_team),
-        joinedload(models.Fixture.away_team)
-    ).filter(
-        models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-        models.Fixture.match_date >= now_cutoff
-    ).order_by(models.Fixture.match_date.asc()).all()
+
+    try:
+        fixtures = db.query(models.Fixture).options(
+            joinedload(models.Fixture.league),
+            joinedload(models.Fixture.home_team),
+            joinedload(models.Fixture.away_team)
+        ).filter(
+            models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+            models.Fixture.match_date >= now_cutoff
+        ).order_by(models.Fixture.match_date.asc()).all()
+    except Exception as query_err:
+        logger.error(f"Error querying upcoming fixtures: {query_err}")
+        db.rollback()
+        fixtures = []
 
     if not fixtures:
-        logger.info("No upcoming fixtures found in DB. Executing immediate ingestion from API...")
+        logger.info("No upcoming fixtures found in DB. Executing immediate ingestion fallback...")
         try:
             await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
             PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
@@ -839,9 +837,14 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
             ).order_by(models.Fixture.match_date.asc()).all()
         except Exception as e:
             logger.error(f"Error during fallback ingestion: {e}")
+            db.rollback()
 
-    # Bulk load all stored predictions into dictionary to eliminate N+1 query performance bottleneck
-    all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
+    try:
+        all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
+    except Exception as pred_err:
+        logger.error(f"Error loading predictions: {pred_err}")
+        db.rollback()
+        all_preds = {}
 
     result_data = []
     for fix in fixtures:
