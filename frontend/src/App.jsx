@@ -430,10 +430,12 @@ export default function App() {
 
   // Automatically default Table 1 to current date (Today) if matches exist, or fallback gracefully to closest upcoming match day
   useEffect(() => {
+    const todayKey = getGMT1DayKey(new Date().toISOString());
     if (availableMatchDays.length > 0) {
-      const todayKey = getGMT1DayKey(new Date().toISOString());
       if (availableMatchDays.includes(todayKey)) {
-        if (!selectedPickDay || !availableMatchDays.includes(selectedPickDay)) {
+        const selectedHasUpcoming = fixtures.some(f => getGMT1DayKey(f.match_date) === selectedPickDay);
+        const todayHasUpcoming = fixtures.some(f => getGMT1DayKey(f.match_date) === todayKey);
+        if (!selectedPickDay || !availableMatchDays.includes(selectedPickDay) || (!selectedHasUpcoming && todayHasUpcoming)) {
           setSelectedPickDay(todayKey);
         }
       } else if (!availableMatchDays.includes(selectedPickDay) && selectedPickDay !== 'ALL_DAYS') {
@@ -442,7 +444,7 @@ export default function App() {
         setSelectedPickDay(fallbackDay);
       }
     }
-  }, [availableMatchDays, selectedPickDay]);
+  }, [availableMatchDays, fixtures, selectedPickDay]);
 
   // TOP 5 OVER 1.5 GOALS PICKS FOR PARTICULAR SELECTED DAY (UPCOMING)
   const top5Over15Picks = useMemo(() => {
