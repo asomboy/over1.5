@@ -6,7 +6,7 @@ A full-stack web application scaffold for predicting soccer goal expectations an
 
 - **Backend**: FastAPI (Python 3.14)
 - **Frontend**: React (Vite) + Tailwind CSS (v4) + Lucide Icons
-- **Database**: SQLite (`backend/soccer_predictor.db`) managed with SQLAlchemy
+- **Database**: SQLite (`backend/soccer.db`) managed with SQLAlchemy
 - **Communication**: REST API with CORS enabled for local development
 
 ---
@@ -52,7 +52,7 @@ Soccer Goal Predictor/
 ├── backend/
 │   ├── main.py              # FastAPI app, CORS, GET /health endpoint
 │   ├── database.py          # SQLite database connection & SQLAlchemy setup
-│   ├── soccer_predictor.db  # SQLite database file (auto-generated on startup)
+│   ├── soccer.db            # SQLite database file (pre-populated)
 │   ├── requirements.txt     # Python dependencies
 │   └── venv/                # Python virtual environment
 ├── frontend/
