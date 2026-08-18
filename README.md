@@ -76,5 +76,3 @@ Soccer Goal Predictor/
 3. **High-Performance Pagination**: Table 2 renders using 50-item page slicing, keeping browser DOM render speeds under 5ms.
 4. **Dynamic Prediction Ratings**: Every team receives unique attack and defense strength ratings via `resolve_team_ratings`, ensuring diverse Over 1.5 Goal percentages (60%–95%+).
 5. **Data Ingestion Integrity**: Synthetic mock fixtures are automatically purged during live ingestion to maintain official match schedules.
-
-```
