@@ -847,6 +847,16 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
             models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
             models.Fixture.match_date >= now_cutoff
         ).order_by(models.Fixture.match_date.asc()).all()
+
+        if not fixtures:
+            # Fallback query: fetch all non-finished fixtures regardless of match_date cutoff
+            fixtures = db.query(models.Fixture).options(
+                joinedload(models.Fixture.league),
+                joinedload(models.Fixture.home_team),
+                joinedload(models.Fixture.away_team)
+            ).filter(
+                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"])
+            ).order_by(models.Fixture.match_date.asc()).all()
     except Exception as query_err:
         logger.error(f"Error querying upcoming fixtures: {query_err}")
         db.rollback()
@@ -1010,131 +1020,137 @@ def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_
     Retrieve completed match results with final scores and Over 1.5 goal prediction outcomes.
     Supports optional `date` filter (YYYY-MM-DD format).
     """
-    query = db.query(models.Fixture).options(
-        joinedload(models.Fixture.league),
-        joinedload(models.Fixture.home_team),
-        joinedload(models.Fixture.away_team)
-    ).filter(
-        models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
-    )
+    try:
+        query = db.query(models.Fixture).options(
+            joinedload(models.Fixture.league),
+            joinedload(models.Fixture.home_team),
+            joinedload(models.Fixture.away_team)
+        ).filter(
+            models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
+        )
 
-    if date:
-        try:
-            parsed_dt = datetime.fromisoformat(date)
-            s_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 0, 0, 0)
-            e_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 23, 59, 59)
-            query = query.filter(models.Fixture.match_date >= s_dt, models.Fixture.match_date <= e_dt)
-        except Exception as e:
-            logger.warning(f"Invalid date filter parameter '{date}': {e}")
-
-    fixtures = query.order_by(models.Fixture.match_date.desc()).all()
-
-    all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
-
-    result_data = []
-    need_commit = False
-
-    for fix in fixtures:
-        pred = all_preds.get(fix.id)
-
-        top_scorelines = []
-        if pred and pred.top_scorelines_json:
+        if date:
             try:
-                top_scorelines = json.loads(pred.top_scorelines_json)
-            except Exception:
-                top_scorelines = []
+                parsed_dt = datetime.fromisoformat(date)
+                s_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 0, 0, 0)
+                e_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 23, 59, 59)
+                query = query.filter(models.Fixture.match_date >= s_dt, models.Fixture.match_date <= e_dt)
+            except Exception as e:
+                logger.warning(f"Invalid date filter parameter '{date}': {e}")
 
-        h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
-        a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
+        fixtures = query.order_by(models.Fixture.match_date.desc()).all()
 
-        h_score = fix.home_score
-        a_score = fix.away_score
-        has_scores = h_score is not None and a_score is not None
-        total_actual_goals = (h_score + a_score) if has_scores else None
+        try:
+            all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
+        except Exception:
+            all_preds = {}
 
-        home_win = float(pred.home_win_probability or 0.45) if pred else 0.45
-        draw_prob = float(pred.draw_probability or 0.25) if pred else 0.25
-        away_win = float(pred.away_win_probability or 0.30) if pred else 0.30
-        o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
-        o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
-        o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
-        o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
-        u25 = float(pred.under_2_5_probability or 0.48) if pred else 0.48
-        btts_prob = float(pred.btts_probability) if (pred and getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
-        confidence_score = float(pred.confidence_score) if (pred and getattr(pred, 'confidence_score', None) is not None) else 0.50
-        most_likely = (pred.most_likely_score if pred else None) or "1-1"
+        result_data = []
 
-        match_date_str = None
-        if fix.match_date:
-            if isinstance(fix.match_date, datetime):
-                dt_obj = fix.match_date if fix.match_date.tzinfo else fix.match_date.replace(tzinfo=timezone.utc)
-                match_date_str = dt_obj.isoformat()
-            else:
-                s = str(fix.match_date).replace(" ", "T")
-                match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
+        for fix in fixtures:
+            pred = all_preds.get(fix.id)
 
-        result_data.append({
-            "id": fix.id,
-            "external_id": fix.external_id,
-            "match_date": match_date_str,
-            "status": "FINISHED",
-            "venue": fix.venue,
-            "home_score": h_score,
-            "away_score": a_score,
-            "total_goals": total_actual_goals,
-            "over_1_5_hit": (total_actual_goals >= 2) if total_actual_goals is not None else None,
-            "over_2_5_hit": (total_actual_goals >= 3) if total_actual_goals is not None else None,
-            "live_clock": "FT",
-            "league": {
-                "id": fix.league.id if fix.league else None,
-                "name": fix.league.name if fix.league else "Unknown League",
-                "country": fix.league.country if fix.league else "",
-                "season": fix.league.season if fix.league else ""
-            },
-            "home_team": {
-                "id": fix.home_team.id if fix.home_team else None,
-                "name": fix.home_team.name if fix.home_team else "Home Team",
-                "short_code": fix.home_team.short_code if fix.home_team else "HOM",
-                "logo_url": fix.home_team.logo_url if fix.home_team else None
-            },
-            "away_team": {
-                "id": fix.away_team.id if fix.away_team else None,
-                "name": fix.away_team.name if fix.away_team else "Away Team",
-                "short_code": fix.away_team.short_code if fix.away_team else "AWY",
-                "logo_url": fix.away_team.logo_url if fix.away_team else None
-            },
-            "prediction": {
-                "predicted_home_score": h_xg,
-                "predicted_away_score": a_xg,
-                "expected_goals_xg": round(h_xg + a_xg, 2),
-                "home_win_probability": home_win,
-                "draw_probability": draw_prob,
-                "away_win_probability": away_win,
-                "over_0_5_probability": o05,
-                "over_1_5_probability": o15,
-                "over_2_5_probability": o25,
-                "over_3_5_probability": o35,
-                "under_2_5_probability": u25,
-                "btts_probability": btts_prob,
-                "confidence_score": confidence_score,
-                "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
-                "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
-                "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
-                "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
-                "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
-                "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
-                "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
-                "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
-                "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
-                "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
-                "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
-                "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
-                "most_likely_score": most_likely,
-                "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
-            }
-        })
+            top_scorelines = []
+            if pred and pred.top_scorelines_json:
+                try:
+                    top_scorelines = json.loads(pred.top_scorelines_json)
+                except Exception:
+                    top_scorelines = []
 
-    return {"status": "ok", "count": len(result_data), "data": result_data}
+            h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
+            a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
+
+            h_score = fix.home_score
+            a_score = fix.away_score
+            has_scores = h_score is not None and a_score is not None
+            total_actual_goals = (h_score + a_score) if has_scores else None
+
+            home_win = float(pred.home_win_probability or 0.45) if pred else 0.45
+            draw_prob = float(pred.draw_probability or 0.25) if pred else 0.25
+            away_win = float(pred.away_win_probability or 0.30) if pred else 0.30
+            o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
+            o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
+            o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
+            o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
+            u25 = float(pred.under_2_5_probability or 0.48) if pred else 0.48
+            btts_prob = float(pred.btts_probability) if (pred and getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+            confidence_score = float(pred.confidence_score) if (pred and getattr(pred, 'confidence_score', None) is not None) else 0.50
+            most_likely = (pred.most_likely_score if pred else None) or "1-1"
+
+            match_date_str = None
+            if fix.match_date:
+                if isinstance(fix.match_date, datetime):
+                    dt_obj = fix.match_date if fix.match_date.tzinfo else fix.match_date.replace(tzinfo=timezone.utc)
+                    match_date_str = dt_obj.isoformat()
+                else:
+                    s = str(fix.match_date).replace(" ", "T")
+                    match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
+
+            result_data.append({
+                "id": fix.id,
+                "external_id": fix.external_id,
+                "match_date": match_date_str,
+                "status": "FINISHED",
+                "venue": fix.venue,
+                "home_score": h_score,
+                "away_score": a_score,
+                "total_goals": total_actual_goals,
+                "over_1_5_hit": (total_actual_goals >= 2) if total_actual_goals is not None else None,
+                "over_2_5_hit": (total_actual_goals >= 3) if total_actual_goals is not None else None,
+                "live_clock": "FT",
+                "league": {
+                    "id": fix.league.id if fix.league else None,
+                    "name": fix.league.name if fix.league else "Unknown League",
+                    "country": fix.league.country if fix.league else "",
+                    "season": fix.league.season if fix.league else ""
+                },
+                "home_team": {
+                    "id": fix.home_team.id if fix.home_team else None,
+                    "name": fix.home_team.name if fix.home_team else "Home Team",
+                    "short_code": fix.home_team.short_code if fix.home_team else "HOM",
+                    "logo_url": fix.home_team.logo_url if fix.home_team else None
+                },
+                "away_team": {
+                    "id": fix.away_team.id if fix.away_team else None,
+                    "name": fix.away_team.name if fix.away_team else "Away Team",
+                    "short_code": fix.away_team.short_code if fix.away_team else "AWY",
+                    "logo_url": fix.away_team.logo_url if fix.away_team else None
+                },
+                "prediction": {
+                    "predicted_home_score": h_xg,
+                    "predicted_away_score": a_xg,
+                    "expected_goals_xg": round(h_xg + a_xg, 2),
+                    "home_win_probability": home_win,
+                    "draw_probability": draw_prob,
+                    "away_win_probability": away_win,
+                    "over_0_5_probability": o05,
+                    "over_1_5_probability": o15,
+                    "over_2_5_probability": o25,
+                    "over_3_5_probability": o35,
+                    "under_2_5_probability": u25,
+                    "btts_probability": btts_prob,
+                    "confidence_score": confidence_score,
+                    "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
+                    "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
+                    "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
+                    "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
+                    "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
+                    "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
+                    "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
+                    "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
+                    "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
+                    "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
+                    "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
+                    "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
+                    "most_likely_score": most_likely,
+                    "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
+                }
+            })
+
+        return {"status": "ok", "count": len(result_data), "data": result_data}
+    except Exception as exc:
+        logger.error(f"Error in get_finished_fixtures: {exc}", exc_info=True)
+        return {"status": "error", "message": str(exc), "count": 0, "data": []}
 
 
 
