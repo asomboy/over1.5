@@ -1036,8 +1036,6 @@ def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_
 
     for fix in fixtures:
         pred = all_preds.get(fix.id)
-        if not pred:
-            pred = PoissonPredictionEngine.predict_fixture(db, fix.id)
 
         top_scorelines = []
         if pred and pred.top_scorelines_json:
