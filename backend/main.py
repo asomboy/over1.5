@@ -329,6 +329,20 @@ async def lifespan(app: FastAPI):
     # Create SQLite database and tables on application startup
     init_db()
 
+    # Ensure database has initial fixture data on boot
+    boot_db = SessionLocal()
+    try:
+        fixture_count = boot_db.query(models.Fixture).count()
+        if fixture_count == 0:
+            logger.info("Database is empty on boot. Running initial ESPN fixture ingestion...")
+            await DataIngestionService.fetch_and_ingest_from_api(boot_db, api_key=FOOTBALL_API_KEY)
+            PoissonPredictionEngine.predict_all_upcoming_fixtures(boot_db)
+            logger.info(f"Boot ingestion complete. Ingested {boot_db.query(models.Fixture).count()} fixtures.")
+    except Exception as boot_err:
+        logger.error(f"Error during boot fixture ingestion: {boot_err}")
+    finally:
+        boot_db.close()
+
     # Schedule daily midnight refresh at 00:00 UTC
     scheduler.add_job(
         scheduled_data_refresh,
