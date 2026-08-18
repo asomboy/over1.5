@@ -517,11 +517,27 @@ def trigger_recalculate_statistics(
 @app.post("/api/ingest/sync")
 async def sync_data(db: Session = Depends(get_db)):
     """
-    Triggers automated ingestion sync for competitions, teams,
-    historical results, and upcoming fixtures.
+    Triggers non-blocking automated ingestion sync for competitions, teams,
+    historical results, and upcoming fixtures in a background thread.
     """
-    res = await DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY)
-    return res
+    import asyncio
+    def run_bg_sync():
+        bg_db = SessionLocal()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY))
+                PoissonPredictionEngine.predict_all_upcoming_fixtures(bg_db)
+            finally:
+                loop.close()
+        except Exception as err:
+            logger.error(f"Error in manual sync background thread: {err}")
+        finally:
+            bg_db.close()
+            
+    asyncio.create_task(asyncio.to_thread(run_bg_sync))
+    return {"status": "ok", "message": "Real-time data ingestion sync initiated in background!"}
 
 
 @app.post("/api/ingest/leagues")
