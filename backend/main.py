@@ -1081,6 +1081,135 @@ def get_system_intelligence_status(db: Session = Depends(get_db)):
     }
 
 
+# =============================================================================
+# PHASE 7: PRODUCTION AUTOMATION & OBSERVABILITY ENDPOINTS
+# =============================================================================
+
+@app.get("/api/system/health")
+def get_system_health():
+    """Liveness probe confirming FastAPI application process is active and responsive."""
+    return {"status": "HEALTHY", "service": "Soccer Goal Predictor / Match Intelligence", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/system/readiness")
+def get_system_readiness(db: Session = Depends(get_db)):
+    """Readiness probe validating database connectivity, migrations, and core services."""
+    try:
+        # Test DB query
+        db.query(models.Fixture).count()
+        db_status = "CONNECTED"
+    except Exception as ex:
+        db_status = f"FAILED: {ex}"
+
+    is_ready = (db_status == "CONNECTED")
+    return {
+        "status": "READY" if is_ready else "NOT_READY",
+        "database": db_status,
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/api/system/status")
+def get_system_operational_status(db: Session = Depends(get_db)):
+    """Comprehensive production health status summarizing database, providers, jobs, and alerts."""
+    from services.provider_health_service import ProviderHealthService
+    from services.alert_service import AlertService
+    from services.job_orchestrator_service import JobOrchestratorService
+
+    try:
+        db.query(models.Fixture).count()
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    providers = ProviderHealthService.get_providers_status(db)
+    active_alerts = AlertService.get_active_alerts(db)
+    recent_jobs = JobOrchestratorService.get_job_history(db, limit=5)
+
+    has_critical_alerts = any(a["severity"] == "CRITICAL" for a in active_alerts)
+    any_provider_down = any(p["status"] == "UNAVAILABLE" for p in providers)
+
+    if not db_ok:
+        overall = "UNAVAILABLE"
+    elif has_critical_alerts or any_provider_down:
+        overall = "DEGRADED"
+    else:
+        overall = "HEALTHY"
+
+    return {
+        "overall_status": overall,
+        "database": "HEALTHY" if db_ok else "UNAVAILABLE",
+        "providers": providers,
+        "active_alerts_count": len(active_alerts),
+        "recent_jobs_count": len(recent_jobs),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/api/system/jobs")
+def get_system_jobs(db: Session = Depends(get_db)):
+    """Lists available production jobs and recent executions."""
+    from services.job_orchestrator_service import JobOrchestratorService
+    return {
+        "available_jobs": JobOrchestratorService.AVAILABLE_JOBS,
+        "recent_executions": JobOrchestratorService.get_job_history(db, limit=10)
+    }
+
+
+@app.get("/api/system/jobs/{job_name}")
+def get_system_job_status(job_name: str, db: Session = Depends(get_db)):
+    """Returns latest execution status for a specific job."""
+    from services.job_orchestrator_service import JobOrchestratorService
+    history = JobOrchestratorService.get_job_history(db, job_name=job_name, limit=1)
+    if not history:
+        return {"job_name": job_name, "last_execution": None, "status": "IDLE"}
+    return {"job_name": job_name, "last_execution": history[0]}
+
+
+@app.get("/api/system/jobs/{job_name}/history")
+def get_system_job_history(job_name: str, limit: int = 20, db: Session = Depends(get_db)):
+    """Returns execution history logs for a specific job."""
+    from services.job_orchestrator_service import JobOrchestratorService
+    return {"job_name": job_name, "history": JobOrchestratorService.get_job_history(db, job_name=job_name, limit=limit)}
+
+
+@app.post("/api/system/jobs/{job_name}/run")
+def run_system_job(job_name: str, db: Session = Depends(get_db)):
+    """Manually triggers immediate execution of a production job."""
+    from services.job_orchestrator_service import JobOrchestratorService
+    return JobOrchestratorService.execute_job(db, job_name)
+
+
+@app.get("/api/system/alerts")
+def get_system_alerts(db: Session = Depends(get_db)):
+    """Returns all currently active operational system alerts."""
+    from services.alert_service import AlertService
+    return {"status": "ok", "alerts": AlertService.get_active_alerts(db)}
+
+
+@app.post("/api/system/alerts/{alert_id}/resolve")
+def resolve_system_alert(alert_id: str, db: Session = Depends(get_db)):
+    """Marks an active system alert as resolved."""
+    from services.alert_service import AlertService
+    success = AlertService.resolve_alert(db, alert_id)
+    return {"status": "ok" if success else "error", "resolved": success}
+
+
+@app.get("/api/system/backups")
+def get_system_backups():
+    """Lists available SQLite backup archives."""
+    from services.backup_service import BackupService
+    return {"status": "ok", "backups": BackupService.list_backups()}
+
+
+@app.post("/api/system/backups/run")
+def run_system_backup():
+    """Executes an online live SQLite backup and integrity verification."""
+    from services.backup_service import BackupService
+    return BackupService.create_database_backup()
+
+
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Sends a test Telegram notification message."""

@@ -18,15 +18,19 @@ import {
   Filter,
   Database,
   Server,
-  Play
+  Play,
+  Bell,
+  HardDrive,
+  Cpu
 } from 'lucide-react';
 
 export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest, darkMode }) {
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'coverage' | 'readiness' | 'markets' | 'calibration' | 'backfill' | 'live'
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'coverage' | 'readiness' | 'markets' | 'calibration' | 'jobs' | 'alerts' | 'backfill' | 'live'
   const [loading, setLoading] = useState(false);
-  const [backfilling, setBackfilling] = useState(false);
+  const [runningJob, setRunningJob] = useState('');
+  const [backingUp, setBackingUp] = useState(false);
 
-  const [systemIntel, setSystemIntel] = useState(null);
+  const [systemStatus, setSystemStatus] = useState(null);
   const [coverageData, setCoverageData] = useState(null);
   const [competitionsCoverage, setCompetitionsCoverage] = useState([]);
   const [readinessData, setReadinessData] = useState(null);
@@ -35,6 +39,9 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const [liveData, setLiveData] = useState(null);
   const [backfillStatus, setBackfillStatus] = useState(null);
   const [providersData, setProvidersData] = useState([]);
+  const [jobsData, setJobsData] = useState(null);
+  const [alertsData, setAlertsData] = useState([]);
+  const [backupsData, setBackupsData] = useState([]);
 
   useEffect(() => {
     if (isOpen) {
@@ -45,8 +52,8 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      const [intelRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes] = await Promise.all([
-        apiRequest('get', '/api/system/intelligence-status'),
+      const [stRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes, jbRes, altRes, bkRes] = await Promise.all([
+        apiRequest('get', '/api/system/status'),
         apiRequest('get', '/api/data-quality/overview'),
         apiRequest('get', '/api/data-quality/competitions'),
         apiRequest('get', '/api/models/readiness'),
@@ -54,10 +61,13 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         apiRequest('get', '/api/models/calibration'),
         apiRequest('get', '/api/live/performance'),
         apiRequest('get', '/api/data-quality/backfill-status'),
-        apiRequest('get', '/api/system/providers')
+        apiRequest('get', '/api/system/providers'),
+        apiRequest('get', '/api/system/jobs'),
+        apiRequest('get', '/api/system/alerts'),
+        apiRequest('get', '/api/system/backups')
       ]);
 
-      if (intelRes?.data) setSystemIntel(intelRes.data);
+      if (stRes?.data) setSystemStatus(stRes.data);
       if (covRes?.data) setCoverageData(covRes.data);
       if (compRes?.data?.competitions) setCompetitionsCoverage(compRes.data.competitions);
       if (readRes?.data) setReadinessData(readRes.data);
@@ -66,6 +76,9 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       if (lvRes?.data) setLiveData(lvRes.data);
       if (bfRes?.data) setBackfillStatus(bfRes.data);
       if (provRes?.data?.providers) setProvidersData(provRes.data.providers);
+      if (jbRes?.data) setJobsData(jbRes.data);
+      if (altRes?.data?.alerts) setAlertsData(altRes.data.alerts);
+      if (bkRes?.data?.backups) setBackupsData(bkRes.data.backups);
     } catch (err) {
       console.error('Error fetching production operations intelligence:', err);
     } finally {
@@ -73,15 +86,36 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
     }
   };
 
-  const handleRunBackfill = async () => {
-    setBackfilling(true);
+  const handleRunJob = async (jobName) => {
+    setRunningJob(jobName);
     try {
-      await apiRequest('post', '/api/data-quality/backfill-run?batch_size=50');
+      await apiRequest('post', `/api/system/jobs/${jobName}/run`);
       await fetchAllData();
     } catch (err) {
-      console.error('Error running enrichment backfill pass:', err);
+      console.error(`Error running job ${jobName}:`, err);
     } finally {
-      setBackfilling(false);
+      setRunningJob('');
+    }
+  };
+
+  const handleRunBackup = async () => {
+    setBackingUp(true);
+    try {
+      await apiRequest('post', '/api/system/backups/run');
+      await fetchAllData();
+    } catch (err) {
+      console.error('Error running SQLite backup:', err);
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const handleResolveAlert = async (alertId) => {
+    try {
+      await apiRequest('post', `/api/system/alerts/${alertId}/resolve`);
+      await fetchAllData();
+    } catch (err) {
+      console.error(`Error resolving alert ${alertId}:`, err);
     }
   };
 
@@ -93,6 +127,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       case 'VALIDATED (Well Calibrated)':
       case 'HEALTHY':
       case 'STABLE':
+      case 'SUCCESS':
       case 'OPERATIONAL':
       case 'GOOD':
         return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
@@ -100,12 +135,15 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       case 'ACCEPTABLE':
       case 'ACCEPTABLE (Moderate Calibration)':
       case 'WARNING':
+      case 'PARTIAL':
       case 'DELAYED':
         return 'bg-amber-500/20 text-amber-400 border-amber-500/40';
       case 'CALIBRATION_WARNING':
       case 'MODEL_DRIFT_WARNING':
       case 'DEGRADED':
+      case 'FAILED':
       case 'UNAVAILABLE':
+      case 'CRITICAL':
       case 'POOR':
         return 'bg-rose-500/20 text-rose-400 border-rose-500/40';
       default:
@@ -124,15 +162,20 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-cyan-400 px-2.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/30">
-                <Database className="w-3.5 h-3.5" />
-                Production Data & Model Operations
+                <Cpu className="w-3.5 h-3.5" />
+                Production Match Intelligence
               </span>
               <span className="text-[9px] font-bold text-slate-400 uppercase">
-                Phase 6 Continuous Intelligence
+                Phase 7 Automation & Observability
               </span>
             </div>
-            <h2 className="text-base sm:text-xl font-black text-white tracking-tight">
-              Data Coverage, Empirical Calibration & Model Readiness
+            <h2 className="text-base sm:text-xl font-black text-white tracking-tight flex items-center gap-2">
+              <span>Production Operations & Automation</span>
+              {systemStatus && (
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase border ${getStatusBadge(systemStatus.overall_status)}`}>
+                  {systemStatus.overall_status}
+                </span>
+              )}
             </h2>
           </div>
 
@@ -157,6 +200,8 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         <div className="p-2 border-b border-slate-800 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
             { id: 'overview', label: 'OVERVIEW' },
+            { id: 'jobs', label: 'AUTOMATION JOBS' },
+            { id: 'alerts', label: `ALERTS (${alertsData.length})` },
             { id: 'coverage', label: 'DATA COVERAGE' },
             { id: 'readiness', label: 'MODEL READINESS' },
             { id: 'markets', label: 'MARKET LEADERBOARD' },
@@ -183,14 +228,13 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
           {loading && !coverageData ? (
             <div className="py-16 text-center space-y-3">
               <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
-              <p className="text-xs font-semibold text-slate-400">Loading production data operations metrics...</p>
+              <p className="text-xs font-semibold text-slate-400">Loading production operations intelligence...</p>
             </div>
           ) : (
             <>
               {/* TAB 1: OVERVIEW */}
               {activeTab === 'overview' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* Global Coverage KPI Cards */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {[
                       { title: 'Goals Coverage', data: coverageData?.goals_coverage, icon: Activity },
@@ -217,28 +261,27 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                     })}
                   </div>
 
-                  {/* System Intelligence Summary Strip */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <span className="text-xs font-black uppercase tracking-wider text-slate-300 block">
                       Production Architecture Safeguards
                     </span>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                       <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-cyan-400 block">Provenance & Zero Fabrication</span>
+                        <span className="text-[10px] font-bold text-cyan-400 block">Circuit Breaker & Retries</span>
                         <p className="text-[11px] text-slate-400">
-                          Missing statistics remain NULL. Never infers corners, cards, or referee assignments.
+                          External API failures are contained with exponential backoff and circuit isolation.
                         </p>
                       </div>
                       <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                         <span className="text-[10px] font-bold text-emerald-400 block">Temporal Invariant</span>
                         <p className="text-[11px] text-slate-400">
-                          Strictly zero future leakage: match_date &lt; prediction_timestamp across all feature pipelines.
+                          Strictly zero future leakage: match_date &lt; prediction_timestamp across all models.
                         </p>
                       </div>
                       <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-amber-400 block">Validation Gating</span>
+                        <span className="text-[10px] font-bold text-amber-400 block">Atomic SQLite Backups</span>
                         <p className="text-[11px] text-slate-400">
-                          Adaptive ensemble disabled until N &ge; 100 verified predictions per evaluated market.
+                          Online SQLite backups with PRAGMA integrity checks without blocking transactions.
                         </p>
                       </div>
                     </div>
@@ -246,7 +289,165 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 2: DATA COVERAGE */}
+              {/* TAB 2: AUTOMATION JOBS */}
+              {activeTab === 'jobs' && (
+                <div className="space-y-4 animate-fadeIn">
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Scheduled Production Jobs Runner
+                    </span>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {jobsData?.available_jobs?.map((jobName, idx) => (
+                        <div key={idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-bold text-white uppercase">{jobName.replace(/_/g, ' ')}</span>
+                            <span className="text-[10px] text-slate-500 block">Scheduled automated background task</span>
+                          </div>
+                          <button
+                            onClick={() => handleRunJob(jobName)}
+                            disabled={runningJob === jobName}
+                            className="px-3 py-1 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1 shadow-sm active:scale-95 disabled:opacity-50"
+                          >
+                            <Play className={`w-3 h-3 ${runningJob === jobName ? 'animate-spin' : ''}`} />
+                            <span>{runningJob === jobName ? 'Running...' : 'Run'}</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Recent Job Executions */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Recent Execution History Logs
+                    </span>
+
+                    {jobsData?.recent_executions?.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase">
+                              <th className="py-2 px-2">Job Name</th>
+                              <th className="py-2 px-2">Status</th>
+                              <th className="py-2 px-2 text-center">Duration</th>
+                              <th className="py-2 px-2 text-center">Processed</th>
+                              <th className="py-2 px-2">Timestamp</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {jobsData.recent_executions.map((rec, idx) => (
+                              <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                                <td className="py-2 px-2 font-bold text-slate-200 uppercase">{rec.job_name.replace(/_/g, ' ')}</td>
+                                <td className="py-2 px-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(rec.status)}`}>
+                                    {rec.status}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{rec.duration_ms} ms</td>
+                                <td className="py-2 px-2 text-center text-white">{rec.records_processed}</td>
+                                <td className="py-2 px-2 text-[10px] text-slate-500">
+                                  {rec.started_at ? new Date(rec.started_at).toLocaleTimeString() : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 py-4 text-center">No job execution history recorded yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: ALERTS & BACKUPS */}
+              {activeTab === 'alerts' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* Active Alerts */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Active System Operational Alerts ({alertsData.length})
+                    </span>
+
+                    {alertsData.length > 0 ? (
+                      <div className="space-y-2">
+                        {alertsData.map((alt, idx) => (
+                          <div key={idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(alt.severity)}`}>
+                                  {alt.severity}
+                                </span>
+                                <span className="text-[10px] font-black text-slate-300 uppercase">{alt.category}</span>
+                              </div>
+                              <p className="text-xs text-slate-300 font-semibold">{alt.message}</p>
+                            </div>
+                            <button
+                              onClick={() => handleResolveAlert(alt.alert_id)}
+                              className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95"
+                            >
+                              Resolve
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-6 text-center text-slate-400 space-y-1">
+                        <CheckCircle2 className="w-6 h-6 text-emerald-400 mx-auto" />
+                        <p className="text-xs font-bold text-slate-300">All systems operating normally</p>
+                        <p className="text-[11px] text-slate-500">No active alerts or incident warnings.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Backups Management */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white block">
+                        SQLite Online Backups ({backupsData.length})
+                      </span>
+                      <button
+                        onClick={handleRunBackup}
+                        disabled={backingUp}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 shadow-md active:scale-95 disabled:opacity-50"
+                      >
+                        <HardDrive className={`w-3.5 h-3.5 ${backingUp ? 'animate-spin' : ''}`} />
+                        <span>{backingUp ? 'Backing Up...' : 'Create Live Backup'}</span>
+                      </button>
+                    </div>
+
+                    {backupsData.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase">
+                              <th className="py-2 px-2">Archive File</th>
+                              <th className="py-2 px-2 text-center">Size</th>
+                              <th className="py-2 px-2 text-right">Created At</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {backupsData.map((bk, idx) => (
+                              <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                                <td className="py-2 px-2 font-bold text-slate-200">{bk.filename}</td>
+                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{(bk.size_bytes / 1024).toFixed(0)} KB</td>
+                                <td className="py-2 px-2 text-right text-[10px] text-slate-500">
+                                  {new Date(bk.created_at).toLocaleString()}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 py-3 text-center">No backup archives created yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: DATA COVERAGE */}
               {activeTab === 'coverage' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -288,7 +489,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 3: MODEL READINESS */}
+              {/* TAB 5: MODEL READINESS */}
               {activeTab === 'readiness' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -334,7 +535,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 4: MARKET LEADERBOARD */}
+              {/* TAB 6: MARKET LEADERBOARD */}
               {activeTab === 'markets' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -389,7 +590,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 5: CALIBRATION */}
+              {/* TAB 7: CALIBRATION */}
               {activeTab === 'calibration' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
@@ -450,32 +651,18 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 6: BACKFILL & PROVIDERS */}
+              {/* TAB 8: BACKFILL & PROVIDERS */}
               {activeTab === 'backfill' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* Backfill status */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="text-xs font-black uppercase tracking-wider text-white block">
-                          Historical Data Backfill & Enrichment
-                        </span>
-                        <span className="text-[11px] text-slate-400">
-                          {backfillStatus?.fully_enriched_fixtures || 0} / {backfillStatus?.total_finished_fixtures || 0} fixtures fully enriched
-                        </span>
-                      </div>
-                      <button
-                        onClick={handleRunBackfill}
-                        disabled={backfilling}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1.5 shadow-md active:scale-95 disabled:opacity-50"
-                      >
-                        <Play className={`w-3.5 h-3.5 ${backfilling ? 'animate-spin' : ''}`} />
-                        <span>{backfilling ? 'Enriching...' : 'Run Enrichment Batch'}</span>
-                      </button>
-                    </div>
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Historical Data Backfill & Enrichment
+                    </span>
+                    <span className="text-[11px] text-slate-400 block">
+                      {backfillStatus?.fully_enriched_fixtures || 0} / {backfillStatus?.total_finished_fixtures || 0} fixtures fully enriched
+                    </span>
                   </div>
 
-                  {/* Providers health */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <span className="text-xs font-black uppercase tracking-wider text-white block">
                       External Data Providers Health
@@ -506,7 +693,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 7: LIVE OPERATIONS */}
+              {/* TAB 9: LIVE OPERATIONS */}
               {activeTab === 'live' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">

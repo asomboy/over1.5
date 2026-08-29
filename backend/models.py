@@ -638,3 +638,53 @@ class HistoricalEnrichmentStatus(Base):
     # Relationships
     fixture = relationship("Fixture", back_populates="enrichment_status")
 
+
+class JobExecution(Base):
+    """
+    Persistent execution log for scheduled and manual production background jobs.
+    Tracks execution status, timing, processed records, and error details.
+    """
+    __tablename__ = "job_executions"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    job_name: Mapped[str] = mapped_column(String, nullable=False, index=True) # fixture_ingestion, historical_enrichment, prematch_prediction, live_match_poll, post_match_verification, model_evaluation, provider_health, system_maintenance
+    execution_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="RUNNING", index=True) # RUNNING, SUCCESS, PARTIAL, FAILED, SKIPPED
+    
+    records_processed: Mapped[int] = mapped_column(Integer, default=0)
+    records_created: Mapped[int] = mapped_column(Integer, default=0)
+    records_updated: Mapped[int] = mapped_column(Integer, default=0)
+    records_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class SystemAlert(Base):
+    """
+    Internal system operational alert record with deduplication and cooldown support.
+    """
+    __tablename__ = "system_alerts"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    alert_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String, nullable=False, index=True) # PROVIDER_FAILURE, PROVIDER_STALE, JOB_FAILURE, DATABASE_FAILURE, MODEL_DEGRADATION, DATA_QUALITY, LIVE_DATA_STALE, SYSTEM_CONFIGURATION
+    severity: Mapped[str] = mapped_column(String, default="WARNING", index=True) # INFO, WARNING, CRITICAL
+    
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String, default="system", index=True)
+    
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
