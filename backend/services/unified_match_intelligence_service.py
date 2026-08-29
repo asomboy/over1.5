@@ -22,6 +22,7 @@ try:
     from services.corners_service import CornersPredictionEngine
     from services.cards_service import CardsPredictionEngine
     from services.live_service import LiveMatchIntelligenceService
+    from services.shots_prediction_service import ShotsPredictionEngine
     from services.production_validation_service import ProductionValidationService
     from services.data_reconciliation_service import DataReconciliationService
 except ImportError:
@@ -34,7 +35,8 @@ except ImportError:
     from .prediction_service import PoissonPredictionEngine
     from .corners_service import CornersPredictionEngine
     from .cards_service import CardsPredictionEngine
-    from .live_service import LivePredictionEngine
+    from .live_service import LiveMatchIntelligenceService
+    from .shots_prediction_service import ShotsPredictionEngine
     from .production_validation_service import ProductionValidationService
     from .data_reconciliation_service import DataReconciliationService
 
@@ -44,8 +46,8 @@ logger = logging.getLogger(__name__)
 class UnifiedMatchIntelligenceService:
     """
     Central orchestration service creating a unified, multi-market match intelligence
-    representation combining Goals, Corners, Cards, Referee, Live state, Cross-Market consistency,
-    Match-State classifications, and ranked high-value signals.
+    representation combining Goals, Corners, Cards, Shots, SoT, Referee, Live state, 
+    Cross-Market consistency, Match-State classifications, and ranked high-value signals.
     """
 
     @classmethod
@@ -70,24 +72,25 @@ class UnifiedMatchIntelligenceService:
         goals_data = cls._get_goals_intelligence(db, fixture)
         corners_data = cls._get_corners_intelligence(db, fixture)
         cards_data = cls._get_cards_intelligence(db, fixture)
+        shots_data = cls._get_shots_intelligence(db, fixture)
         live_data = cls._get_live_intelligence(db, fixture) if is_live else None
 
         # 3. Cross-Market Consistency & Diagnostics
-        consistency = cls._evaluate_cross_market_consistency(goals_data, corners_data, cards_data, live_data)
+        consistency = cls._evaluate_cross_market_consistency(goals_data, corners_data, cards_data, live_data, shots_data)
 
         # 4. Match-State Classifier
-        match_states = cls._classify_match_state(fixture, goals_data, corners_data, cards_data, live_data)
+        match_states = cls._classify_match_state(fixture, goals_data, corners_data, cards_data, live_data, shots_data)
 
         # 5. Conservative Unified Confidence
         unified_confidence = cls._calculate_unified_confidence(
-            goals_data, corners_data, cards_data, live_data, consistency["consistency_score"]
+            goals_data, corners_data, cards_data, live_data, consistency["consistency_score"], shots_data
         )
 
         # 6. Ranked Cross-Market Signals
-        signals = cls._rank_unified_signals(goals_data, corners_data, cards_data, live_data, unified_confidence)
+        signals = cls._rank_unified_signals(goals_data, corners_data, cards_data, live_data, unified_confidence, shots_data)
 
         # 7. Team Profile Intelligence
-        team_profiles = cls._build_team_profiles(db, fixture, goals_data, corners_data, cards_data)
+        team_profiles = cls._build_team_profiles(db, fixture, goals_data, corners_data, cards_data, shots_data)
 
         # 8. Assembled Unified Payload
         payload = {
@@ -111,11 +114,9 @@ class UnifiedMatchIntelligenceService:
                 "goals": goals_data,
                 "corners": corners_data,
                 "cards": cards_data,
-                "live": live_data,
-                "shots": {
-                    "status": "PLANNED_PHASE_10_EXPANSION",
-                    "message": "Shots and Shots-on-Target prediction engines scheduled for Phase 10 integration."
-                }
+                "shots": shots_data.get("shots", {}),
+                "shots_on_target": shots_data.get("shots_on_target", {}),
+                "live": live_data
             },
             "team_profiles": team_profiles,
             "data_provenance_summary": {
@@ -238,13 +239,33 @@ class UnifiedMatchIntelligenceService:
             logger.debug(f"Live prediction extraction for fixture {fixture.id}: {ex}")
         return None
 
+    @classmethod
+    def _get_shots_intelligence(cls, db: Session, fixture: Fixture) -> Dict[str, Any]:
+        """Extracts shot and SoT expectations from ShotsPredictionEngine."""
+        try:
+            pred = ShotsPredictionEngine.predict_shots(db, fixture.id)
+            if pred and not pred.get("error"):
+                return pred
+        except Exception as ex:
+            logger.debug(f"Shots prediction fallback for fixture {fixture.id}: {ex}")
+
+        return {
+            "status": "UNAVAILABLE",
+            "model_version": "v1_shots_nb",
+            "shots": {"expected_total_shots": 24.5, "probabilities": {}},
+            "shots_on_target": {"expected_total_sot": 8.7, "probabilities": {}},
+            "confidence": 0.40,
+            "data_quality": 0.40
+        }
+
     # =========================================================================
     # CROSS-MARKET CONSISTENCY & CONTRADICTIONS
     # =========================================================================
 
     @classmethod
     def _evaluate_cross_market_consistency(
-        cls, goals: Dict[str, Any], corners: Dict[str, Any], cards: Dict[str, Any], live: Optional[Dict[str, Any]]
+        cls, goals: Dict[str, Any], corners: Dict[str, Any], cards: Dict[str, Any],
+        live: Optional[Dict[str, Any]], shots: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Quantifies cross-market consistency and surfaces contradiction diagnostic flags.
@@ -278,7 +299,20 @@ class UnifiedMatchIntelligenceService:
             flags.append("HIGH_CARD_WITHOUT_STRICT_REF")
             score -= 0.10
 
-        # 4. Live Remaining Rates vs Current Time Check
+        # 4. Shots ↔ Goals Cross-Market Diagnostics
+        if shots and shots.get("status") == "AVAILABLE":
+            tot_shots = shots.get("shots", {}).get("expected_total_shots", 24.5)
+            tot_sot = shots.get("shots_on_target", {}).get("expected_total_sot", 8.5)
+            if tot_shots >= 29.0 and tot_xg < 1.8:
+                flags.append("HIGH_SHOT_VOLUME_LOW_GOAL_EXPECTATION")
+                score -= 0.10
+            elif tot_shots < 16.0 and tot_xg >= 3.2:
+                flags.append("LOW_SHOT_VOLUME_HIGH_GOAL_EXPECTATION")
+                score -= 0.10
+            if tot_sot >= 11.5:
+                flags.append("HIGH_SOT_VOLUME_GOAL_PRESSURE")
+
+        # 5. Live Remaining Rates vs Current Time Check
         if live:
             minute = live.get("current_minute", 45)
             rem_xg = live.get("remaining_home_xg", 0.0) + live.get("remaining_away_xg", 0.0)
@@ -302,7 +336,7 @@ class UnifiedMatchIntelligenceService:
     @classmethod
     def _classify_match_state(
         cls, fixture: Fixture, goals: Dict[str, Any], corners: Dict[str, Any],
-        cards: Dict[str, Any], live: Optional[Dict[str, Any]]
+        cards: Dict[str, Any], live: Optional[Dict[str, Any]], shots: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """Classifies the tactical/dynamic match state into transparent descriptive tags."""
         tags = []
@@ -328,9 +362,10 @@ class UnifiedMatchIntelligenceService:
             tags.append("BALANCED")
 
         # Tempo & Attacking Volume
-        if tot_xg >= 3.0 or tot_corners >= 11.0:
+        tot_shots = shots.get("shots", {}).get("expected_total_shots", 24.0) if shots else 24.0
+        if tot_xg >= 3.0 or tot_corners >= 11.0 or tot_shots >= 28.0:
             tags.append("HIGH_TEMPO")
-        elif tot_xg <= 2.1 and tot_corners <= 8.5:
+        elif tot_xg <= 2.1 and tot_corners <= 8.5 and tot_shots <= 19.0:
             tags.append("LOW_TEMPO")
 
         # Disciplinary Tension
@@ -371,7 +406,7 @@ class UnifiedMatchIntelligenceService:
     @classmethod
     def _calculate_unified_confidence(
         cls, goals: Dict[str, Any], corners: Dict[str, Any], cards: Dict[str, Any],
-        live: Optional[Dict[str, Any]], consistency_score: float
+        live: Optional[Dict[str, Any]], consistency_score: float, shots: Optional[Dict[str, Any]] = None
     ) -> float:
         """
         Derives multi-factor conservative confidence score.
@@ -381,6 +416,7 @@ class UnifiedMatchIntelligenceService:
         g_conf = cls._extract_confidence_num(goals.get("confidence", 50)) if goals.get("status") == "AVAILABLE" else 0.40
         c_conf = cls._extract_confidence_num(corners.get("confidence", 50)) if corners.get("status") == "AVAILABLE" else 0.40
         d_conf = cls._extract_confidence_num(cards.get("confidence", 50)) if cards.get("status") == "AVAILABLE" else 0.40
+        s_conf = cls._extract_confidence_num(shots.get("confidence", 50)) if shots and shots.get("status") == "AVAILABLE" else 0.40
 
         # Referee bonus
         has_ref = cards.get("referee_tier") not in ["TIER_5_LEAGUE_DEFAULT", None]
@@ -393,9 +429,10 @@ class UnifiedMatchIntelligenceService:
             live_factor = l_conf
 
         raw = (
-            0.35 * g_conf +
-            0.20 * c_conf +
+            0.30 * g_conf +
+            0.15 * c_conf +
             0.15 * d_conf +
+            0.10 * s_conf +
             0.10 * ref_factor +
             0.20 * consistency_score
         ) * live_factor
@@ -410,7 +447,7 @@ class UnifiedMatchIntelligenceService:
     @classmethod
     def _rank_unified_signals(
         cls, goals: Dict[str, Any], corners: Dict[str, Any], cards: Dict[str, Any],
-        live: Optional[Dict[str, Any]], unified_confidence: float
+        live: Optional[Dict[str, Any]], unified_confidence: float, shots: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Ranks top predictive opportunities across all markets.
@@ -440,6 +477,15 @@ class UnifiedMatchIntelligenceService:
             candidates.append({"market": "Over 3.5 Total Cards", "category": "CARDS", "prob": d_probs["over_3_5"], "model": "Cards & Referee Model"})
         if d_probs.get("over_2_5", 0) >= 0.78:
             candidates.append({"market": "Over 2.5 Total Cards", "category": "CARDS", "prob": d_probs["over_2_5"], "model": "Cards & Referee Model"})
+
+        # 4. Shots candidates (Phase 10)
+        if shots and shots.get("status") == "AVAILABLE":
+            s_probs = shots.get("shots", {}).get("probabilities", {})
+            sot_probs = shots.get("shots_on_target", {}).get("probabilities", {})
+            if s_probs.get("over_19_5", 0) >= 0.76:
+                candidates.append({"market": "Over 19.5 Total Shots", "category": "SHOTS", "prob": s_probs["over_19_5"], "model": "Negative Binomial Shots"})
+            if sot_probs.get("over_6_5", 0) >= 0.74:
+                candidates.append({"market": "Over 6.5 Total SoT", "category": "SHOTS_ON_TARGET", "prob": sot_probs["over_6_5"], "model": "SoT Model"})
 
         # Sort candidates by probability
         candidates.sort(key=lambda x: x["prob"], reverse=True)
@@ -472,7 +518,8 @@ class UnifiedMatchIntelligenceService:
 
     @classmethod
     def _build_team_profiles(
-        cls, db: Session, fixture: Fixture, goals: Dict[str, Any], corners: Dict[str, Any], cards: Dict[str, Any]
+        cls, db: Session, fixture: Fixture, goals: Dict[str, Any], corners: Dict[str, Any],
+        cards: Dict[str, Any], shots: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Constructs unified multi-dimension profile for home and away teams."""
         h_name = fixture.home_team.name if fixture.home_team else "Home"
@@ -484,6 +531,8 @@ class UnifiedMatchIntelligenceService:
                 "expected_goals": goals.get("home_xg", 1.4),
                 "expected_corners": corners.get("home_expected_corners", 5.0),
                 "expected_cards": round((cards.get("total_expected_cards", 4.0) * 0.48), 1),
+                "expected_shots": shots.get("shots", {}).get("expected_home_shots", 13.5) if shots else 13.5,
+                "expected_sot": shots.get("shots_on_target", {}).get("expected_home_sot", 4.8) if shots else 4.8,
                 "data_sample_available": True
             },
             "away_team": {
@@ -491,6 +540,8 @@ class UnifiedMatchIntelligenceService:
                 "expected_goals": goals.get("away_xg", 1.1),
                 "expected_corners": corners.get("away_expected_corners", 4.2),
                 "expected_cards": round((cards.get("total_expected_cards", 4.0) * 0.52), 1),
+                "expected_shots": shots.get("shots", {}).get("expected_away_shots", 11.2) if shots else 11.2,
+                "expected_sot": shots.get("shots_on_target", {}).get("expected_away_sot", 3.9) if shots else 3.9,
                 "data_sample_available": True
             }
         }

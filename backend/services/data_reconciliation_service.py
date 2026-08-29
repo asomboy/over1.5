@@ -93,6 +93,58 @@ class DataReconciliationService:
                 return False, f"shots_on_target ({shots_on_target}) exceeds total_shots ({total_shots})"
         return True, None
 
+    @classmethod
+    def validate_match_statistics_bounds(
+        cls,
+        home_shots: Optional[int] = None,
+        away_shots: Optional[int] = None,
+        home_shots_on_target: Optional[int] = None,
+        away_shots_on_target: Optional[int] = None,
+        home_corners: Optional[int] = None,
+        away_corners: Optional[int] = None,
+        home_yellow: Optional[int] = None,
+        away_yellow: Optional[int] = None,
+        home_red: Optional[int] = None,
+        away_red: Optional[int] = None,
+        home_possession: Optional[float] = None,
+        away_possession: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Unified statistical bounds validator across all match statistics dimensions.
+        """
+        errors = []
+
+        if home_shots is not None and home_shots < 0:
+            errors.append(f"Negative home_shots: {home_shots}")
+        if away_shots is not None and away_shots < 0:
+            errors.append(f"Negative away_shots: {away_shots}")
+        if home_shots_on_target is not None and home_shots_on_target < 0:
+            errors.append(f"Negative home_shots_on_target: {home_shots_on_target}")
+        if away_shots_on_target is not None and away_shots_on_target < 0:
+            errors.append(f"Negative away_shots_on_target: {away_shots_on_target}")
+
+        if home_shots is not None and home_shots_on_target is not None:
+            if home_shots_on_target > home_shots:
+                errors.append(f"home_shots_on_target ({home_shots_on_target}) exceeds home_shots ({home_shots})")
+
+        if away_shots is not None and away_shots_on_target is not None:
+            if away_shots_on_target > away_shots:
+                errors.append(f"away_shots_on_target ({away_shots_on_target}) exceeds away_shots ({away_shots})")
+
+        v_corn, err_corn = cls.validate_corners(home_corners, away_corners)
+        if not v_corn: errors.append(err_corn)
+
+        v_cards, err_cards = cls.validate_cards(home_yellow, away_yellow, home_red, away_red)
+        if not v_cards: errors.append(err_cards)
+
+        v_poss, err_poss = cls.validate_possession(home_possession, away_possession)
+        if not v_poss: errors.append(err_poss)
+
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors
+        }
+
     # =========================================================================
     # 2. PROVENANCE RECORDING
     # =========================================================================

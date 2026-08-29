@@ -1407,6 +1407,75 @@ def get_upcoming_match_intelligence(limit: int = 50, db: Session = Depends(get_d
     return {"status": "ok", "fixtures_count": len(items), "fixtures": items}
 
 
+# =============================================================================
+# PHASE 10: SHOTS & SHOTS-ON-TARGET PREDICTION ENDPOINTS
+# =============================================================================
+
+@app.get("/api/fixtures/{fixture_id}/shots")
+def get_fixture_shots_prediction(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns pre-match Total Shots and Shots-on-Target predictions and discrete PMF distributions.
+    """
+    from services.shots_prediction_service import ShotsPredictionEngine
+    res = ShotsPredictionEngine.predict_shots(db, fixture_id)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get("/api/fixtures/{fixture_id}/shots/live")
+def get_fixture_live_shots_prediction(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns live in-play dynamic remaining Shots and SoT expectations.
+    """
+    from services.shots_prediction_service import ShotsPredictionEngine
+    res = ShotsPredictionEngine.predict_live_shots(db, fixture_id)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get("/api/models/shots/readiness")
+def get_shots_model_readiness(db: Session = Depends(get_db)):
+    """
+    Returns empirical sample readiness gates for Shots and SoT prediction engines.
+    """
+    from services.shots_prediction_service import ShotsPredictionEngine
+    return ShotsPredictionEngine.get_shots_readiness_status(db)
+
+
+@app.get("/api/models/shots/calibration")
+def get_shots_model_calibration(db: Session = Depends(get_db)):
+    """
+    Returns empirical calibration and reliability curves for verified shot markets.
+    """
+    from services.shots_prediction_service import ShotsPredictionEngine, SHOTS_MODEL_VERSION
+    evals = db.query(models.ModelEvaluation).filter(models.ModelEvaluation.model_version.contains(SHOTS_MODEL_VERSION)).all()
+    pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+    return {
+        "status": "ok",
+        "model_version": SHOTS_MODEL_VERSION,
+        "sample_size": len(pairs),
+        "calibration": CalibrationService.compute_calibration_curve(pairs)
+    }
+
+
+@app.get("/api/models/shots/performance")
+def get_shots_model_performance(db: Session = Depends(get_db)):
+    """
+    Returns aggregate probabilistic performance metrics for Shots and SoT prediction engines.
+    """
+    from services.shots_prediction_service import ShotsPredictionEngine, SHOTS_MODEL_VERSION
+    evals = db.query(models.ModelEvaluation).filter(models.ModelEvaluation.model_version.contains(SHOTS_MODEL_VERSION)).all()
+    pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+    return {
+        "status": "ok",
+        "model_version": SHOTS_MODEL_VERSION,
+        "metrics": CalibrationService.calculate_aggregate_metrics(pairs)
+    }
+
+
+
 
 
 @app.post("/api/notifications/telegram/test")

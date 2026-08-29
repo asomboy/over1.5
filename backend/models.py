@@ -106,6 +106,12 @@ class HistoricalResult(Base):
     home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_goals: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -750,6 +756,40 @@ class UnifiedMatchIntelligenceSnapshot(Base):
     
     intelligence_payload: Mapped[str] = mapped_column(Text, nullable=False) # Complete serialized JSON payload
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ShotPredictionSnapshot(Base):
+    """
+    Immutable Pre-Match and In-Play Prediction Snapshot storage for Shots and Shots-on-Target models.
+    Preserves model inputs, discrete distributions, and market probabilities for auditing and calibration.
+    """
+    __tablename__ = "shot_prediction_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_shots_nb", index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    expected_home_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_shots: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_sot: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_sot: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_sot: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Serialized JSON dictionaries of discrete PMFs and Market Over/Under probabilities
+    shots_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    sot_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    confidence: Mapped[float] = mapped_column(Float, default=0.50)
+    data_quality: Mapped[float] = mapped_column(Float, default=0.50)
+    diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
 
 
 

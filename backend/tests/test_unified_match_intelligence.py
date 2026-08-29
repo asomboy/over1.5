@@ -81,8 +81,10 @@ class TestUnifiedMatchIntelligence(unittest.TestCase):
         self.assertIn("goals", intel["markets"])
         self.assertIn("corners", intel["markets"])
         self.assertIn("cards", intel["markets"])
-        self.assertIn("shots", intel["markets"]) # Phase 10 modular slot
-        self.assertEqual(intel["markets"]["shots"]["status"], "PLANNED_PHASE_10_EXPANSION")
+        self.assertIn("shots", intel["markets"]) # Phase 10 first-class prediction
+        self.assertIn("expected_total_shots", intel["markets"]["shots"])
+        self.assertIn("shots_on_target", intel["markets"])
+        self.assertIn("expected_total_sot", intel["markets"]["shots_on_target"])
 
         # Assert match state tags & confidence
         self.assertIn("PRE_MATCH", intel["match_state_classification"])
