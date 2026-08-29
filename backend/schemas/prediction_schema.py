@@ -1,0 +1,90 @@
+import os
+import sys
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
+
+
+class ModelMetadata(BaseModel):
+    version: str = "v2_match_intelligence"
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class ExpectedGoals(BaseModel):
+    home: float = Field(..., description="Home team expected goals (lambda_home)")
+    away: float = Field(..., description="Away team expected goals (lambda_away)")
+    total: float = Field(..., description="Total match expected goals (lambda_total)")
+
+
+class ResultMarket(BaseModel):
+    home_win: float = Field(..., description="Probability of Home Win (sum where home > away)")
+    draw: float = Field(..., description="Probability of Draw (sum where home == away)")
+    away_win: float = Field(..., description="Probability of Away Win (sum where home < away)")
+
+
+class GoalsMarket(BaseModel):
+    over_0_5: float
+    under_0_5: float
+    over_1_5: float
+    under_1_5: float
+    over_2_5: float
+    under_2_5: float
+    over_3_5: float
+    under_3_5: float
+
+
+class BTTSMarket(BaseModel):
+    yes: float = Field(..., description="Probability both teams score (home >= 1 and away >= 1)")
+    no: float = Field(..., description="Probability at least one team fails to score")
+
+
+class TeamGoalThresholds(BaseModel):
+    over_0_5: float
+    under_0_5: float
+    over_1_5: float
+    under_1_5: float
+    over_2_5: float
+    under_2_5: float
+
+
+class HalvesMarket(BaseModel):
+    first_half_over_0_5: float
+    first_half_over_1_5: float
+    second_half_over_0_5: float
+    second_half_over_1_5: float
+
+
+class ExactScore(BaseModel):
+    home: int
+    away: int
+    probability: float
+    score: Optional[str] = None
+
+
+class ConfidenceDetails(BaseModel):
+    overall: int = Field(ge=0, le=100, description="Overall multi-factor model confidence score 0-100")
+    data_quality: int = Field(ge=0, le=100, description="Data volume and completeness score 0-100")
+    model_stability: int = Field(ge=0, le=100, description="Parameter stability & form consistency score 0-100")
+    sample_quality: str = Field(..., description="'insufficient' | 'low' | 'moderate' | 'good' | 'strong'")
+
+
+class BestModelSignal(BaseModel):
+    market: str
+    probability: float
+    signal_score: int = Field(ge=0, le=100)
+    label: str = Field(..., description="'Watch' | 'Moderate' | 'Strong'")
+
+
+class MatchIntelligencePrediction(BaseModel):
+    fixture_id: int
+    model: ModelMetadata
+    expected_goals: ExpectedGoals
+    result: ResultMarket
+    goals: GoalsMarket
+    btts: BTTSMarket
+    home_team_goals: TeamGoalThresholds
+    away_team_goals: TeamGoalThresholds
+    halves: HalvesMarket
+    exact_scores: List[ExactScore]
+    confidence: ConfidenceDetails
+    best_signal: BestModelSignal

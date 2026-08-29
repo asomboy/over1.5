@@ -694,7 +694,10 @@ def get_prediction_accuracy(db: Session = Depends(get_db)):
 
 @app.get("/api/predictions/{fixture_id}")
 def read_fixture_prediction(fixture_id: int, db: Session = Depends(get_db)):
-    """Retrieve stored prediction for a specific fixture."""
+    """Retrieve stored Match Intelligence prediction for a specific fixture."""
+    intel = PoissonPredictionEngine.generate_match_intelligence_prediction(db, fixture_id)
+    if intel:
+        return {"status": "ok", "data": intel}
     pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fixture_id).first()
     if not pred:
         return {"status": "error", "message": f"No prediction found for fixture {fixture_id}"}
@@ -709,7 +712,7 @@ def generate_smart_accumulators(day: Optional[str] = None, db: Session = Depends
 
 @app.get("/api/fixtures/{fixture_id}/details")
 def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
-    """Retrieves deep H2H history, recent form streaks, xG breakdown, and top scorelines for a fixture."""
+    """Retrieves deep H2H history, recent form streaks, xG breakdown, top scorelines, and Match Intelligence Core for a fixture."""
     fixture = (
         db.query(models.Fixture)
         .options(
@@ -759,6 +762,58 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
             "total_goals": (h.home_score or 0) + (h.away_score or 0)
         })
 
+    # Generate or parse full Match Intelligence Core prediction payload
+    intel = PoissonPredictionEngine.generate_match_intelligence_prediction(db, fixture_id)
+    if not intel:
+        h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
+        a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
+        tot_xg = round(h_xg + a_xg, 2)
+        o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
+        o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
+        o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
+        o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
+        btts_p = float(pred.btts_probability or 0.55) if pred else 0.55
+        conf_int = int((pred.confidence_score or 0.50) * 100) if pred else 50
+        most_likely = (pred.most_likely_score if pred else None) or "2-1"
+
+        intel = {
+            "fixture_id": fixture_id,
+            "model": {"version": "v2_match_intelligence", "generated_at": datetime.now(timezone.utc).isoformat()},
+            "expected_goals": {"home": h_xg, "away": a_xg, "total": tot_xg},
+            "result": {
+                "home_win": float(pred.home_win_probability or 0.45) if pred else 0.45,
+                "draw": float(pred.draw_probability or 0.25) if pred else 0.25,
+                "away_win": float(pred.away_win_probability or 0.30) if pred else 0.30
+            },
+            "goals": {
+                "over_0_5": o05, "under_0_5": round(1.0 - o05, 4),
+                "over_1_5": o15, "under_1_5": round(1.0 - o15, 4),
+                "over_2_5": o25, "under_2_5": round(1.0 - o25, 4),
+                "over_3_5": o35, "under_3_5": round(1.0 - o35, 4),
+                "over_4_5": float(pred.over_4_5_probability or 0.12) if pred else 0.12
+            },
+            "btts": {"yes": btts_p, "no": round(1.0 - btts_p, 4)},
+            "home_team_goals": {
+                "over_0_5": round(1.0 - math.exp(-h_xg), 4), "under_0_5": round(math.exp(-h_xg), 4),
+                "over_1_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg), 4), "under_1_5": round(math.exp(-h_xg) * (1.0 + h_xg), 4),
+                "over_2_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4), "under_2_5": round(math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4)
+            },
+            "away_team_goals": {
+                "over_0_5": round(1.0 - math.exp(-a_xg), 4), "under_0_5": round(math.exp(-a_xg), 4),
+                "over_1_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg), 4), "under_1_5": round(math.exp(-a_xg) * (1.0 + a_xg), 4),
+                "over_2_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4), "under_2_5": round(math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4)
+            },
+            "halves": {
+                "first_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.45), 4),
+                "first_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.45) * (1.0 + tot_xg * 0.45), 4),
+                "second_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.55), 4),
+                "second_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.55) * (1.0 + tot_xg * 0.55), 4)
+            },
+            "exact_scores": top_scorelines or [{"home": 2, "away": 1, "score": most_likely, "probability": 0.12}],
+            "confidence": {"overall": conf_int, "data_quality": 65, "model_stability": 65, "sample_quality": "moderate"},
+            "best_signal": {"market": "Over 1.5 Goals", "probability": o15, "signal_score": 82, "label": "Strong" if o15 >= 0.78 else "Moderate"}
+        }
+
     return {
         "status": "ok",
         "fixture_id": fixture_id,
@@ -779,16 +834,34 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
         },
         "h2h_history": h2h_data,
         "prediction": {
-            "predicted_home_score": pred.predicted_home_score if pred else 1.45,
-            "predicted_away_score": pred.predicted_away_score if pred else 1.15,
-            "expected_goals_xg": pred.expected_goals_xg if pred else 2.60,
-            "over_1_5_probability": pred.over_1_5_probability if pred else 0.78,
-            "over_2_5_probability": pred.over_2_5_probability if pred else 0.52,
-            "btts_probability": pred.btts_probability if pred else 0.55,
-            "confidence_score": pred.confidence_score if pred else 0.50,
-            "most_likely_score": pred.most_likely_score if pred else "2-1",
-            "top_scorelines": top_scorelines
-        }
+            "predicted_home_score": intel["expected_goals"]["home"],
+            "predicted_away_score": intel["expected_goals"]["away"],
+            "expected_goals_xg": intel["expected_goals"]["total"],
+            "over_1_5_probability": intel["goals"]["over_1_5"],
+            "over_2_5_probability": intel["goals"]["over_2_5"],
+            "over_0_5_probability": intel["goals"]["over_0_5"],
+            "over_3_5_probability": intel["goals"]["over_3_5"],
+            "under_2_5_probability": intel["goals"]["under_2_5"],
+            "btts_probability": intel["btts"]["yes"],
+            "confidence_score": round(intel["confidence"]["overall"] / 100.0, 2),
+            "most_likely_score": intel["exact_scores"][0]["score"] if intel["exact_scores"] else "2-1",
+            "top_scorelines": top_scorelines or intel["exact_scores"][:5],
+
+            # Match Intelligence unified schema
+            "match_intelligence": intel,
+            "model": intel["model"],
+            "expected_goals": intel["expected_goals"],
+            "result": intel["result"],
+            "goals": intel["goals"],
+            "btts": intel["btts"],
+            "home_team_goals": intel["home_team_goals"],
+            "away_team_goals": intel["away_team_goals"],
+            "halves": intel["halves"],
+            "exact_scores": intel["exact_scores"],
+            "confidence": intel["confidence"],
+            "best_signal": intel["best_signal"]
+        },
+        "match_intelligence": intel
     }
 
 

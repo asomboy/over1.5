@@ -117,6 +117,8 @@ class Prediction(Base):
     confidence_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     most_likely_score: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     top_scorelines_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    model_version: Mapped[Optional[str]] = mapped_column(String, default="v2_match_intelligence", nullable=True)
+    raw_intelligence_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
