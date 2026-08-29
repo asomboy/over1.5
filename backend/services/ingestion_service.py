@@ -6,17 +6,26 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 import httpx
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction, TeamStatistics, LeagueStatistics
+    from models import (
+        League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction,
+        TeamStatistics, LeagueStatistics, Referee, RefereeMatchStatistics,
+        CornerPredictionSnapshot, CardPredictionSnapshot
+    )
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
     from services.elo_service import EloRatingService, TeamFormService
 except ImportError:
-    from ..models import League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction, TeamStatistics, LeagueStatistics
+    from ..models import (
+        League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction,
+        TeamStatistics, LeagueStatistics, Referee, RefereeMatchStatistics,
+        CornerPredictionSnapshot, CardPredictionSnapshot
+    )
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
     from .elo_service import EloRatingService, TeamFormService
 
@@ -282,6 +291,22 @@ class DataIngestionService:
                 h_corners = int(raw_hc) if (raw_hc is not None and str(raw_hc).isdigit() and int(raw_hc) >= 0) else None
                 a_corners = int(raw_ac) if (raw_ac is not None and str(raw_ac).isdigit() and int(raw_ac) >= 0) else None
                 tot_corners = (h_corners + a_corners) if (h_corners is not None and a_corners is not None) else None
+
+                # Disciplinary statistics (Yellow/Red cards)
+                raw_hy = f_data.get("home_yellow_cards")
+                raw_ay = f_data.get("away_yellow_cards")
+                raw_hr = f_data.get("home_red_cards")
+                raw_ar = f_data.get("away_red_cards")
+                h_yellow = int(raw_hy) if (raw_hy is not None and str(raw_hy).isdigit() and int(raw_hy) >= 0) else None
+                a_yellow = int(raw_ay) if (raw_ay is not None and str(raw_ay).isdigit() and int(raw_ay) >= 0) else None
+                h_red = int(raw_hr) if (raw_hr is not None and str(raw_hr).isdigit() and int(raw_hr) >= 0) else (0 if h_yellow is not None else None)
+                a_red = int(raw_ar) if (raw_ar is not None and str(raw_ar).isdigit() and int(raw_ar) >= 0) else (0 if a_yellow is not None else None)
+
+                tot_yellow = (h_yellow + a_yellow) if (h_yellow is not None and a_yellow is not None) else None
+                tot_red = (h_red + a_red) if (h_red is not None and a_red is not None) else None
+                tot_cards = (tot_yellow + (tot_red or 0)) if tot_yellow is not None else None
+                ref_name = f_data.get("referee") or f_data.get("referee_name")
+
                 total_goals = home_score + away_score
 
                 result = db.query(HistoricalResult).filter(HistoricalResult.fixture_id == fixture.id).first()
@@ -296,6 +321,16 @@ class DataIngestionService:
                         result.away_corners = a_corners
                     if tot_corners is not None:
                         result.total_corners = tot_corners
+                    if h_yellow is not None:
+                        result.home_yellow_cards = h_yellow
+                    if a_yellow is not None:
+                        result.away_yellow_cards = a_yellow
+                    if h_red is not None:
+                        result.home_red_cards = h_red
+                    if a_red is not None:
+                        result.away_red_cards = a_red
+                    if tot_cards is not None:
+                        result.total_cards = tot_cards
                     result.total_goals = total_goals
                 else:
                     result = HistoricalResult(
@@ -307,6 +342,11 @@ class DataIngestionService:
                         home_corners=h_corners,
                         away_corners=a_corners,
                         total_corners=tot_corners,
+                        home_yellow_cards=h_yellow,
+                        away_yellow_cards=a_yellow,
+                        home_red_cards=h_red,
+                        away_red_cards=a_red,
+                        total_cards=tot_cards,
                         total_goals=total_goals,
                     )
                     db.add(result)
@@ -319,6 +359,14 @@ class DataIngestionService:
                         home_corners=h_corners,
                         away_corners=a_corners,
                         total_corners=tot_corners,
+                        home_yellow_cards=h_yellow,
+                        away_yellow_cards=a_yellow,
+                        home_red_cards=h_red,
+                        away_red_cards=a_red,
+                        total_yellow_cards=tot_yellow,
+                        total_red_cards=tot_red,
+                        total_cards=tot_cards,
+                        referee_name=ref_name,
                         data_source=f_data.get("data_source", "observed"),
                         data_quality=f_data.get("data_quality", "verified"),
                     )
@@ -330,6 +378,52 @@ class DataIngestionService:
                         match_stats.away_corners = a_corners
                     if tot_corners is not None:
                         match_stats.total_corners = tot_corners
+                    if h_yellow is not None:
+                        match_stats.home_yellow_cards = h_yellow
+                    if a_yellow is not None:
+                        match_stats.away_yellow_cards = a_yellow
+                    if h_red is not None:
+                        match_stats.home_red_cards = h_red
+                    if a_red is not None:
+                        match_stats.away_red_cards = a_red
+                    if tot_yellow is not None:
+                        match_stats.total_yellow_cards = tot_yellow
+                    if tot_red is not None:
+                        match_stats.total_red_cards = tot_red
+                    if tot_cards is not None:
+                        match_stats.total_cards = tot_cards
+                    if ref_name:
+                        match_stats.referee_name = ref_name
+
+                # Referee Entity Linkage
+                if ref_name and ref_name.strip():
+                    ref_obj = db.query(Referee).filter(func.lower(Referee.name) == ref_name.strip().lower()).first()
+                    if not ref_obj:
+                        ref_obj = Referee(name=ref_name.strip())
+                        db.add(ref_obj)
+                        db.flush()
+
+                    if ref_obj:
+                        match_stats.referee_id = ref_obj.id
+                        ref_stats = db.query(RefereeMatchStatistics).filter(RefereeMatchStatistics.fixture_id == fixture.id).first()
+                        if not ref_stats:
+                            ref_stats = RefereeMatchStatistics(
+                                referee_id=ref_obj.id,
+                                fixture_id=fixture.id,
+                                yellow_cards=(tot_yellow or 0),
+                                red_cards=(tot_red or 0),
+                                total_cards=(tot_cards or 0),
+                                data_source=f_data.get("data_source", "observed"),
+                                data_quality=f_data.get("data_quality", "verified")
+                            )
+                            db.add(ref_stats)
+                        else:
+                            if tot_yellow is not None:
+                                ref_stats.yellow_cards = tot_yellow
+                            if tot_red is not None:
+                                ref_stats.red_cards = tot_red
+                            if tot_cards is not None:
+                                ref_stats.total_cards = tot_cards
 
                 # Trigger post-match prediction snapshot result verification
                 if h_corners is not None and a_corners is not None:
@@ -338,6 +432,15 @@ class DataIngestionService:
                         CornerSnapshotService.verify_finished_fixture_corners(db, fixture.id, h_corners, a_corners)
                     except Exception as v_ex:
                         logger.debug(f"Corner result verification hook error: {v_ex}")
+
+                if h_yellow is not None and a_yellow is not None:
+                    try:
+                        from services.cards_service import CardSnapshotService
+                        CardSnapshotService.verify_finished_fixture_cards(
+                            db, fixture.id, h_yellow, a_yellow, (h_red or 0), (a_red or 0)
+                        )
+                    except Exception as v_ex:
+                        logger.debug(f"Card result verification hook error: {v_ex}")
 
                 fixture.status = "FINISHED"
                 if commit:

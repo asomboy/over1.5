@@ -15,13 +15,16 @@ import {
   CheckCircle2,
   Clock,
   Award,
-  Flag
+  Flag,
+  Square,
+  UserCheck,
+  AlertTriangle
 } from 'lucide-react';
 
 export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiRequest, darkMode }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'result' | 'team_goals' | 'halves'
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
 
   useEffect(() => {
     if (isOpen && fixtureId) {
@@ -120,6 +123,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
   };
 
   const corners = intel?.corners || data?.corners;
+  const cards = intel?.cards || data?.cards;
 
   const getConfidenceBadgeColor = (quality) => {
     switch (quality) {
@@ -161,20 +165,19 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
           </div>
           <button 
             onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-all active:scale-95"
-            aria-label="Close modal"
+            className="p-2 rounded-2xl bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Team Strengths & Elo Header Banner */}
-        <div className="grid grid-cols-2 gap-2 p-3 sm:p-4 bg-slate-950/50 border-b border-slate-800/80">
-          <div className="p-2.5 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
-            <div>
-              <span className="text-xs font-black text-white block truncate max-w-[130px] sm:max-w-[180px]">{home?.name || 'Home'}</span>
-              <div className="flex items-center gap-1 mt-1">
-                {home?.last_5_results && home.last_5_results.length > 0 ? (
+        {/* Team Matchup Strip */}
+        <div className="p-4 bg-slate-950/40 border-b border-slate-800/80 grid grid-cols-2 gap-4">
+          <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900/60 border border-slate-800/60">
+            <div className="space-y-1">
+              <span className="text-xs font-black text-white block truncate">{home?.name || 'Home Team'}</span>
+              <div className="flex items-center gap-1">
+                {home?.last_5_results ? (
                   home.last_5_results.map((res, i) => (
                     <span key={i} className={`w-3.5 h-3.5 rounded text-[8px] font-black flex items-center justify-center ${
                       res === 'W' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' :
@@ -192,11 +195,11 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
             </span>
           </div>
 
-          <div className="p-2.5 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
-            <div>
-              <span className="text-xs font-black text-white block truncate max-w-[130px] sm:max-w-[180px]">{away?.name || 'Away'}</span>
-              <div className="flex items-center gap-1 mt-1">
-                {away?.last_5_results && away.last_5_results.length > 0 ? (
+          <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900/60 border border-slate-800/60">
+            <div className="space-y-1">
+              <span className="text-xs font-black text-white block truncate">{away?.name || 'Away Team'}</span>
+              <div className="flex items-center gap-1">
+                {away?.last_5_results ? (
                   away.last_5_results.map((res, i) => (
                     <span key={i} className={`w-3.5 h-3.5 rounded text-[8px] font-black flex items-center justify-center ${
                       res === 'W' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' :
@@ -221,6 +224,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
             { id: 'overview', label: 'OVERVIEW' },
             { id: 'goals', label: 'GOALS' },
             { id: 'corners', label: 'CORNERS' },
+            { id: 'cards', label: 'CARDS' },
             { id: 'result', label: 'RESULT (1X2)' },
             { id: 'team_goals', label: 'TEAM GOALS' },
             { id: 'halves', label: 'HALVES' }
@@ -692,6 +696,214 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
                         <span>Away Samples: <strong className="text-white">{corners?.diagnostics?.away_sample_size ?? 0}</strong></span>
                         <span>•</span>
                         <span>Coverage: <strong className="text-white">{Math.round((corners?.diagnostics?.corner_data_coverage ?? 0) * 100)}%</strong></span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB: CARDS */}
+              {activeTab === 'cards' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {cards?.available ? (
+                    <>
+                      {/* Expected Cards Top Banner */}
+                      <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-950/60 via-slate-900 to-rose-950/60 border border-amber-500/30 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Square className="w-4 h-4 text-amber-400 fill-amber-400/20" />
+                            <span className="text-xs font-black uppercase tracking-wider text-amber-400">Disciplinary & Cards Engine</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">
+                            r={cards?.model?.dispersion || 4.0} ({cards?.model?.dispersion_source || 'fallback'})
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase block">Home ({home?.name?.slice(0, 10) || 'Home'})</span>
+                            <span className="text-lg font-black text-white">{cards.expected.home.toFixed(1)}</span>
+                            <span className="text-[9px] text-slate-500 block">Yellow: {cards.expected.home_yellow?.toFixed(1) || cards.expected.home.toFixed(1)}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-amber-950/40 border border-amber-500/40">
+                            <span className="text-[10px] font-black text-amber-400 uppercase block">Total Cards</span>
+                            <span className="text-xl font-black text-amber-400">{cards.expected.total.toFixed(1)}</span>
+                            <span className="text-[9px] text-amber-500/80 block">Yellow: {cards.expected.total_yellow?.toFixed(1) || cards.expected.total.toFixed(1)}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase block">Away ({away?.name?.slice(0, 10) || 'Away'})</span>
+                            <span className="text-lg font-black text-white">{cards.expected.away.toFixed(1)}</span>
+                            <span className="text-[9px] text-slate-500 block">Yellow: {cards.expected.away_yellow?.toFixed(1) || cards.expected.away.toFixed(1)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Referee Intelligence Card */}
+                      <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2.5">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                          <div className="flex items-center gap-2">
+                            <UserCheck className="w-4 h-4 text-cyan-400" />
+                            <span className="text-xs font-black text-white uppercase tracking-wider">Referee Intelligence</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">
+                            Source: {cards.referee?.source || 'competition'}
+                          </span>
+                        </div>
+
+                        {cards.referee?.available ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80">
+                              <span className="text-[10px] text-slate-400 block font-bold">Assigned Official</span>
+                              <span className="text-xs font-black text-white truncate block">{cards.referee.referee_name}</span>
+                              <span className="text-[9px] text-slate-500">{cards.referee.sample_size} matches recorded</span>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80">
+                              <span className="text-[10px] text-slate-400 block font-bold">Average Cards / Match</span>
+                              <span className="text-xs font-black text-cyan-400">{cards.referee.average_cards ?? 4.2}</span>
+                              <span className="text-[9px] text-slate-500">Disciplinary tendency</span>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80">
+                              <span className="text-[10px] text-slate-400 block font-bold">Tendency Index</span>
+                              <span className={`text-xs font-black ${cards.referee.influence_factor > 1.05 ? 'text-rose-400' : cards.referee.influence_factor < 0.95 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                                {cards.referee.influence_label} ({((cards.referee.influence_factor - 1.0) * 100).toFixed(0)}%)
+                              </span>
+                              <span className="text-[9px] text-slate-500">vs League Baseline</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800/50 text-xs text-slate-400 flex items-center justify-between">
+                            <span>Referee data unavailable — Prediction uses competition & team baseline.</span>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase">Neutral (1.00x)</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Total Cards Markets (Over / Under) */}
+                      <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Cards Markets (Full Match)</span>
+                        <div className="space-y-2.5">
+                          {[
+                            { key: 'over_1_5', label: 'Over / Under 1.5 Cards', over: cards.total_markets?.over_1_5, under: cards.total_markets?.under_1_5 },
+                            { key: 'over_2_5', label: 'Over / Under 2.5 Cards', over: cards.total_markets?.over_2_5, under: cards.total_markets?.under_2_5 },
+                            { key: 'over_3_5', label: 'Over / Under 3.5 Cards', over: cards.total_markets?.over_3_5, under: cards.total_markets?.under_3_5, highlight: true },
+                            { key: 'over_4_5', label: 'Over / Under 4.5 Cards', over: cards.total_markets?.over_4_5, under: cards.total_markets?.under_4_5 },
+                            { key: 'over_5_5', label: 'Over / Under 5.5 Cards', over: cards.total_markets?.over_5_5, under: cards.total_markets?.under_5_5 },
+                            { key: 'over_6_5', label: 'Over / Under 6.5 Cards', over: cards.total_markets?.over_6_5, under: cards.total_markets?.under_6_5 }
+                          ].map((m) => (
+                            <div key={m.key} className={`p-3 rounded-xl border ${m.highlight ? 'bg-amber-950/20 border-amber-500/40' : 'bg-slate-900 border-slate-800/80'} space-y-1.5`}>
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-bold text-slate-300 flex items-center gap-1.5">
+                                  {m.highlight && <Zap className="w-3.5 h-3.5 text-amber-400" />}
+                                  {m.label}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-black text-amber-400">Over {Math.round((m.over || 0) * 100)}%</span>
+                                  <span className="text-slate-500">|</span>
+                                  <span className="font-bold text-slate-400">Under {Math.round((m.under || 0) * 100)}%</span>
+                                </div>
+                              </div>
+                              <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                                <div className="bg-amber-500 h-full transition-all" style={{ width: `${(m.over || 0) * 100}%` }} />
+                                <div className="bg-slate-700 h-full transition-all" style={{ width: `${(m.under || 0) * 100}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Team Cards (Home & Away) & Red Card Risk */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Team Cards Breakdown */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="text-xs font-black text-white">Team Card Thresholds</span>
+                            <span className="text-[10px] font-bold text-slate-400">Over 1.5+ Probs</span>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-bold text-slate-300 truncate max-w-[130px]">{home?.name || 'Home'}: Over 1.5 Cards</span>
+                                <span className="font-black text-amber-400">{Math.round((cards.home_team?.over_1_5 || 0) * 100)}%</span>
+                              </div>
+                              <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                <div className="bg-amber-500 h-full" style={{ width: `${(cards.home_team?.over_1_5 || 0) * 100}%` }} />
+                              </div>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-bold text-slate-300 truncate max-w-[130px]">{away?.name || 'Away'}: Over 1.5 Cards</span>
+                                <span className="font-black text-amber-400">{Math.round((cards.away_team?.over_1_5 || 0) * 100)}%</span>
+                              </div>
+                              <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                <div className="bg-amber-500 h-full" style={{ width: `${(cards.away_team?.over_1_5 || 0) * 100}%` }} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Red Card Risk Indicator */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <div className="flex items-center gap-1.5">
+                              <AlertTriangle className="w-4 h-4 text-rose-400" />
+                              <span className="text-xs font-black text-white">Red Card Risk Signal</span>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${
+                              cards.red_card_risk?.risk_level === 'High' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' :
+                              cards.red_card_risk?.risk_level === 'Moderate' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                              'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                            }`}>
+                              {cards.red_card_risk?.risk_level || 'Low'} Risk
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-center pt-0.5">
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80">
+                              <span className="text-[10px] text-slate-400 block font-bold">Any Red Card</span>
+                              <span className="text-base font-black text-rose-400">
+                                {Math.round((cards.red_card_risk?.any_red_prob || 0.08) * 100)}%
+                              </span>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80">
+                              <span className="text-[10px] text-slate-400 block font-bold">Exp Red Rate</span>
+                              <span className="text-base font-black text-white">
+                                {((cards.red_card_risk?.home_red_prob || 0.04) + (cards.red_card_risk?.away_red_prob || 0.04)).toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Model Confidence Footer */}
+                      <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Card Confidence:</span>
+                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase border ${getConfidenceBadgeColor(cards.confidence?.label)}`}>
+                            {cards.confidence?.label || 'moderate'} ({cards.confidence?.overall || 65}%)
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          Data: {cards.confidence?.data_quality || 60}% | Sample: {cards.confidence?.sample_strength || 60}% | Ref: {cards.confidence?.referee_confidence || 50}%
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    /* Empty State when Card Data is Sparse/Insufficient */
+                    <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto text-amber-400">
+                        <Square className="w-6 h-6" />
+                      </div>
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-black text-white">Insufficient Verified Disciplinary History</h4>
+                        <p className="text-xs text-slate-400 max-w-md mx-auto">
+                          {cards?.reason || "Card predictions require verified historical match-level card statistics. Data coverage for this fixture is currently under collection threshold."}
+                        </p>
+                      </div>
+                      <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-[10px] text-slate-400">
+                        <span>Home Samples: <strong className="text-white">{cards?.diagnostics?.home_sample_size ?? 0}</strong></span>
+                        <span>•</span>
+                        <span>Away Samples: <strong className="text-white">{cards?.diagnostics?.away_sample_size ?? 0}</strong></span>
+                        <span>•</span>
+                        <span>Coverage: <strong className="text-white">{Math.round((cards?.diagnostics?.card_data_coverage ?? 0) * 100)}%</strong></span>
                       </div>
                     </div>
                   )}

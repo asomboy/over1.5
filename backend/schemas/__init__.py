@@ -15,5 +15,13 @@ from .prediction_schema import (
     CornerConfidence,
     CornerModelMetadata,
     CornersPrediction,
+    ExpectedCards,
+    TotalCardsMarket,
+    TeamCardsThresholds,
+    RedCardRisk,
+    RefereeIntelligence,
+    CardConfidence,
+    CardModelMetadata,
+    CardsPrediction,
     MatchIntelligencePrediction
 )

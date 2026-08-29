@@ -133,6 +133,90 @@ class CornersPrediction(BaseModel):
     diagnostics: Optional[Dict[str, Any]] = None
 
 
+# ==========================================
+# PHASE 3: CARDS & REFEREE INTELLIGENCE SCHEMAS
+# ==========================================
+
+class ExpectedCards(BaseModel):
+    home: float = Field(..., description="Home expected total cards (lambda_home_cards)")
+    away: float = Field(..., description="Away expected total cards (lambda_away_cards)")
+    total: float = Field(..., description="Total match expected cards (lambda_total_cards)")
+    home_yellow: Optional[float] = None
+    away_yellow: Optional[float] = None
+    total_yellow: Optional[float] = None
+
+
+class TotalCardsMarket(BaseModel):
+    over_1_5: float
+    under_1_5: float
+    over_2_5: float
+    under_2_5: float
+    over_3_5: float
+    under_3_5: float
+    over_4_5: float
+    under_4_5: float
+    over_5_5: float
+    under_5_5: float
+    over_6_5: float
+    under_6_5: float
+
+
+class TeamCardsThresholds(BaseModel):
+    over_0_5: float
+    over_1_5: float
+    over_2_5: float
+    over_3_5: float
+
+
+class RedCardRisk(BaseModel):
+    available: bool
+    any_red_prob: float = Field(..., description="Probability of at least 1 red card in match")
+    home_red_prob: float = Field(..., description="Probability of Home team receiving a red card")
+    away_red_prob: float = Field(..., description="Probability of Away team receiving a red card")
+    risk_level: str = Field(..., description="'Low' | 'Moderate' | 'High'")
+
+
+class RefereeIntelligence(BaseModel):
+    available: bool
+    referee_name: Optional[str] = None
+    sample_size: int = 0
+    average_cards: Optional[float] = None
+    influence_factor: float = 1.0
+    influence_label: str = "Neutral"
+    source: str = Field(default="fallback", description="'referee' | 'shrunk_referee' | 'competition' | 'global' | 'fallback'")
+
+
+class CardConfidence(BaseModel):
+    overall: int = Field(ge=0, le=100)
+    data_quality: int = Field(ge=0, le=100)
+    sample_strength: int = Field(ge=0, le=100)
+    model_stability: int = Field(ge=0, le=100)
+    referee_confidence: int = Field(ge=0, le=100)
+    label: str = Field(..., description="'insufficient' | 'low' | 'moderate' | 'good' | 'strong'")
+
+
+class CardModelMetadata(BaseModel):
+    version: str = "v1_cards_nb"
+    dispersion: float
+    dispersion_source: str = Field(..., description="'competition' | 'shrunk_competition' | 'global' | 'fallback'")
+    baseline_source: str = Field(..., description="'competition' | 'shrunk_competition' | 'global' | 'fallback'")
+    referee_source: str = Field(..., description="'referee' | 'shrunk_referee' | 'competition' | 'global' | 'fallback'")
+
+
+class CardsPrediction(BaseModel):
+    available: bool = Field(..., description="True if sufficient historical card data exists")
+    reason: Optional[str] = None
+    expected: Optional[ExpectedCards] = None
+    total_markets: Optional[TotalCardsMarket] = None
+    home_team: Optional[TeamCardsThresholds] = None
+    away_team: Optional[TeamCardsThresholds] = None
+    red_card_risk: Optional[RedCardRisk] = None
+    referee: Optional[RefereeIntelligence] = None
+    confidence: Optional[CardConfidence] = None
+    model: Optional[CardModelMetadata] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+
+
 class MatchIntelligencePrediction(BaseModel):
     fixture_id: int
     model: ModelMetadata
@@ -147,3 +231,5 @@ class MatchIntelligencePrediction(BaseModel):
     confidence: ConfidenceDetails
     best_signal: BestModelSignal
     corners: Optional[CornersPrediction] = None
+    cards: Optional[CardsPrediction] = None
+

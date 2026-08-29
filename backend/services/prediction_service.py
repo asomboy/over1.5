@@ -1028,6 +1028,25 @@ class DixonColesPredictionEngine:
                 "model": {"version": "v1_corners_nb", "dispersion": 5.5, "dispersion_source": "fallback"}
             }
 
+        # Cards Prediction Engine integration (Phase 3)
+        try:
+            from services.cards_service import CardsPredictionEngine
+            cards_payload = CardsPredictionEngine.predict_cards(db, fixture_id, target_date=match_date)
+        except Exception as e:
+            logger.debug(f"Cards prediction generation error: {e}")
+            cards_payload = {
+                "available": False,
+                "reason": "Card prediction service unavailable.",
+                "expected": None,
+                "total_markets": None,
+                "home_team": None,
+                "away_team": None,
+                "red_card_risk": None,
+                "referee": None,
+                "confidence": {"overall": 0, "data_quality": 0, "sample_strength": 0, "model_stability": 0, "referee_confidence": 0, "label": "insufficient"},
+                "model": {"version": "v1_cards_nb", "dispersion": 4.0, "dispersion_source": "fallback", "baseline_source": "fallback", "referee_source": "fallback"}
+            }
+
         full_payload = {
             "fixture_id": fixture_id,
             "model": probs["model"],
@@ -1041,7 +1060,8 @@ class DixonColesPredictionEngine:
             "exact_scores": probs["exact_scores"],
             "confidence": probs["confidence"],
             "best_signal": probs["best_signal"],
-            "corners": corners_payload
+            "corners": corners_payload,
+            "cards": cards_payload
         }
 
         return full_payload

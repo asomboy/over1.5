@@ -860,10 +860,12 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
             "exact_scores": intel["exact_scores"],
             "confidence": intel["confidence"],
             "best_signal": intel["best_signal"],
-            "corners": intel.get("corners")
+            "corners": intel.get("corners"),
+            "cards": intel.get("cards")
         },
         "match_intelligence": intel,
-        "corners": intel.get("corners")
+        "corners": intel.get("corners"),
+        "cards": intel.get("cards")
     }
 
 
@@ -883,9 +885,30 @@ def get_corners_data_quality(db: Session = Depends(get_db)):
 
 @app.get("/api/corners/performance")
 def get_corners_performance_dashboard(db: Session = Depends(get_db)):
-    """Exposes production model validation status, Brier scores, calibration, and baseline comparisons."""
+    """Exposes production corner model validation status, Brier scores, calibration, and baseline comparisons."""
     from services.corners_service import CornersBacktestService
     return CornersBacktestService.run_chronological_backtest(db, min_samples=100)
+
+
+@app.get("/api/cards/backtest")
+def get_cards_backtest(min_samples: int = 5, db: Session = Depends(get_db)):
+    """Runs a chronological backtest on historical matches with observed card counts."""
+    from services.cards_service import CardsBacktestService
+    return CardsBacktestService.run_chronological_backtest(db, min_samples=min_samples)
+
+
+@app.get("/api/cards/data-quality")
+def get_cards_data_quality(db: Session = Depends(get_db)):
+    """Audits database card data completeness, referee coverage, eligible matches, and competition breakdowns."""
+    from services.cards_service import CardDataQualityService
+    return CardDataQualityService.get_database_card_data_quality(db)
+
+
+@app.get("/api/cards/performance")
+def get_cards_performance_dashboard(db: Session = Depends(get_db)):
+    """Exposes production card model validation status, Brier scores, calibration, and baseline comparisons."""
+    from services.cards_service import CardsBacktestService
+    return CardsBacktestService.run_chronological_backtest(db, min_samples=100)
 
 
 @app.post("/api/notifications/telegram/test")

@@ -78,6 +78,8 @@ class Fixture(Base):
     match_statistics = relationship("MatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     predictions = relationship("Prediction", back_populates="fixture", cascade="all, delete-orphan")
     corner_snapshots = relationship("CornerPredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
+    card_snapshots = relationship("CardPredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
+    referee_statistics = relationship("RefereeMatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -93,11 +95,58 @@ class HistoricalResult(Base):
     home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_goals: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     fixture = relationship("Fixture", back_populates="historical_result")
+
+
+class Referee(Base):
+    """
+    Referee entity tracking historical officiating records, disciplinary tendencies,
+    and competition assignments.
+    """
+    __tablename__ = "referees"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    competition: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    referee_matches = relationship("RefereeMatchStatistics", back_populates="referee", cascade="all, delete-orphan")
+
+
+class RefereeMatchStatistics(Base):
+    """
+    Observed match-level officiating statistics for referees.
+    """
+    __tablename__ = "referee_match_statistics"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    referee_id: Mapped[int] = mapped_column(Integer, ForeignKey("referees.id"), nullable=False, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False, index=True)
+    yellow_cards: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    red_cards: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_cards: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    data_source: Mapped[str] = mapped_column(String, default="observed")
+    data_quality: Mapped[str] = mapped_column(String, default="verified")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    referee = relationship("Referee", back_populates="referee_matches")
+    fixture = relationship("Fixture", back_populates="referee_statistics")
 
 
 class MatchStatistics(Base):
@@ -125,6 +174,13 @@ class MatchStatistics(Base):
     away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    referee_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    referee_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("referees.id"), nullable=True, index=True)
     data_source: Mapped[str] = mapped_column(String, default="observed")
     data_quality: Mapped[str] = mapped_column(String, default="verified")
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -216,6 +272,77 @@ class CornerPredictionSnapshot(Base):
 
     # Relationships
     fixture = relationship("Fixture", back_populates="corner_snapshots")
+
+
+class CardPredictionSnapshot(Base):
+    """
+    Immutable Pre-Match and Historical Prediction Snapshot storage for Cards models.
+    Preserves exact model inputs and probabilities generated before kickoff for auditing,
+    out-of-sample backtesting, and live performance verification.
+    """
+    __tablename__ = "card_prediction_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_cards_nb", index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    is_prematch: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    expected_home_cards: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_cards: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_cards: Mapped[float] = mapped_column(Float, nullable=False)
+
+    over_1_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_1_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_2_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_2_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_3_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_3_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_4_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_4_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_5_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_5_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_6_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_6_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+
+    home_over_0_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_over_1_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_over_2_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_over_3_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_0_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_1_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_2_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_3_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Red card risk
+    any_red_card_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_red_card_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_red_card_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    confidence_score: Mapped[int] = mapped_column(Integer, default=50)
+    data_quality_score: Mapped[int] = mapped_column(Integer, default=50)
+    sample_strength_score: Mapped[int] = mapped_column(Integer, default=50)
+    model_stability_score: Mapped[int] = mapped_column(Integer, default=50)
+    referee_confidence_score: Mapped[int] = mapped_column(Integer, default=50)
+
+    dispersion: Mapped[float] = mapped_column(Float, default=4.0)
+    dispersion_source: Mapped[str] = mapped_column(String, default="fallback")
+    baseline_source: Mapped[str] = mapped_column(String, default="fallback")
+    referee_source: Mapped[str] = mapped_column(String, default="fallback")
+    referee_sample_size: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Post-Match Verification fields (populated once match is finished and verified)
+    actual_home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_total_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="card_snapshots")
 
 
 class TeamStatistics(Base):
