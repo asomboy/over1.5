@@ -277,8 +277,10 @@ class DataIngestionService:
                 away_score = int(away_score)
                 ht_home = int(f_data["half_time_home_score"]) if f_data.get("half_time_home_score") is not None else None
                 ht_away = int(f_data["half_time_away_score"]) if f_data.get("half_time_away_score") is not None else None
-                h_corners = int(f_data["home_corners"]) if f_data.get("home_corners") is not None else None
-                a_corners = int(f_data["away_corners"]) if f_data.get("away_corners") is not None else None
+                raw_hc = f_data.get("home_corners")
+                raw_ac = f_data.get("away_corners")
+                h_corners = int(raw_hc) if (raw_hc is not None and str(raw_hc).isdigit() and int(raw_hc) >= 0) else None
+                a_corners = int(raw_ac) if (raw_ac is not None and str(raw_ac).isdigit() and int(raw_ac) >= 0) else None
                 tot_corners = (h_corners + a_corners) if (h_corners is not None and a_corners is not None) else None
                 total_goals = home_score + away_score
 
@@ -309,7 +311,7 @@ class DataIngestionService:
                     )
                     db.add(result)
 
-                # Ingest / update MatchStatistics idempotently
+                # Ingest / update MatchStatistics idempotently without overwriting verified data with nulls
                 match_stats = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fixture.id).first()
                 if not match_stats:
                     match_stats = MatchStatistics(
@@ -328,6 +330,14 @@ class DataIngestionService:
                         match_stats.away_corners = a_corners
                     if tot_corners is not None:
                         match_stats.total_corners = tot_corners
+
+                # Trigger post-match prediction snapshot result verification
+                if h_corners is not None and a_corners is not None:
+                    try:
+                        from services.corners_service import CornerSnapshotService
+                        CornerSnapshotService.verify_finished_fixture_corners(db, fixture.id, h_corners, a_corners)
+                    except Exception as v_ex:
+                        logger.debug(f"Corner result verification hook error: {v_ex}")
 
                 fixture.status = "FINISHED"
                 if commit:

@@ -874,6 +874,20 @@ def get_corners_backtest(min_samples: int = 5, db: Session = Depends(get_db)):
     return CornersBacktestService.run_chronological_backtest(db, min_samples=min_samples)
 
 
+@app.get("/api/corners/data-quality")
+def get_corners_data_quality(db: Session = Depends(get_db)):
+    """Audits database corner data completeness, eligible matches, coverage, and competition breakdowns."""
+    from services.corners_service import CornerDataQualityService
+    return CornerDataQualityService.get_database_corner_data_quality(db)
+
+
+@app.get("/api/corners/performance")
+def get_corners_performance_dashboard(db: Session = Depends(get_db)):
+    """Exposes production model validation status, Brier scores, calibration, and baseline comparisons."""
+    from services.corners_service import CornersBacktestService
+    return CornersBacktestService.run_chronological_backtest(db, min_samples=100)
+
+
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Sends a test Telegram notification message."""

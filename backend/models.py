@@ -2,7 +2,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -77,6 +77,7 @@ class Fixture(Base):
     historical_result = relationship("HistoricalResult", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     match_statistics = relationship("MatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     predictions = relationship("Prediction", back_populates="fixture", cascade="all, delete-orphan")
+    corner_snapshots = relationship("CornerPredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -160,6 +161,61 @@ class Prediction(Base):
 
     # Relationships
     fixture = relationship("Fixture", back_populates="predictions")
+
+
+class CornerPredictionSnapshot(Base):
+    """
+    Immutable Pre-Match and Historical Prediction Snapshot storage for Corner models.
+    Preserves exact model inputs and probabilities generated before kickoff for auditing,
+    out-of-sample backtesting, and live performance verification.
+    """
+    __tablename__ = "corner_prediction_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_corners_nb", index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    is_prematch: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    expected_home_corners: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_corners: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_corners: Mapped[float] = mapped_column(Float, nullable=False)
+
+    over_7_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_7_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_8_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_8_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_9_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_9_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_10_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_10_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    over_11_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+    under_11_5_prob: Mapped[float] = mapped_column(Float, nullable=False)
+
+    home_over_3_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_over_4_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_over_5_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_3_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_4_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_over_5_5_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    confidence_score: Mapped[int] = mapped_column(Integer, default=50)
+    data_quality_score: Mapped[int] = mapped_column(Integer, default=50)
+    sample_strength_score: Mapped[int] = mapped_column(Integer, default=50)
+    dispersion: Mapped[float] = mapped_column(Float, default=5.5)
+    dispersion_source: Mapped[str] = mapped_column(String, default="fallback")
+    baseline_source: Mapped[str] = mapped_column(String, default="fallback")
+
+    # Post-Match Verification fields (populated once match is finished and verified)
+    actual_home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actual_total_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="corner_snapshots")
 
 
 class TeamStatistics(Base):
