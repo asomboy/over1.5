@@ -1008,6 +1008,79 @@ def get_models_status(db: Session = Depends(get_db)):
     return ModelEvaluationService.get_models_readiness_status(db)
 
 
+@app.get("/api/data-quality/overview")
+def get_data_quality_overview(db: Session = Depends(get_db)):
+    """Returns global data coverage metrics across goals, corners, cards, referees, and live snapshots."""
+    from services.data_quality_service import DataQualityService
+    return DataQualityService.calculate_global_coverage(db)
+
+
+@app.get("/api/data-quality/competitions")
+def get_data_quality_competitions(db: Session = Depends(get_db)):
+    """Returns data quality coverage segmented by competition."""
+    from services.data_quality_service import DataQualityService
+    return {"status": "ok", "competitions": DataQualityService.calculate_competition_coverage(db)}
+
+
+@app.get("/api/data-quality/backfill-status")
+def get_data_quality_backfill_status(db: Session = Depends(get_db)):
+    """Returns historical backfill and enrichment progress."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.get_backfill_status(db)
+
+
+@app.post("/api/data-quality/backfill-run")
+def run_data_quality_backfill(batch_size: int = 50, db: Session = Depends(get_db)):
+    """Triggers a controlled batch historical enrichment pass."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.discover_and_enrich_batch(db, batch_size=batch_size)
+
+
+@app.get("/api/models/readiness")
+def get_models_readiness(db: Session = Depends(get_db)):
+    """Returns production readiness status and activation gates for all prediction models."""
+    from services.production_validation_service import ProductionValidationService
+    return ProductionValidationService.get_all_models_readiness_report(db)
+
+
+@app.get("/api/fixtures/{fixture_id}/feature-coverage")
+def get_fixture_feature_coverage(fixture_id: int, db: Session = Depends(get_db)):
+    """Returns feature payload and temporal coverage diagnostics for a specific fixture."""
+    from services.feature_store_service import FeatureStoreService
+    return FeatureStoreService.build_fixture_features_payload(db, fixture_id)
+
+
+@app.get("/api/system/providers")
+def get_system_providers(db: Session = Depends(get_db)):
+    """Returns external data provider operational health and latency logs."""
+    from services.provider_health_service import ProviderHealthService
+    return {"status": "ok", "providers": ProviderHealthService.get_providers_status(db)}
+
+
+@app.get("/api/system/intelligence-status")
+def get_system_intelligence_status(db: Session = Depends(get_db)):
+    """Central production intelligence status report summarizing data coverage, model validation, and provider health."""
+    from services.data_quality_service import DataQualityService
+    from services.production_validation_service import ProductionValidationService
+    from services.provider_health_service import ProviderHealthService
+    from services.historical_data_service import HistoricalDataService
+
+    cov = DataQualityService.calculate_global_coverage(db)
+    models = ProductionValidationService.get_all_models_readiness_report(db)
+    prov = ProviderHealthService.get_providers_status(db)
+    bf = HistoricalDataService.get_backfill_status(db)
+
+    return {
+        "status": "ok",
+        "system_status": "OPERATIONAL",
+        "coverage": cov,
+        "models_readiness": models,
+        "providers": prov,
+        "backfill": bf,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Sends a test Telegram notification message."""

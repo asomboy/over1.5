@@ -84,6 +84,8 @@ class Fixture(Base):
     live_state = relationship("LiveMatchState", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     live_snapshots = relationship("LivePredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
     evaluations = relationship("ModelEvaluation", back_populates="fixture", cascade="all, delete-orphan")
+    feature_snapshots = relationship("FeatureSnapshot", back_populates="fixture", cascade="all, delete-orphan")
+    enrichment_status = relationship("HistoricalEnrichmentStatus", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -546,3 +548,93 @@ class ModelEvaluation(Base):
 
     # Relationships
     fixture = relationship("Fixture", back_populates="evaluations")
+
+
+class DataQualitySnapshot(Base):
+    """
+    Periodic data quality and coverage registry records across database, competition, season, or team.
+    """
+    __tablename__ = "data_quality_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    scope_type: Mapped[str] = mapped_column(String, default="global", index=True) # global, competition, team, provider
+    scope_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    metric: Mapped[str] = mapped_column(String, nullable=False, index=True) # goals_data_coverage, corner_data_coverage, card_data_coverage, referee_data_coverage, live_snapshot_coverage
+    
+    eligible_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    observed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    coverage_ratio: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    
+    calculated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ProviderHealth(Base):
+    """
+    Operational monitoring records tracking external API data providers (latency, success rates, status).
+    """
+    __tablename__ = "provider_health_logs"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False, index=True) # espn, football_data, api_football
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    average_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    missing_data_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    stale_data_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    
+    status: Mapped[str] = mapped_column(String, default="HEALTHY", index=True) # HEALTHY, DEGRADED, UNAVAILABLE
+
+
+class FeatureSnapshot(Base):
+    """
+    Immutable feature payload snapshot preserving exact model inputs available before kickoff or at snapshot time.
+    Guarantees strict auditability, zero future-leakage verification, and model reproducibility.
+    """
+    __tablename__ = "feature_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v2_match_intelligence", index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    
+    features_json: Mapped[str] = mapped_column(Text, nullable=False) # JSON payload of team/ref/competition features
+    feature_coverage: Mapped[float] = mapped_column(Float, default=1.0)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    provenance_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="feature_snapshots")
+
+
+class HistoricalEnrichmentStatus(Base):
+    """
+    Tracks historical data backfill progress, boxscore completeness, and retry eligibility.
+    """
+    __tablename__ = "historical_enrichment_status"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False, index=True)
+    
+    enrichment_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_attempted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    has_boxscore_stats: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    has_referee: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_complete: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    retry_eligible: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="enrichment_status")
+
