@@ -911,6 +911,55 @@ def get_cards_performance_dashboard(db: Session = Depends(get_db)):
     return CardsBacktestService.run_chronological_backtest(db, min_samples=100)
 
 
+@app.get("/api/fixtures/{fixture_id}/live-intelligence")
+def get_fixture_live_intelligence(fixture_id: int, db: Session = Depends(get_db)):
+    """Computes dynamic in-play prediction probabilities for a live or scheduled fixture."""
+    from services.live_service import LiveMatchIntelligenceService
+    intel = LiveMatchIntelligenceService.get_live_intelligence(db, fixture_id)
+    if not intel:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+    return intel
+
+
+@app.get("/api/live/fixtures")
+def get_live_fixtures(db: Session = Depends(get_db)):
+    """Returns all currently live fixtures with live minutes, scores, and best live signals."""
+    from services.live_service import LiveMatchIntelligenceService
+    from models import Fixture, LiveMatchState
+    live_fixtures = (
+        db.query(Fixture)
+        .filter(Fixture.status.in_(["LIVE", "HT", "1H", "2H", "ET"]))
+        .all()
+    )
+    results = []
+    for f in live_fixtures:
+        intel = LiveMatchIntelligenceService.get_live_intelligence(db, f.id)
+        if intel:
+            st = intel["match_state"]
+            results.append({
+                "fixture_id": f.id,
+                "league_name": f.league.name if f.league else None,
+                "home_team_name": f.home_team.name if f.home_team else "Home",
+                "away_team_name": f.away_team.name if f.away_team else "Away",
+                "minute": st["minute"],
+                "period": st["period"],
+                "home_score": st["home_score"],
+                "away_score": st["away_score"],
+                "best_signal": intel["best_live_signal"],
+                "confidence": intel["confidence"]["overall_confidence"],
+                "data_quality": intel["confidence"]["live_data_quality"],
+                "last_update": st["last_updated"]
+            })
+    return {"status": "ok", "live_count": len(results), "fixtures": results}
+
+
+@app.get("/api/live/performance")
+def get_live_performance(db: Session = Depends(get_db)):
+    """Returns live prediction evaluation metrics across minute buckets."""
+    from services.live_service import LiveModelEvaluationService
+    return LiveModelEvaluationService.evaluate_live_performance(db)
+
+
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Sends a test Telegram notification message."""

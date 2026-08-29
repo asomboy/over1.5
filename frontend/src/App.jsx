@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import AccumulatorModal from './components/AccumulatorModal';
 import MatchDetailModal from './components/MatchDetailModal';
+import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -133,6 +134,8 @@ export default function App() {
   const [showAccaModal, setShowAccaModal] = useState(false);
   const [activeDetailFixtureId, setActiveDetailFixtureId] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [activeLiveFixtureId, setActiveLiveFixtureId] = useState(null);
+  const [showLiveModal, setShowLiveModal] = useState(false);
   const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
 
   // Accuracy Dashboard & Confidence state
@@ -2808,6 +2811,22 @@ export default function App() {
         onClose={() => {
           setShowDetailModal(false);
           setActiveDetailFixtureId(null);
+        }}
+        onOpenLiveModal={(id) => {
+          setActiveLiveFixtureId(id);
+          setShowLiveModal(true);
+        }}
+        apiRequest={apiRequest}
+        darkMode={darkMode}
+      />
+
+      {/* Live Match Intelligence & Dynamic In-Play Predictions Modal */}
+      <LiveMatchIntelligenceModal
+        fixtureId={activeLiveFixtureId}
+        isOpen={showLiveModal}
+        onClose={() => {
+          setShowLiveModal(false);
+          setActiveLiveFixtureId(null);
         }}
         apiRequest={apiRequest}
         darkMode={darkMode}

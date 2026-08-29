@@ -25,3 +25,16 @@ from .prediction_schema import (
     CardsPrediction,
     MatchIntelligencePrediction
 )
+from .live_schema import (
+    LiveMarketProbability,
+    LiveMatchStateSchema,
+    LiveGoalsPrediction,
+    LiveCornersPrediction,
+    LiveCardsPrediction,
+    LiveSignalItem,
+    BestLiveSignal,
+    LiveConfidence,
+    LiveDiagnostics,
+    LiveIntelligenceResponse,
+    LiveFixtureSummary
+)

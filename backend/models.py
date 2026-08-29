@@ -2,7 +2,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean
+from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,12 +23,13 @@ class League(Base):
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     country: Mapped[str] = mapped_column(String, nullable=False)
-    season: Mapped[str] = mapped_column(String, nullable=False)
+    season: Mapped[str] = mapped_column(String, default="2025/2026")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
-    teams = relationship("Team", back_populates="league", cascade="all, delete-orphan")
     fixtures = relationship("Fixture", back_populates="league", cascade="all, delete-orphan")
+    teams = relationship("Team", back_populates="league", cascade="all, delete-orphan")
     statistics = relationship("LeagueStatistics", back_populates="league", uselist=False, cascade="all, delete-orphan")
 
 
@@ -39,7 +40,7 @@ class Team(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, unique=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    short_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    short_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     league_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("leagues.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -80,6 +81,8 @@ class Fixture(Base):
     corner_snapshots = relationship("CornerPredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
     card_snapshots = relationship("CardPredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
     referee_statistics = relationship("RefereeMatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
+    live_state = relationship("LiveMatchState", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
+    live_snapshots = relationship("LivePredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -418,3 +421,84 @@ class TeamFormStreak(Base):
 
     # Relationships
     team = relationship("Team", back_populates="form_streak")
+
+
+class LiveMatchState(Base):
+    """
+    Real-time observed in-game state for active football fixtures.
+    Maintains the latest minute, clock period, scoreline, and live boxscores.
+    """
+    __tablename__ = "live_match_states"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False, index=True)
+    minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    added_time: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    period: Mapped[str] = mapped_column(String, default="1H") # 1H, HT, 2H, ET, PEN, FT
+    status: Mapped[str] = mapped_column(String, default="LIVE", index=True)
+
+    home_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    away_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    home_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    home_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    home_possession: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_possession: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    home_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    data_source: Mapped[str] = mapped_column(String, default="live_feed")
+    data_quality: Mapped[str] = mapped_column(String, default="verified")
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="live_state")
+
+
+class LivePredictionSnapshot(Base):
+    """
+    Chronological in-play prediction snapshot archive.
+    Preserves dynamic probabilities generated at specific match minutes without
+    overwriting immutable pre-match predictions.
+    """
+    __tablename__ = "live_prediction_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_live_intelligence", index=True)
+
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    period: Mapped[str] = mapped_column(String, default="1H")
+
+    home_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    away_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    goals_prediction_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    corners_prediction_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cards_prediction_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    best_live_signal_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    confidence: Mapped[int] = mapped_column(Integer, default=50)
+    data_quality: Mapped[int] = mapped_column(Integer, default=50)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="live_snapshots")

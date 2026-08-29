@@ -21,7 +21,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 
-export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiRequest, darkMode }) {
+export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiveModal, apiRequest, darkMode }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
@@ -163,12 +163,27 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
               {home?.name || 'Home'} vs {away?.name || 'Away'}
             </h2>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 rounded-2xl bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onOpenLiveModal && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenLiveModal(fixtureId);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-xs font-black transition-all hover:scale-105"
+                title="Open Live Match Intelligence"
+              >
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                LIVE RADAR
+              </button>
+            )}
+            <button 
+              onClick={onClose}
+              className="p-2 rounded-2xl bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Team Matchup Strip */}
