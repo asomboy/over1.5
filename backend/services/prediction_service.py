@@ -28,6 +28,36 @@ logger = logging.getLogger(__name__)
 
 MODEL_VERSION = "v2_match_intelligence"
 
+# Dixon-Coles Rho Strategy Configuration
+DEFAULT_FALLBACK_RHO = -0.11
+MIN_RHO = -0.25
+MAX_RHO = 0.05
+
+# Score Matrix Adaptive Grid Configuration
+MIN_SCORE_GRID = 10
+TARGET_CAPTURED_MASS = 0.999
+MAX_SCORE_GRID = 25
+
+# Best Model Signal Whitelist & Threshold Configuration
+SIGNAL_CANDIDATE_MARKETS = [
+    # (Market Name, Category Key, Sub-Key, Min Probability Threshold)
+    ("Over 1.5 Goals", "goals", "over_1_5", 0.65),
+    ("Over 2.5 Goals", "goals", "over_2_5", 0.52),
+    ("Over 3.5 Goals", "goals", "over_3_5", 0.38),
+    ("Both Teams To Score", "btts", "yes", 0.52),
+    ("Both Teams Not To Score", "btts", "no", 0.55),
+    ("Home Win", "result", "home_win", 0.45),
+    ("Away Win", "result", "away_win", 0.40),
+    ("Draw", "result", "draw", 0.32),
+    ("Home Team Over 1.5", "home_team_goals", "over_1_5", 0.46),
+    ("Away Team Over 1.5", "away_team_goals", "over_1_5", 0.40),
+]
+
+MIN_SIGNAL_CONFIDENCE_OVERALL = 40
+MIN_SIGNAL_DATA_QUALITY = 35
+MIN_SIGNAL_MODEL_STABILITY = 35
+MIN_SIGNAL_QUALIFYING_SCORE = 60
+
 
 def _poisson_pmf(k: int, mu: float) -> float:
     """Calculates Poisson probability mass function P(X=k) for mean mu with numerical safeguards."""
@@ -85,7 +115,7 @@ def _calculate_overdispersion_parameter(db: Session, league_id: int) -> Optional
         variance = sum((g - mean) ** 2 for g in total_goals) / n
 
         if variance <= mean:
-            return None  # No overdispersion
+            return None
 
         r = (mean ** 2) / (variance - mean)
         if r <= 1.0:
@@ -128,8 +158,8 @@ def _form_goal_multipliers(streak: Optional[TeamFormStreak], league_avg_scored: 
 class HalfPredictionEngine:
     """
     Half-by-Half Goal Expectation & Probability Engine.
-    Estimates first-half and second-half goal distributions using league historical
-    halves data and team-specific scoring tendencies with Bayesian shrinkage.
+    Estimates first-half and second-half goal distributions with strict mathematical
+    sum consistency: expected_first_half + expected_second_half == expected_full_match.
     """
     DEFAULT_FIRST_HALF_RATIO = 0.45
     DEFAULT_SECOND_HALF_RATIO = 0.55
@@ -139,7 +169,8 @@ class HalfPredictionEngine:
         cls, db: Optional[Session], league_id: Optional[int], home_team_id: Optional[int], away_team_id: Optional[int]
     ) -> Tuple[float, float, float, float]:
         """
-        Calculates (home_1h_ratio, home_2h_ratio, away_1h_ratio, away_2h_ratio)
+        Calculates (home_1h_ratio, home_2h_ratio, away_1h_ratio, away_2h_ratio).
+        Guarantees that home_1h + home_2h == 1.0 and away_1h + away_2h == 1.0.
         """
         league_1h_ratio = cls.DEFAULT_FIRST_HALF_RATIO
         
@@ -208,20 +239,38 @@ class HalfPredictionEngine:
     def calculate_half_probabilities(
         cls, lambda_home: float, lambda_away: float, half_props: Tuple[float, float, float, float]
     ) -> Dict[str, float]:
-        """Derives 1st half and 2nd half Over 0.5 and Over 1.5 goal probabilities."""
+        """
+        Derives first-half and second-half expected goals and probabilities with exact sum consistency:
+        lambda_1h + lambda_2h == lambda_home + lambda_away.
+        """
         h_1h_prop, h_2h_prop, a_1h_prop, a_2h_prop = half_props
-        lambda_1h = max(0.05, (lambda_home * h_1h_prop) + (lambda_away * a_1h_prop))
-        lambda_2h = max(0.05, (lambda_home * h_2h_prop) + (lambda_away * a_2h_prop))
+        
+        # Exact team-split expected goals for each half
+        lambda_h_1h = lambda_home * h_1h_prop
+        lambda_h_2h = lambda_home * h_2h_prop
+        lambda_a_1h = lambda_away * a_1h_prop
+        lambda_a_2h = lambda_away * a_2h_prop
 
-        # First half probabilities
+        lambda_1h = max(0.02, lambda_h_1h + lambda_a_1h)
+        lambda_2h = max(0.02, lambda_h_2h + lambda_a_2h)
+
+        # Scale slightly if small rounding differences occur to guarantee exact sum
+        total_full = max(0.04, lambda_home + lambda_away)
+        half_sum = lambda_1h + lambda_2h
+        if abs(half_sum - total_full) > 0.001 and half_sum > 0:
+            scale = total_full / half_sum
+            lambda_1h *= scale
+            lambda_2h *= scale
+
+        # First half Poisson distribution approximation
         h1_over_0_5 = round(1.0 - math.exp(-lambda_1h), 4)
         h1_over_1_5 = round(1.0 - math.exp(-lambda_1h) * (1.0 + lambda_1h), 4)
 
-        # Second half probabilities
+        # Second half Poisson distribution approximation
         h2_over_0_5 = round(1.0 - math.exp(-lambda_2h), 4)
         h2_over_1_5 = round(1.0 - math.exp(-lambda_2h) * (1.0 + lambda_2h), 4)
 
-        # Ensure logical monotonicity: Over 0.5 >= Over 1.5 >= 0
+        # Enforce logical bounds and monotonicity
         h1_over_0_5 = max(0.0, min(1.0, h1_over_0_5))
         h1_over_1_5 = max(0.0, min(h1_over_0_5, h1_over_1_5))
         h2_over_0_5 = max(0.0, min(1.0, h2_over_0_5))
@@ -241,28 +290,125 @@ class DixonColesPredictionEngine:
     """
     Dixon-Coles Match Intelligence Core Prediction Engine V2.
     
-    Serves as the single backend source of truth for all prediction probabilities:
-    1. Low-score joint probability dependency correction factor tau(x, y, lambda_h, lambda_a, rho).
-    2. Exponential time-decay weighting phi(t) = exp(-xi * t) for historical matches.
-    3. Dynamic probability matrix sizing with full probability mass conservation.
-    4. Mathematical derivation of 1X2, Over/Under, BTTS, team goals, and halves from the score matrix.
-    5. Multi-dimensional model confidence and Best Model Signal scoring.
+    Hardened Features:
+    1. Configurable, hierarchical Dixon-Coles rho estimation with safety clamping and source tracking.
+    2. Adaptive score matrix grid expansion ensuring >= 0.999 probability mass capture before normalization.
+    3. Transparent Best Model Signal scoring with whitelisted candidates and explicit no-signal handling.
+    4. Exact half-by-half mathematical expectation consistency.
+    5. Multi-dimensional model confidence and data quality tracking.
     """
 
-    DEFAULT_RHO = -0.11
-    XI_TIME_DECAY = 0.0035
+    @classmethod
+    def resolve_rho_strategy(cls, db: Optional[Session], league_id: Optional[int]) -> Tuple[float, str]:
+        """
+        Hierarchical Dixon-Coles rho estimation strategy:
+        A. Competition-specific estimated rho (n >= 30 historical matches in league)
+        B. Shrunk competition rho (10 <= n < 30 matches, shrunk toward global)
+        C. Global estimated rho (n >= 50 matches across all leagues)
+        D. Configurable fallback rho (-0.11)
+
+        Returns (rho_value, rho_source).
+        """
+        if not db:
+            return DEFAULT_FALLBACK_RHO, "fallback"
+
+        # Global estimate helper
+        def compute_global_rho() -> Tuple[float, str]:
+            try:
+                all_results = (
+                    db.query(HistoricalResult)
+                    .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                    .filter(Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+                    .limit(500)
+                    .all()
+                )
+                n = len(all_results)
+                if n >= 50:
+                    rho_est = cls._estimate_rho_from_matches(all_results)
+                    return _clamp(rho_est, MIN_RHO, MAX_RHO), "global"
+            except Exception as e:
+                logger.debug(f"Global rho estimation error: {e}")
+            return DEFAULT_FALLBACK_RHO, "fallback"
+
+        if not league_id:
+            return compute_global_rho()
+
+        # Competition-specific estimation
+        try:
+            league_results = (
+                db.query(HistoricalResult)
+                .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                .filter(Fixture.league_id == league_id, Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+                .limit(200)
+                .all()
+            )
+            n_league = len(league_results)
+
+            if n_league >= 30:
+                raw_rho = cls._estimate_rho_from_matches(league_results)
+                return _clamp(raw_rho, MIN_RHO, MAX_RHO), "competition"
+            elif n_league >= 10:
+                raw_comp = cls._estimate_rho_from_matches(league_results)
+                glob_rho, _ = compute_global_rho()
+                weight = n_league / 30.0
+                shrunk_rho = _shrink_to_prior(raw_comp, glob_rho, weight)
+                return _clamp(shrunk_rho, MIN_RHO, MAX_RHO), "shrunk_competition"
+            else:
+                return compute_global_rho()
+        except Exception as e:
+            logger.warning(f"Competition rho resolution failed for league {league_id}: {e}. Falling back to default.")
+            return compute_global_rho()
 
     @staticmethod
-    def _dixon_coles_tau(x: int, y: int, lambda_h: float, lambda_a: float, rho: float = DEFAULT_RHO) -> float:
-        """Calculates the Dixon-Coles tau adjustment parameter for low scorelines (0,0), (1,0), (0,1), and (1,1)."""
+    def _estimate_rho_from_matches(results: List[HistoricalResult]) -> float:
+        """
+        Estimates the Dixon-Coles rho parameter via empirical low-score correlation frequencies.
+        tau(1,1) = 1 - rho  =>  rho ~ 1 - (obs_11 / exp_11)
+        tau(0,0) = 1 - lambda_h * lambda_a * rho
+        """
+        n = len(results)
+        if n == 0:
+            return DEFAULT_FALLBACK_RHO
+
+        home_goals = [r.home_score for r in results]
+        away_goals = [r.away_score for r in results]
+        mean_h = max(0.5, sum(home_goals) / float(n))
+        mean_a = max(0.5, sum(away_goals) / float(n))
+
+        n_00 = sum(1 for r in results if r.home_score == 0 and r.away_score == 0)
+        n_11 = sum(1 for r in results if r.home_score == 1 and r.away_score == 1)
+        n_10 = sum(1 for r in results if r.home_score == 1 and r.away_score == 0)
+        n_01 = sum(1 for r in results if r.home_score == 0 and r.away_score == 1)
+
+        exp_00 = n * math.exp(-mean_h - mean_a)
+        exp_11 = n * (mean_h * math.exp(-mean_h)) * (mean_a * math.exp(-mean_a))
+        exp_10 = n * (mean_h * math.exp(-mean_h)) * (math.exp(-mean_a))
+        exp_01 = n * (math.exp(-mean_h)) * (mean_a * math.exp(-mean_a))
+
+        rho_11 = 1.0 - (n_11 / max(1.0, exp_11)) if exp_11 > 0 else DEFAULT_FALLBACK_RHO
+        rho_00 = (1.0 - (n_00 / max(1.0, exp_00))) / max(0.25, mean_h * mean_a) if exp_00 > 0 else DEFAULT_FALLBACK_RHO
+        rho_10 = ((n_10 / max(1.0, exp_10)) - 1.0) / max(0.5, mean_h) if exp_10 > 0 else DEFAULT_FALLBACK_RHO
+        rho_01 = ((n_01 / max(1.0, exp_01)) - 1.0) / max(0.5, mean_a) if exp_01 > 0 else DEFAULT_FALLBACK_RHO
+
+        # Composite weighted estimate
+        composite = 0.40 * rho_11 + 0.30 * rho_00 + 0.15 * rho_10 + 0.15 * rho_01
+        return round(_clamp(composite, MIN_RHO, MAX_RHO), 4)
+
+    @staticmethod
+    def _dixon_coles_tau(x: int, y: int, lambda_h: float, lambda_a: float, rho: float = DEFAULT_FALLBACK_RHO) -> float:
+        """
+        Calculates the Dixon-Coles tau adjustment parameter for low scorelines with positivity safeguards.
+        Guarantees tau >= 0.001 to prevent negative probabilities or division anomalies.
+        """
+        safe_rho = _clamp(rho, MIN_RHO, MAX_RHO)
         if x == 0 and y == 0:
-            return max(0.0, 1.0 - (lambda_h * lambda_a * rho))
+            return max(0.001, 1.0 - (lambda_h * lambda_a * safe_rho))
         elif x == 1 and y == 0:
-            return max(0.0, 1.0 + (lambda_h * rho))
+            return max(0.001, 1.0 + (lambda_h * safe_rho))
         elif x == 0 and y == 1:
-            return max(0.0, 1.0 + (lambda_a * rho))
+            return max(0.001, 1.0 + (lambda_a * safe_rho))
         elif x == 1 and y == 1:
-            return max(0.0, 1.0 - rho)
+            return max(0.001, 1.0 - safe_rho)
         return 1.0
 
     @staticmethod
@@ -319,7 +465,6 @@ class DixonColesPredictionEngine:
             a_matches = (away_stats.matches_analyzed_home + away_stats.matches_analyzed_away) if away_stats else 0
             total_matches = h_matches + a_matches
 
-            # 1. Data Quality (0-100)
             if total_matches >= 16:
                 dq_base = 78
             elif total_matches >= 10:
@@ -349,7 +494,6 @@ class DixonColesPredictionEngine:
 
             data_quality = int(round(_clamp(dq_base, 15, 98)))
 
-            # 2. Model Stability (0-100)
             stab_base = 72
             if league_id:
                 l_stats = db.query(LeagueStatistics).filter(LeagueStatistics.league_id == league_id).first()
@@ -361,7 +505,6 @@ class DixonColesPredictionEngine:
                 elif tot_l_matches < 3:
                     stab_base -= 12
 
-            # Check form volatility vs long term stats
             if home_streak and home_stats and home_stats.avg_home_goals_scored > 0:
                 recent_avg = home_streak.goals_scored_last_5 / 5.0
                 if abs(recent_avg - home_stats.avg_home_goals_scored) > 1.8:
@@ -373,9 +516,8 @@ class DixonColesPredictionEngine:
                     stab_base -= 8
 
             model_stability = int(round(_clamp(stab_base, 15, 98)))
-
-            # 3. Overall & Label
             overall = int(round(0.50 * data_quality + 0.50 * model_stability))
+
             if overall >= 85:
                 sample_quality = "strong"
             elif overall >= 70:
@@ -537,58 +679,85 @@ class DixonColesPredictionEngine:
 
     @classmethod
     def calculate_score_matrix(
-        cls, lambda_home: float, lambda_away: float, max_goals: Optional[int] = None, rho: float = DEFAULT_RHO
-    ) -> Tuple[List[List[float]], int]:
+        cls, lambda_home: float, lambda_away: float, max_goals: Optional[int] = None, rho: float = DEFAULT_FALLBACK_RHO
+    ) -> Tuple[List[List[float]], int, Dict[str, Any]]:
         """
-        Constructs the Dixon-Coles corrected bivariate scoreline probability matrix.
-        Dynamically bounds upper score range to preserve complete probability mass.
+        Adaptive Score Matrix Grid Expansion:
+        Calculates bivariate Dixon-Coles probabilities and iteratively expands score grid size
+        (from MIN_SCORE_GRID=10 up to MAX_SCORE_GRID=25) until raw captured probability mass >= 0.999.
+        Only normalizes after capturing target probability mass to eliminate float rounding errors.
+
+        Returns (normalized_matrix, final_grid_size, diagnostics).
         """
-        # Validate and sanitize lambda inputs
         lambda_h = _clamp(lambda_home, 0.05, 10.0)
         lambda_a = _clamp(lambda_away, 0.05, 10.0)
+        safe_rho = _clamp(rho, MIN_RHO, MAX_RHO)
 
-        # Dynamic max goals sizing: covers at least 4.5 standard deviations of Poisson
-        if max_goals is None or max_goals < 10:
-            max_val = max(lambda_h, lambda_a)
-            calc_max = int(math.ceil(max_val + 4.5 * math.sqrt(max_val)))
-            grid_size = min(16, max(10, calc_max))
-        else:
-            grid_size = min(16, max(10, max_goals))
+        # Initial dynamic grid estimate
+        initial_max = max(lambda_h, lambda_a)
+        calc_initial = int(math.ceil(initial_max + 4.5 * math.sqrt(initial_max)))
+        grid_size = max(MIN_SCORE_GRID, calc_initial)
+        if max_goals is not None and max_goals > grid_size:
+            grid_size = max_goals
+        grid_size = min(grid_size, MAX_SCORE_GRID)
 
-        home_pmf = [_poisson_pmf(i, lambda_h) for i in range(grid_size)]
-        away_pmf = [_poisson_pmf(j, lambda_a) for j in range(grid_size)]
+        raw_matrix: List[List[float]] = []
+        captured_mass = 0.0
 
-        raw_matrix = [[0.0 for _ in range(grid_size)] for _ in range(grid_size)]
-        total_mass = 0.0
+        # Iterative expansion loop
+        while True:
+            home_pmf = [_poisson_pmf(i, lambda_h) for i in range(grid_size)]
+            away_pmf = [_poisson_pmf(j, lambda_a) for j in range(grid_size)]
 
-        for i in range(grid_size):
-            for j in range(grid_size):
-                tau = cls._dixon_coles_tau(i, j, lambda_h, lambda_a, rho=rho)
-                p = max(0.0, home_pmf[i] * away_pmf[j] * tau)
-                raw_matrix[i][j] = p
-                total_mass += p
+            raw_matrix = [[0.0 for _ in range(grid_size)] for _ in range(grid_size)]
+            captured_mass = 0.0
 
-        if total_mass < 0.98:
-            logger.warning(f"Score matrix probability mass warning: total raw mass is {total_mass:.4f} (expected > 0.98)")
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    tau = cls._dixon_coles_tau(i, j, lambda_h, lambda_a, rho=safe_rho)
+                    p = max(0.0, home_pmf[i] * away_pmf[j] * tau)
+                    raw_matrix[i][j] = p
+                    captured_mass += p
 
-        # Exact normalization to sum strictly to 1.0
-        norm_factor = total_mass if total_mass > 0 else 1.0
-        matrix = [[raw_matrix[i][j] / norm_factor for j in range(grid_size)] for i in range(grid_size)]
+            # Check if target captured mass (0.999) is met or max grid is reached
+            if captured_mass >= TARGET_CAPTURED_MASS or grid_size >= MAX_SCORE_GRID:
+                break
+            grid_size = min(MAX_SCORE_GRID, grid_size + 3)
 
-        return matrix, grid_size
+        tail_mass = max(0.0, 1.0 - captured_mass)
+        target_met = captured_mass >= TARGET_CAPTURED_MASS
+
+        if not target_met:
+            logger.warning(
+                f"Score matrix adaptive expansion hit MAX_SCORE_GRID={MAX_SCORE_GRID} with captured_mass={captured_mass:.5f} (tail_mass={tail_mass:.5f}, target={TARGET_CAPTURED_MASS})"
+            )
+
+        # Exact normalization after capturing >= 99.9% probability mass
+        norm_factor = captured_mass if captured_mass > 0 else 1.0
+        normalized_matrix = [[raw_matrix[i][j] / norm_factor for j in range(grid_size)] for i in range(grid_size)]
+
+        diagnostics = {
+            "captured_mass": round(captured_mass, 6),
+            "tail_mass": round(tail_mass, 6),
+            "grid_size": grid_size,
+            "target_met": target_met,
+            "rho_used": safe_rho
+        }
+
+        return normalized_matrix, grid_size, diagnostics
 
     @classmethod
     def derive_markets_from_matrix(cls, matrix: List[List[float]], grid_size: int) -> Dict[str, Any]:
         """
-        Mathematically derives all betting & intelligence prediction markets directly from the score matrix.
-        Guarantees exact sum-to-1 consistency across mutually exclusive sets.
+        Mathematically derives all prediction markets directly from the normalized score matrix.
+        Guarantees exact sum-to-1 consistency across mutually exclusive probability sets.
         """
         # 1. 1X2 Result Markets
         p_home_win = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i > j)
         p_draw = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i == j)
         p_away_win = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i < j)
 
-        # 2. Total Goals Over / Under Markets (0.5, 1.5, 2.5, 3.5)
+        # 2. Total Goals Over / Under Markets (0.5, 1.5, 2.5, 3.5, 4.5)
         p_o05 = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i + j >= 1)
         p_o15 = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i + j >= 2)
         p_o25 = sum(matrix[i][j] for i in range(grid_size) for j in range(grid_size) if i + j >= 3)
@@ -670,61 +839,55 @@ class DixonColesPredictionEngine:
         cls, markets: Dict[str, Any], confidence: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Evaluates prediction markets against model confidence to find the highest-conviction signal.
-        Formula: signal_score = round(0.45 * (prob * 100 * weight) + 0.25 * conf_overall + 0.15 * data_quality + 0.15 * model_stability)
+        Evaluates whitelisted candidate markets against confidence thresholds.
+        Trivial markets (Over 0.5, Home Over 0.5, Away Over 0.5) are strictly excluded from selection.
+
+        Formula:
+        signal_score = round(0.40 * (prob * 100) + 0.30 * confidence.overall + 0.15 * data_quality + 0.15 * model_stability)
+
+        Returns explicit no-signal structure if confidence is inadequate or no market qualifies.
         """
-        candidates: List[Tuple[str, float, float]] = []
+        conf_overall = confidence.get("overall", 50)
+        data_qual = confidence.get("data_quality", 50)
+        model_stab = confidence.get("model_stability", 50)
 
-        # 1. Over 1.5 Goals
-        o15 = markets.get("goals", {}).get("over_1_5", 0.0)
-        candidates.append(("Over 1.5 Goals", o15, 1.0))
+        # Check minimum model validity thresholds
+        if (
+            conf_overall < MIN_SIGNAL_CONFIDENCE_OVERALL or
+            data_qual < MIN_SIGNAL_DATA_QUALITY or
+            model_stab < MIN_SIGNAL_MODEL_STABILITY
+        ):
+            return {
+                "market": None,
+                "probability": 0.0,
+                "signal_score": 0,
+                "label": "Watch"
+            }
 
-        # 2. Over 0.5 Goals
-        o05 = markets.get("goals", {}).get("over_0_5", 0.0)
-        candidates.append(("Over 0.5 Goals", o05, 0.88))
-
-        # 3. Over 2.5 Goals (if >= 0.50)
-        o25 = markets.get("goals", {}).get("over_2_5", 0.0)
-        if o25 >= 0.50:
-            candidates.append(("Over 2.5 Goals", o25, 1.05))
-
-        # 4. BTTS Yes (if >= 0.50)
-        btts_yes = markets.get("btts", {}).get("yes", 0.0)
-        if btts_yes >= 0.50:
-            candidates.append(("Both Teams To Score", btts_yes, 1.02))
-
-        # 5. Result: Home Win or Away Win (if >= 0.50)
-        hw = markets.get("result", {}).get("home_win", 0.0)
-        if hw >= 0.50:
-            candidates.append(("Home Win", hw, 1.0))
-        aw = markets.get("result", {}).get("away_win", 0.0)
-        if aw >= 0.50:
-            candidates.append(("Away Win", aw, 1.0))
-
-        # 6. Team goal markets
-        h_o05 = markets.get("home_team_goals", {}).get("over_0_5", 0.0)
-        if h_o05 >= 0.75:
-            candidates.append(("Home Over 0.5 Goals", h_o05, 0.90))
-        a_o05 = markets.get("away_team_goals", {}).get("over_0_5", 0.0)
-        if a_o05 >= 0.75:
-            candidates.append(("Away Over 0.5 Goals", a_o05, 0.90))
-
-        best_market = "Over 1.5 Goals"
-        best_prob = o15
+        best_market: Optional[str] = None
+        best_prob = 0.0
         best_score = 0
 
-        conf_overall = confidence.get("overall", 50)
-        conf_dq = confidence.get("data_quality", 50)
-        conf_stab = confidence.get("model_stability", 50)
+        for m_name, cat_key, sub_key, min_prob in SIGNAL_CANDIDATE_MARKETS:
+            prob = markets.get(cat_key, {}).get(sub_key, 0.0)
+            if prob < min_prob:
+                continue
 
-        for m_name, prob, weight in candidates:
-            raw_score = (0.45 * (prob * 100.0) * weight) + (0.25 * conf_overall) + (0.15 * conf_dq) + (0.15 * conf_stab)
-            signal_score = int(round(_clamp(raw_score, 10.0, 99.0)))
+            raw_score = (0.40 * (prob * 100.0)) + (0.30 * conf_overall) + (0.15 * data_qual) + (0.15 * model_stab)
+            signal_score = int(round(_clamp(raw_score, 0.0, 99.0)))
 
             if signal_score > best_score:
                 best_score = signal_score
                 best_market = m_name
                 best_prob = prob
+
+        if not best_market or best_score < MIN_SIGNAL_QUALIFYING_SCORE:
+            return {
+                "market": None,
+                "probability": 0.0,
+                "signal_score": 0,
+                "label": "Watch"
+            }
 
         label = "Strong" if best_score >= 80 else ("Moderate" if best_score >= 65 else "Watch")
 
@@ -737,18 +900,24 @@ class DixonColesPredictionEngine:
 
     @classmethod
     def calculate_poisson_probabilities(
-        cls, lambda_home: float, lambda_away: float, max_goals: int = 10, rho: float = DEFAULT_RHO,
+        cls, lambda_home: float, lambda_away: float, max_goals: int = 10, rho: Optional[float] = None,
         overdispersion_r: Optional[float] = None, db: Optional[Session] = None,
         home_team_id: Optional[int] = None, away_team_id: Optional[int] = None, league_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Unified Dixon-Coles prediction calculator generating both Match Intelligence Core structures
-        and legacy backward-compatible dictionary keys.
+        Unified Match Intelligence calculator with adaptive score grid and hierarchical rho strategy.
         """
-        matrix, grid_size = cls.calculate_score_matrix(lambda_home, lambda_away, max_goals=max_goals, rho=rho)
+        # Resolve rho strategy
+        if rho is not None:
+            safe_rho = _clamp(rho, MIN_RHO, MAX_RHO)
+            rho_source = "custom"
+        else:
+            safe_rho, rho_source = cls.resolve_rho_strategy(db, league_id)
+
+        matrix, grid_size, tail_diag = cls.calculate_score_matrix(lambda_home, lambda_away, max_goals=max_goals, rho=safe_rho)
         derived = cls.derive_markets_from_matrix(matrix, grid_size)
 
-        # Half-by-Half goal probabilities
+        # Half-by-Half goal predictions with exact sum consistency
         half_props = HalfPredictionEngine.calculate_half_proportions(db, league_id, home_team_id, away_team_id)
         halves = HalfPredictionEngine.calculate_half_probabilities(lambda_home, lambda_away, half_props)
 
@@ -785,10 +954,12 @@ class DixonColesPredictionEngine:
             "most_likely_score": derived["most_likely_score"],
             "top_5_scorelines": derived["exact_scores"][:5],
 
-            # Match Intelligence Core unified schema components
+            # Match Intelligence Core unified schema
             "model": {
                 "version": MODEL_VERSION,
-                "generated_at": datetime.now(timezone.utc).isoformat()
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "rho": safe_rho,
+                "rho_source": rho_source
             },
             "expected_goals": {
                 "home": round(lambda_home, 2),
@@ -803,7 +974,10 @@ class DixonColesPredictionEngine:
             "halves": halves,
             "exact_scores": derived["exact_scores"][:10],
             "confidence": confidence,
-            "best_signal": best_signal
+            "best_signal": best_signal,
+            "diagnostics": {
+                "score_matrix": tail_diag
+            }
         }
 
         return res_dict

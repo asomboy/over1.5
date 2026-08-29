@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 class ModelMetadata(BaseModel):
     version: str = "v2_match_intelligence"
     generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    rho: float = Field(default=-0.11, description="Dixon-Coles low-score dependence parameter")
+    rho_source: str = Field(default="fallback", description="'competition' | 'shrunk_competition' | 'global' | 'fallback'")
 
 
 class ExpectedGoals(BaseModel):
@@ -69,7 +71,7 @@ class ConfidenceDetails(BaseModel):
 
 
 class BestModelSignal(BaseModel):
-    market: str
+    market: Optional[str] = None
     probability: float
     signal_score: int = Field(ge=0, le=100)
     label: str = Field(..., description="'Watch' | 'Moderate' | 'Strong'")
