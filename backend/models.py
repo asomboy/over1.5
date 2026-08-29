@@ -688,3 +688,47 @@ class SystemAlert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class DataProvenance(Base):
+    """
+    Field-level audit trail tracking the exact external source, provider record ID, 
+    retrieval timestamp, and verification status of historical observations.
+    """
+    __tablename__ = "data_provenance"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    field_name: Mapped[str] = mapped_column(String, nullable=False, index=True) # home_score, away_score, home_corners, away_corners, home_yellow_cards, away_yellow_cards, referee_name, etc.
+    value: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False, index=True) # espn, football_data, manual
+    provider_record_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    source_type: Mapped[str] = mapped_column(String, default="OBSERVED") # OBSERVED, VERIFIED, RECONCILED
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DataConflict(Base):
+    """
+    Records conflicting observations between different external data providers.
+    Prevents silent overwriting and preserves operator visibility.
+    """
+    __tablename__ = "data_conflicts"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    field_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    primary_provider: Mapped[str] = mapped_column(String, nullable=False)
+    primary_value: Mapped[str] = mapped_column(String, nullable=False)
+    conflicting_provider: Mapped[str] = mapped_column(String, nullable=False)
+    conflicting_value: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="CONFLICT", index=True) # CONFLICT, RESOLVED, IGNORED
+    resolved_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    resolution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+

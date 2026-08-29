@@ -570,3 +570,26 @@ class ModelEvaluationService:
             "evaluation_engine": "Phase 5 Model Intelligence Core",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+    @classmethod
+    def get_live_performance_report(cls, db: Session) -> Dict[str, Any]:
+        """Comprehensive live in-play performance report with minute buckets and signal tiers."""
+        min_perf = cls.get_live_minute_performance(db)
+        
+        # Signal tiers summary
+        strong_count = db.query(LivePredictionSnapshot).filter(LivePredictionSnapshot.confidence >= 70).count()
+        moderate_count = db.query(LivePredictionSnapshot).filter(LivePredictionSnapshot.confidence >= 40, LivePredictionSnapshot.confidence < 70).count()
+        no_signal_count = db.query(LivePredictionSnapshot).filter(LivePredictionSnapshot.confidence < 40).count()
+
+        return {
+            "status": "ok",
+            "minute_buckets": min_perf.get("minute_buckets", []),
+            "total_live_evaluations": min_perf.get("total_live_evaluations", 0),
+            "live_signals": {
+                "signal_count": strong_count + moderate_count,
+                "strong_signals": strong_count,
+                "moderate_signals": moderate_count,
+                "no_signals": no_signal_count
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }

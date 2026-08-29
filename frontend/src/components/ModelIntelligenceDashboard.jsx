@@ -19,16 +19,21 @@ import {
   Database,
   Server,
   Play,
+  Pause,
+  RotateCcw,
   Bell,
   HardDrive,
-  Cpu
+  Cpu,
+  FileCheck,
+  GitPullRequest
 } from 'lucide-react';
 
 export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest, darkMode }) {
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'coverage' | 'readiness' | 'markets' | 'calibration' | 'jobs' | 'alerts' | 'backfill' | 'live'
+  const [activeTab, setActiveTab] = useState('real_validation'); // 'real_validation' | 'provenance' | 'overview' | 'jobs' | 'alerts' | 'coverage' | 'readiness' | 'markets' | 'calibration' | 'backfill' | 'live'
   const [loading, setLoading] = useState(false);
   const [runningJob, setRunningJob] = useState('');
   const [backingUp, setBackingUp] = useState(false);
+  const [backfillAction, setBackfillAction] = useState('');
 
   const [systemStatus, setSystemStatus] = useState(null);
   const [coverageData, setCoverageData] = useState(null);
@@ -42,6 +47,13 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const [jobsData, setJobsData] = useState(null);
   const [alertsData, setAlertsData] = useState([]);
   const [backupsData, setBackupsData] = useState([]);
+  
+  // Phase 8 states
+  const [provenanceData, setProvenanceData] = useState([]);
+  const [conflictsData, setConflictsData] = useState([]);
+  const [marketReadiness, setMarketReadiness] = useState([]);
+  const [realLeaderboard, setRealLeaderboard] = useState([]);
+  const [realValidation, setRealValidation] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -52,7 +64,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      const [stRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes, jbRes, altRes, bkRes] = await Promise.all([
+      const [
+        stRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes, jbRes, altRes, bkRes,
+        provAudRes, confRes, mktReadRes, realLbRes, realValRes
+      ] = await Promise.all([
         apiRequest('get', '/api/system/status'),
         apiRequest('get', '/api/data-quality/overview'),
         apiRequest('get', '/api/data-quality/competitions'),
@@ -64,7 +79,12 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         apiRequest('get', '/api/system/providers'),
         apiRequest('get', '/api/system/jobs'),
         apiRequest('get', '/api/system/alerts'),
-        apiRequest('get', '/api/system/backups')
+        apiRequest('get', '/api/system/backups'),
+        apiRequest('get', '/api/data-quality/provenance'),
+        apiRequest('get', '/api/data-quality/conflicts'),
+        apiRequest('get', '/api/models/market-readiness'),
+        apiRequest('get', '/api/models/real-leaderboard'),
+        apiRequest('get', '/api/models/real-validation')
       ]);
 
       if (stRes?.data) setSystemStatus(stRes.data);
@@ -79,6 +99,11 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       if (jbRes?.data) setJobsData(jbRes.data);
       if (altRes?.data?.alerts) setAlertsData(altRes.data.alerts);
       if (bkRes?.data?.backups) setBackupsData(bkRes.data.backups);
+      if (provAudRes?.data?.provenance) setProvenanceData(provAudRes.data.provenance);
+      if (confRes?.data?.conflicts) setConflictsData(confRes.data.conflicts);
+      if (mktReadRes?.data?.markets) setMarketReadiness(mktReadRes.data.markets);
+      if (realLbRes?.data?.leaderboard) setRealLeaderboard(realLbRes.data.leaderboard);
+      if (realValRes?.data) setRealValidation(realValRes.data);
     } catch (err) {
       console.error('Error fetching production operations intelligence:', err);
     } finally {
@@ -95,6 +120,21 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       console.error(`Error running job ${jobName}:`, err);
     } finally {
       setRunningJob('');
+    }
+  };
+
+  const handleBackfillControl = async (action) => {
+    setBackfillAction(action);
+    try {
+      if (action === 'start') await apiRequest('post', '/api/data-quality/backfill/start');
+      else if (action === 'pause') await apiRequest('post', '/api/data-quality/backfill/pause');
+      else if (action === 'resume') await apiRequest('post', '/api/data-quality/backfill/resume');
+      else if (action === 'retry') await apiRequest('post', '/api/data-quality/backfill/retry');
+      await fetchAllData();
+    } catch (err) {
+      console.error(`Error in backfill ${action}:`, err);
+    } finally {
+      setBackfillAction('');
     }
   };
 
@@ -119,6 +159,18 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
     }
   };
 
+  const handleResolveConflict = async (conflictId, resolvedVal) => {
+    try {
+      await apiRequest('post', `/api/data-quality/conflicts/${conflictId}/resolve`, {
+        resolved_value: resolvedVal,
+        notes: 'Operator manual resolution'
+      });
+      await fetchAllData();
+    } catch (err) {
+      console.error(`Error resolving conflict ${conflictId}:`, err);
+    }
+  };
+
   if (!isOpen) return null;
 
   const getStatusBadge = (status) => {
@@ -130,6 +182,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       case 'SUCCESS':
       case 'OPERATIONAL':
       case 'GOOD':
+      case 'REAL_DATA':
         return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
       case 'VALIDATING':
       case 'ACCEPTABLE':
@@ -145,6 +198,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       case 'UNAVAILABLE':
       case 'CRITICAL':
       case 'POOR':
+      case 'CONFLICT':
         return 'bg-rose-500/20 text-rose-400 border-rose-500/40';
       default:
         return 'bg-slate-500/20 text-slate-400 border-slate-500/40';
@@ -162,15 +216,15 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-cyan-400 px-2.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/30">
-                <Cpu className="w-3.5 h-3.5" />
-                Production Match Intelligence
+                <FileCheck className="w-3.5 h-3.5" />
+                Real Data Model Validation
               </span>
               <span className="text-[9px] font-bold text-slate-400 uppercase">
-                Phase 7 Automation & Observability
+                Phase 8 Production Intelligence
               </span>
             </div>
             <h2 className="text-base sm:text-xl font-black text-white tracking-tight flex items-center gap-2">
-              <span>Production Operations & Automation</span>
+              <span>Production Data Acquisition & Real-World Validation</span>
               {systemStatus && (
                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase border ${getStatusBadge(systemStatus.overall_status)}`}>
                   {systemStatus.overall_status}
@@ -199,6 +253,8 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         {/* NAVIGATION TABS */}
         <div className="p-2 border-b border-slate-800 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
+            { id: 'real_validation', label: 'REAL DATA VALIDATION' },
+            { id: 'provenance', label: `PROVENANCE & CONFLICTS (${conflictsData.length})` },
             { id: 'overview', label: 'OVERVIEW' },
             { id: 'jobs', label: 'AUTOMATION JOBS' },
             { id: 'alerts', label: `ALERTS (${alertsData.length})` },
@@ -232,7 +288,265 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
             </div>
           ) : (
             <>
-              {/* TAB 1: OVERVIEW */}
+              {/* TAB 1: REAL DATA VALIDATION (Phase 8 Main View) */}
+              {activeTab === 'real_validation' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* Verified Outcomes Summary */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { title: 'Completed Matches', val: coverageData?.eligible_completed_matches || 0, icon: Activity, color: 'text-white' },
+                      { title: 'Verified Goals', val: coverageData?.goals_coverage?.observed || 0, icon: BarChart2, color: 'text-cyan-400' },
+                      { title: 'Verified Corners', val: coverageData?.corners_coverage?.observed || 0, icon: Shield, color: 'text-emerald-400' },
+                      { title: 'Verified Cards', val: coverageData?.cards_coverage?.observed || 0, icon: Award, color: 'text-amber-400' }
+                    ].map((kpi, idx) => (
+                      <div key={idx} className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold">
+                          <span>{kpi.title}</span>
+                          <kpi.icon className="w-3.5 h-3.5 text-cyan-400" />
+                        </div>
+                        <div className={`text-2xl font-black ${kpi.color} tracking-tight`}>
+                          {kpi.val}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          Source: <strong className="text-slate-400">100% Real Observed Data</strong>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Real Multi-Model Comparison Leaderboard */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white">
+                        Real-World Model Comparison Leaderboard
+                      </span>
+                      <span className="text-[10px] text-slate-400">Zero Synthetic Benchmarking</span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase">
+                            <th className="py-2 px-2">Model Architecture</th>
+                            <th className="py-2 px-2 text-center">Data Source</th>
+                            <th className="py-2 px-2 text-center">Sample (N)</th>
+                            <th className="py-2 px-2 text-center">Brier</th>
+                            <th className="py-2 px-2 text-center">Log Loss</th>
+                            <th className="py-2 px-2 text-center">Activation Gate</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {realLeaderboard.map((m, idx) => (
+                            <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="py-2.5 px-2 font-bold text-slate-200">{m.model_name}</td>
+                              <td className="py-2.5 px-2 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(m.data_source)}`}>
+                                  {m.data_source}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-2 text-center text-white font-semibold">{m.sample_size}</td>
+                              <td className="py-2.5 px-2 text-center font-black text-cyan-400">
+                                {m.brier_score !== null ? m.brier_score.toFixed(3) : '—'}
+                              </td>
+                              <td className="py-2.5 px-2 text-center text-slate-300">
+                                {m.log_loss !== null ? m.log_loss.toFixed(3) : '—'}
+                              </td>
+                              <td className="py-2.5 px-2 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(m.readiness_state)}`}>
+                                  {m.readiness_state}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Market-Level Granular Sample Gates */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white">
+                        Market-Level Activation Gates ({marketReadiness.length} Markets)
+                      </span>
+                      <span className="text-[10px] text-slate-400">Independent Sample Accounting</span>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-60 custom-scrollbar">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase sticky top-0 bg-slate-950">
+                            <th className="py-2 px-2">Betting Market</th>
+                            <th className="py-2 px-2 text-center">Sample</th>
+                            <th className="py-2 px-2 text-center">Brier</th>
+                            <th className="py-2 px-2 text-center">Log Loss</th>
+                            <th className="py-2 px-2 text-center">ECE</th>
+                            <th className="py-2 px-2 text-center">Readiness Gate</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {marketReadiness.map((m, idx) => (
+                            <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="py-2 px-2 font-bold text-slate-200 capitalize">{m.market.replace(/_/g, ' ')}</td>
+                              <td className="py-2 px-2 text-center text-white font-semibold">{m.sample_size}</td>
+                              <td className="py-2 px-2 text-center font-bold text-cyan-400">
+                                {m.brier_score !== null ? m.brier_score.toFixed(3) : '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center text-slate-300">
+                                {m.log_loss !== null ? m.log_loss.toFixed(3) : '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center text-emerald-400">
+                                {m.ece !== null ? `${(m.ece * 100).toFixed(1)}%` : '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(m.readiness?.readiness_state)}`}>
+                                  {m.readiness?.readiness_state}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: PROVENANCE & CONFLICTS (Phase 8 Audit View) */}
+              {activeTab === 'provenance' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* Backfill Controls */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-black uppercase tracking-wider text-white block">
+                        Historical Data Backfill Orchestration
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        {backfillStatus?.fully_enriched_fixtures || 0} / {backfillStatus?.total_finished_fixtures || 0} fixtures enriched
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleBackfillControl('start')}
+                        disabled={backfillAction !== ''}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1 shadow-sm active:scale-95 disabled:opacity-50"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Start Batch</span>
+                      </button>
+                      <button
+                        onClick={() => handleBackfillControl('pause')}
+                        disabled={backfillAction !== ''}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 active:scale-95 disabled:opacity-50"
+                      >
+                        <Pause className="w-3.5 h-3.5" />
+                        <span>Pause</span>
+                      </button>
+                      <button
+                        onClick={() => handleBackfillControl('retry')}
+                        disabled={backfillAction !== ''}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white flex items-center gap-1 active:scale-95 disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Retry Failed</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Provider Conflicts */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Active Provider Data Conflicts ({conflictsData.length})
+                    </span>
+
+                    {conflictsData.length > 0 ? (
+                      <div className="space-y-2">
+                        {conflictsData.map((c, idx) => (
+                          <div key={idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+                            <div className="space-y-1">
+                              <span className="text-xs font-bold text-slate-200">
+                                Fixture #{c.fixture_id} — {c.field_name}
+                              </span>
+                              <div className="text-[11px] text-slate-400 flex items-center gap-3">
+                                <span>{c.primary_provider}: <strong>{c.primary_value}</strong></span>
+                                <span>vs</span>
+                                <span>{c.conflicting_provider}: <strong>{c.conflicting_value}</strong></span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleResolveConflict(c.id, c.primary_value)}
+                                className="px-2.5 py-1 rounded-xl text-[10px] font-bold bg-cyan-700 hover:bg-cyan-600 text-white"
+                              >
+                                Accept {c.primary_provider}
+                              </button>
+                              <button
+                                onClick={() => handleResolveConflict(c.id, c.conflicting_value)}
+                                className="px-2.5 py-1 rounded-xl text-[10px] font-bold bg-indigo-700 hover:bg-indigo-600 text-white"
+                              >
+                                Accept {c.conflicting_provider}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-4 text-center text-slate-400 text-xs">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-400 mx-auto mb-1" />
+                        Zero provider conflicts detected. All feeds consistent.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Provenance Audit Log */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Recent Field-Level Provenance Audit Records ({provenanceData.length})
+                    </span>
+
+                    {provenanceData.length > 0 ? (
+                      <div className="overflow-x-auto max-h-60 custom-scrollbar">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase sticky top-0 bg-slate-950">
+                              <th className="py-2 px-2">Fixture ID</th>
+                              <th className="py-2 px-2">Field</th>
+                              <th className="py-2 px-2">Value</th>
+                              <th className="py-2 px-2">Provider</th>
+                              <th className="py-2 px-2">Source</th>
+                              <th className="py-2 px-2 text-right">Retrieved At</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {provenanceData.map((p, idx) => (
+                              <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                                <td className="py-2 px-2 text-slate-300 font-bold">#{p.fixture_id}</td>
+                                <td className="py-2 px-2 text-cyan-400 font-semibold">{p.field_name}</td>
+                                <td className="py-2 px-2 text-white font-black">{p.value}</td>
+                                <td className="py-2 px-2 text-slate-400 uppercase text-[10px]">{p.provider}</td>
+                                <td className="py-2 px-2">
+                                  <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                                    {p.source_type}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-2 text-right text-[10px] text-slate-500">
+                                  {p.retrieved_at ? new Date(p.retrieved_at).toLocaleTimeString() : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 py-3 text-center">No provenance records available yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: OVERVIEW */}
               {activeTab === 'overview' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -260,36 +574,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                       );
                     })}
                   </div>
-
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <span className="text-xs font-black uppercase tracking-wider text-slate-300 block">
-                      Production Architecture Safeguards
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-cyan-400 block">Circuit Breaker & Retries</span>
-                        <p className="text-[11px] text-slate-400">
-                          External API failures are contained with exponential backoff and circuit isolation.
-                        </p>
-                      </div>
-                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-emerald-400 block">Temporal Invariant</span>
-                        <p className="text-[11px] text-slate-400">
-                          Strictly zero future leakage: match_date &lt; prediction_timestamp across all models.
-                        </p>
-                      </div>
-                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-amber-400 block">Atomic SQLite Backups</span>
-                        <p className="text-[11px] text-slate-400">
-                          Online SQLite backups with PRAGMA integrity checks without blocking transactions.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               )}
 
-              {/* TAB 2: AUTOMATION JOBS */}
+              {/* TAB 4: AUTOMATION JOBS */}
               {activeTab === 'jobs' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -361,7 +649,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 3: ALERTS & BACKUPS */}
+              {/* TAB 5: ALERTS & BACKUPS */}
               {activeTab === 'alerts' && (
                 <div className="space-y-4 animate-fadeIn">
                   {/* Active Alerts */}
@@ -447,7 +735,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 4: DATA COVERAGE */}
+              {/* TAB 6: DATA COVERAGE */}
               {activeTab === 'coverage' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -489,7 +777,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 5: MODEL READINESS */}
+              {/* TAB 7: MODEL READINESS */}
               {activeTab === 'readiness' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -535,7 +823,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 6: MARKET LEADERBOARD */}
+              {/* TAB 8: MARKET LEADERBOARD */}
               {activeTab === 'markets' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -590,7 +878,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 7: CALIBRATION */}
+              {/* TAB 9: CALIBRATION */}
               {activeTab === 'calibration' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
@@ -651,7 +939,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 8: BACKFILL & PROVIDERS */}
+              {/* TAB 10: BACKFILL & PROVIDERS */}
               {activeTab === 'backfill' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -693,7 +981,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                 </div>
               )}
 
-              {/* TAB 9: LIVE OPERATIONS */}
+              {/* TAB 11: LIVE OPERATIONS */}
               {activeTab === 'live' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">

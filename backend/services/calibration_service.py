@@ -119,13 +119,22 @@ class CalibrationService:
 
     @classmethod
     def compute_calibration_curve(
-        cls, predictions: List[Tuple[float, float]], num_buckets: int = 10
+        cls, predictions: Any, outcomes: Optional[Any] = None, num_buckets: int = 10
     ) -> Dict[str, Any]:
         """
         Generates standard 10-decile reliability diagram data, ECE, and MCE.
-        predictions: list of (predicted_probability, actual_outcome)
+        Accepts either:
+        - predictions: List[Tuple[float, float]] of (prob, outcome)
+        - predictions: List[float], outcomes: List[float]
         """
-        n = len(predictions)
+        if outcomes is not None and isinstance(predictions, list):
+            pairs = list(zip(predictions, outcomes))
+        elif isinstance(predictions, list) and len(predictions) > 0 and isinstance(predictions[0], (tuple, list)):
+            pairs = predictions
+        else:
+            pairs = []
+
+        n = len(pairs)
         if n == 0:
             return {
                 "status": "INSUFFICIENT_DATA",
@@ -147,9 +156,9 @@ class CalibrationService:
         for lower, upper in bucket_ranges:
             # Match items in bucket [lower, upper) or [lower, 1.0] for last bucket
             if upper >= 1.0:
-                in_bucket = [(p, y) for p, y in predictions if lower <= p <= upper]
+                in_bucket = [(p, y) for p, y in pairs if lower <= p <= upper]
             else:
-                in_bucket = [(p, y) for p, y in predictions if lower <= p < upper]
+                in_bucket = [(p, y) for p, y in pairs if lower <= p < upper]
 
             b_count = len(in_bucket)
             if b_count > 0:
@@ -201,3 +210,6 @@ class CalibrationService:
             "mce": mce,
             "buckets": buckets_data
         }
+
+    # Alias for backward compatibility
+    calculate_calibration_curve = compute_calibration_curve

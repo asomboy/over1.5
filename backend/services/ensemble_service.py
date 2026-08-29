@@ -28,21 +28,17 @@ class AdaptiveEnsembleService:
     based on empirical Brier scores, calibration reliability, and sample size safeguards.
     """
 
+    DEFAULT_MODELS = ["poisson_v1", "dixon_coles_v2", "corners_negbin_v2", "cards_referee_v2"]
+
     @classmethod
     def calculate_ensemble_weights(
-        cls, db: Session, market: str, candidate_models: List[str]
+        cls, db: Session, market: str, candidate_models: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Derives normalized ensemble weights for candidate models on a specific market.
         Enforces strict safety thresholds: if sample < 100, returns baseline default prior.
         """
-        if not candidate_models:
-            return {
-                "status": "INSUFFICIENT_DATA",
-                "market": market,
-                "weights": {},
-                "message": "No candidate models provided."
-            }
+        candidate_models = candidate_models or cls.DEFAULT_MODELS
 
         model_scores = {}
         total_sample = 0
@@ -87,6 +83,7 @@ class AdaptiveEnsembleService:
                 "total_verified_sample": total_sample,
                 "required_sample": MIN_ENSEMBLE_SAMPLE_THRESHOLD,
                 "weights": weights,
+                "model_weights": weights,
                 "model_diagnostics": model_scores
             }
 
@@ -117,5 +114,9 @@ class AdaptiveEnsembleService:
             "market": market,
             "total_verified_sample": total_sample,
             "weights": final_weights,
+            "model_weights": final_weights,
             "model_diagnostics": model_scores
         }
+
+    # Alias for backward compatibility
+    calculate_dynamic_ensemble_weights = calculate_ensemble_weights

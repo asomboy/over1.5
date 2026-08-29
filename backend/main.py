@@ -1210,6 +1210,149 @@ def run_system_backup():
     return BackupService.create_database_backup()
 
 
+# =============================================================================
+# PHASE 8: PRODUCTION DATA ACQUISITION & REAL-WORLD VALIDATION ENDPOINTS
+# =============================================================================
+
+@app.get("/api/data-quality/validation")
+def get_data_quality_validation(db: Session = Depends(get_db)):
+    """Returns dataset completeness and validation eligibility."""
+    from services.data_quality_service import DataQualityService
+    cov = DataQualityService.calculate_global_coverage(db)
+    return {"status": "ok", "validation_dataset": cov, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/data-quality/provenance")
+def get_data_provenance(fixture_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Returns field-level data provenance and audit trail."""
+    from services.data_reconciliation_service import DataReconciliationService
+    if fixture_id:
+        prov = DataReconciliationService.get_fixture_provenance(db, fixture_id)
+        return {"status": "ok", "fixture_id": fixture_id, "provenance": prov}
+    
+    recs = db.query(models.DataProvenance).order_by(models.DataProvenance.created_at.desc()).limit(50).all()
+    return {
+        "status": "ok",
+        "provenance": [
+            {
+                "fixture_id": r.fixture_id,
+                "field_name": r.field_name,
+                "value": r.value,
+                "provider": r.provider,
+                "source_type": r.source_type,
+                "retrieved_at": r.retrieved_at.isoformat() if r.retrieved_at else None
+            }
+            for r in recs
+        ]
+    }
+
+
+@app.get("/api/data-quality/conflicts")
+def get_data_conflicts(status: Optional[str] = "CONFLICT", db: Session = Depends(get_db)):
+    """Returns recorded data conflicts between external providers."""
+    from services.data_reconciliation_service import DataReconciliationService
+    return {"status": "ok", "conflicts": DataReconciliationService.get_all_conflicts(db, status=status)}
+
+
+@app.post("/api/data-quality/conflicts/{conflict_id}/resolve")
+def resolve_data_conflict(conflict_id: int, resolved_value: str, notes: Optional[str] = None, db: Session = Depends(get_db)):
+    """Resolves an open data conflict with operator notes."""
+    from services.data_reconciliation_service import DataReconciliationService
+    success = DataReconciliationService.resolve_conflict(db, conflict_id, resolved_value, notes)
+    return {"status": "ok" if success else "error", "resolved": success}
+
+
+@app.get("/api/data-quality/backfill-progress")
+def get_backfill_progress(db: Session = Depends(get_db)):
+    """Returns detailed progress for historical data backfill."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.get_backfill_status(db)
+
+
+@app.post("/api/data-quality/backfill/start")
+def start_backfill(db: Session = Depends(get_db)):
+    """Starts or triggers an automated historical data backfill pass."""
+    from services.historical_data_service import HistoricalDataService
+    HistoricalDataService.resume_backfill()
+    return HistoricalDataService.discover_and_enrich_batch(db, batch_size=30)
+
+
+@app.post("/api/data-quality/backfill/pause")
+def pause_backfill():
+    """Pauses historical data backfill."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.pause_backfill()
+
+
+@app.post("/api/data-quality/backfill/resume")
+def resume_backfill():
+    """Resumes historical data backfill."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.resume_backfill()
+
+
+@app.post("/api/data-quality/backfill/retry")
+def retry_backfill(db: Session = Depends(get_db)):
+    """Resets failed backfill items allowing them to be retried."""
+    from services.historical_data_service import HistoricalDataService
+    return HistoricalDataService.retry_failed_backfills(db)
+
+
+@app.get("/api/models/real-validation")
+def get_models_real_validation(limit: int = 200, db: Session = Depends(get_db)):
+    """Returns chronological walk-forward validation dataset and readiness."""
+    from services.validation_dataset_service import ValidationDatasetService
+    from services.production_validation_service import ProductionValidationService
+
+    ds = ValidationDatasetService.build_chronological_dataset(db, limit=limit)
+    readiness = ProductionValidationService.get_all_models_readiness_report(db)
+
+    return {
+        "status": "ok",
+        "dataset_size": len(ds),
+        "validation_samples": ds[:50], # Sample preview
+        "models_readiness": readiness,
+        "evaluated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/api/models/real-calibration")
+def get_models_real_calibration(prediction_type: str = "goals", db: Session = Depends(get_db)):
+    """Returns 10-decile empirical calibration reliability table from verified historical outcomes."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_calibration_report(db, prediction_type=prediction_type)
+
+
+@app.get("/api/models/real-leaderboard")
+def get_models_real_leaderboard(db: Session = Depends(get_db)):
+    """Returns ranked model comparison leaderboard on real match outcomes."""
+    from services.production_validation_service import ProductionValidationService
+    return ProductionValidationService.get_real_leaderboard(db)
+
+
+@app.get("/api/models/market-readiness")
+def get_models_market_readiness(db: Session = Depends(get_db)):
+    """Returns granular market-level sample gates across all goals, corners, and cards markets."""
+    from services.production_validation_service import ProductionValidationService
+    return ProductionValidationService.get_market_level_readiness(db)
+
+
+@app.get("/api/models/ensemble-status")
+def get_models_ensemble_status(db: Session = Depends(get_db)):
+    """Returns adaptive ensemble activation state, gate, and weights."""
+    from services.ensemble_service import AdaptiveEnsembleService
+    weights = AdaptiveEnsembleService.calculate_dynamic_ensemble_weights(db, "over_1_5_goals")
+    return {"status": "ok", "ensemble": weights}
+
+
+@app.get("/api/models/live-validation")
+def get_models_live_validation(db: Session = Depends(get_db)):
+    """Returns live in-play prediction performance across minute buckets and signals."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_live_performance_report(db)
+
+
+
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
     """Sends a test Telegram notification message."""
