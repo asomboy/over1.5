@@ -12,11 +12,11 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import League, Team, Fixture, HistoricalResult, Prediction, TeamStatistics, LeagueStatistics
+    from models import League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction, TeamStatistics, LeagueStatistics
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
     from services.elo_service import EloRatingService, TeamFormService
 except ImportError:
-    from ..models import League, Team, Fixture, HistoricalResult, Prediction, TeamStatistics, LeagueStatistics
+    from ..models import League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction, TeamStatistics, LeagueStatistics
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
     from .elo_service import EloRatingService, TeamFormService
 
@@ -277,6 +277,9 @@ class DataIngestionService:
                 away_score = int(away_score)
                 ht_home = int(f_data["half_time_home_score"]) if f_data.get("half_time_home_score") is not None else None
                 ht_away = int(f_data["half_time_away_score"]) if f_data.get("half_time_away_score") is not None else None
+                h_corners = int(f_data["home_corners"]) if f_data.get("home_corners") is not None else None
+                a_corners = int(f_data["away_corners"]) if f_data.get("away_corners") is not None else None
+                tot_corners = (h_corners + a_corners) if (h_corners is not None and a_corners is not None) else None
                 total_goals = home_score + away_score
 
                 result = db.query(HistoricalResult).filter(HistoricalResult.fixture_id == fixture.id).first()
@@ -285,6 +288,12 @@ class DataIngestionService:
                     result.away_score = away_score
                     result.half_time_home_score = ht_home
                     result.half_time_away_score = ht_away
+                    if h_corners is not None:
+                        result.home_corners = h_corners
+                    if a_corners is not None:
+                        result.away_corners = a_corners
+                    if tot_corners is not None:
+                        result.total_corners = tot_corners
                     result.total_goals = total_goals
                 else:
                     result = HistoricalResult(
@@ -293,9 +302,32 @@ class DataIngestionService:
                         away_score=away_score,
                         half_time_home_score=ht_home,
                         half_time_away_score=ht_away,
+                        home_corners=h_corners,
+                        away_corners=a_corners,
+                        total_corners=tot_corners,
                         total_goals=total_goals,
                     )
                     db.add(result)
+
+                # Ingest / update MatchStatistics idempotently
+                match_stats = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fixture.id).first()
+                if not match_stats:
+                    match_stats = MatchStatistics(
+                        fixture_id=fixture.id,
+                        home_corners=h_corners,
+                        away_corners=a_corners,
+                        total_corners=tot_corners,
+                        data_source=f_data.get("data_source", "observed"),
+                        data_quality=f_data.get("data_quality", "verified"),
+                    )
+                    db.add(match_stats)
+                else:
+                    if h_corners is not None:
+                        match_stats.home_corners = h_corners
+                    if a_corners is not None:
+                        match_stats.away_corners = a_corners
+                    if tot_corners is not None:
+                        match_stats.total_corners = tot_corners
 
                 fixture.status = "FINISHED"
                 if commit:

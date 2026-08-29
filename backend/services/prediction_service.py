@@ -1011,6 +1011,23 @@ class DixonColesPredictionEngine:
             league_id=cast(int, fixture.league_id)
         )
 
+        # Corners Prediction Engine integration (Phase 2)
+        try:
+            from services.corners_service import CornersPredictionEngine
+            corners_payload = CornersPredictionEngine.predict_corners(db, fixture_id, target_date=match_date)
+        except Exception as e:
+            logger.debug(f"Corners prediction generation error: {e}")
+            corners_payload = {
+                "available": False,
+                "reason": "Corner prediction service unavailable.",
+                "expected": None,
+                "total_markets": None,
+                "home_team": None,
+                "away_team": None,
+                "confidence": {"overall": 0, "data_quality": 0, "sample_strength": 0, "model_stability": 0, "label": "insufficient"},
+                "model": {"version": "v1_corners_nb", "dispersion": 5.5, "dispersion_source": "fallback"}
+            }
+
         full_payload = {
             "fixture_id": fixture_id,
             "model": probs["model"],
@@ -1023,7 +1040,8 @@ class DixonColesPredictionEngine:
             "halves": probs["halves"],
             "exact_scores": probs["exact_scores"],
             "confidence": probs["confidence"],
-            "best_signal": probs["best_signal"]
+            "best_signal": probs["best_signal"],
+            "corners": corners_payload
         }
 
         return full_payload
@@ -1055,6 +1073,23 @@ class DixonColesPredictionEngine:
             league_id=cast(int, fixture.league_id)
         )
 
+        # Corners Prediction Engine integration (Phase 2)
+        try:
+            from services.corners_service import CornersPredictionEngine
+            corners_payload = CornersPredictionEngine.predict_corners(db, fixture_id, target_date=match_date)
+        except Exception as e:
+            logger.debug(f"Corners prediction generation error: {e}")
+            corners_payload = {
+                "available": False,
+                "reason": "Corner prediction service unavailable.",
+                "expected": None,
+                "total_markets": None,
+                "home_team": None,
+                "away_team": None,
+                "confidence": {"overall": 0, "data_quality": 0, "sample_strength": 0, "model_stability": 0, "label": "insufficient"},
+                "model": {"version": "v1_corners_nb", "dispersion": 5.5, "dispersion_source": "fallback"}
+            }
+
         full_intelligence = {
             "fixture_id": fixture_id,
             "model": probs["model"],
@@ -1067,7 +1102,8 @@ class DixonColesPredictionEngine:
             "halves": probs["halves"],
             "exact_scores": probs["exact_scores"],
             "confidence": probs["confidence"],
-            "best_signal": probs["best_signal"]
+            "best_signal": probs["best_signal"],
+            "corners": corners_payload
         }
 
         prediction = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()

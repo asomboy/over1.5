@@ -859,10 +859,19 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
             "halves": intel["halves"],
             "exact_scores": intel["exact_scores"],
             "confidence": intel["confidence"],
-            "best_signal": intel["best_signal"]
+            "best_signal": intel["best_signal"],
+            "corners": intel.get("corners")
         },
-        "match_intelligence": intel
+        "match_intelligence": intel,
+        "corners": intel.get("corners")
     }
+
+
+@app.get("/api/corners/backtest")
+def get_corners_backtest(min_samples: int = 5, db: Session = Depends(get_db)):
+    """Runs a chronological backtest on historical matches with observed corner counts."""
+    from services.corners_service import CornersBacktestService
+    return CornersBacktestService.run_chronological_backtest(db, min_samples=min_samples)
 
 
 @app.post("/api/notifications/telegram/test")

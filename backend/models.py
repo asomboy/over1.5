@@ -75,6 +75,7 @@ class Fixture(Base):
     home_team = relationship("Team", foreign_keys=[home_team_id], back_populates="home_fixtures")
     away_team = relationship("Team", foreign_keys=[away_team_id], back_populates="away_fixtures")
     historical_result = relationship("HistoricalResult", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
+    match_statistics = relationship("MatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     predictions = relationship("Prediction", back_populates="fixture", cascade="all, delete-orphan")
 
 
@@ -88,11 +89,47 @@ class HistoricalResult(Base):
     away_score: Mapped[int] = mapped_column(Integer, nullable=False)
     half_time_home_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     half_time_away_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_goals: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     fixture = relationship("Fixture", back_populates="historical_result")
+
+
+class MatchStatistics(Base):
+    """
+    Reusable Match Detailed Statistics table storing observed match-level metrics
+    such as corners, shots, possession, fouls, and cards.
+    """
+    __tablename__ = "match_statistics"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False, index=True)
+    home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_possession: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    away_possession: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    home_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    data_source: Mapped[str] = mapped_column(String, default="observed")
+    data_quality: Mapped[str] = mapped_column(String, default="verified")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="match_statistics")
 
 
 class Prediction(Base):

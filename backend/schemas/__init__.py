@@ -9,5 +9,11 @@ from .prediction_schema import (
     ExactScore,
     ConfidenceDetails,
     BestModelSignal,
+    ExpectedCorners,
+    TotalCornersMarket,
+    TeamCornersThresholds,
+    CornerConfidence,
+    CornerModelMetadata,
+    CornersPrediction,
     MatchIntelligencePrediction
 )

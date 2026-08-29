@@ -14,7 +14,8 @@ import {
   Flame,
   CheckCircle2,
   Clock,
-  Award
+  Award,
+  Flag
 } from 'lucide-react';
 
 export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiRequest, darkMode }) {
@@ -118,6 +119,8 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
     label: goalsMarket.over_1_5 >= 0.78 ? 'Strong' : 'Moderate'
   };
 
+  const corners = intel?.corners || data?.corners;
+
   const getConfidenceBadgeColor = (quality) => {
     switch (quality) {
       case 'strong': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
@@ -217,6 +220,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
           {[
             { id: 'overview', label: 'OVERVIEW' },
             { id: 'goals', label: 'GOALS' },
+            { id: 'corners', label: 'CORNERS' },
             { id: 'result', label: 'RESULT (1X2)' },
             { id: 'team_goals', label: 'TEAM GOALS' },
             { id: 'halves', label: 'HALVES' }
@@ -539,6 +543,158 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, apiReques
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* TAB: CORNERS */}
+              {activeTab === 'corners' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {corners?.available ? (
+                    <>
+                      {/* Expected Corners Top Banner */}
+                      <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/60 via-slate-900 to-cyan-950/60 border border-emerald-500/30 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Flag className="w-4 h-4 text-emerald-400" />
+                            <span className="text-xs font-black uppercase tracking-wider text-emerald-400">Negative Binomial Corners Core</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">
+                            r={corners?.model?.dispersion || 5.5} ({corners?.model?.dispersion_source || 'fallback'})
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase block">Home ({home?.name?.slice(0, 10) || 'Home'})</span>
+                            <span className="text-lg font-black text-white">{corners.expected.home.toFixed(1)}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40">
+                            <span className="text-[10px] font-black text-emerald-400 uppercase block">Total Corners</span>
+                            <span className="text-xl font-black text-emerald-400">{corners.expected.total.toFixed(1)}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase block">Away ({away?.name?.slice(0, 10) || 'Away'})</span>
+                            <span className="text-lg font-black text-white">{corners.expected.away.toFixed(1)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Total Corners Markets (Over / Under) */}
+                      <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Corners Markets (Full Match)</span>
+                        <div className="space-y-2.5">
+                          {[
+                            { key: 'over_7_5', label: 'Over / Under 7.5 Corners', over: corners.total_markets?.over_7_5, under: corners.total_markets?.under_7_5 },
+                            { key: 'over_8_5', label: 'Over / Under 8.5 Corners', over: corners.total_markets?.over_8_5, under: corners.total_markets?.under_8_5 },
+                            { key: 'over_9_5', label: 'Over / Under 9.5 Corners', over: corners.total_markets?.over_9_5, under: corners.total_markets?.under_9_5 },
+                            { key: 'over_10_5', label: 'Over / Under 10.5 Corners', over: corners.total_markets?.over_10_5, under: corners.total_markets?.under_10_5 },
+                            { key: 'over_11_5', label: 'Over / Under 11.5 Corners', over: corners.total_markets?.over_11_5, under: corners.total_markets?.under_11_5 }
+                          ].map((m) => (
+                            <div key={m.key} className="p-3 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1.5">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-bold text-slate-300">{m.label}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-black text-emerald-400">Over {Math.round((m.over || 0) * 100)}%</span>
+                                  <span className="text-slate-500">|</span>
+                                  <span className="font-bold text-slate-400">Under {Math.round((m.under || 0) * 100)}%</span>
+                                </div>
+                              </div>
+                              <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                                <div className="bg-emerald-500 h-full transition-all" style={{ width: `${(m.over || 0) * 100}%` }} />
+                                <div className="bg-slate-700 h-full transition-all" style={{ width: `${(m.under || 0) * 100}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Team Corners (Home & Away) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Home Team Corners */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="text-xs font-black text-white truncate max-w-[150px]">{home?.name || 'Home Team'} Corners</span>
+                            <span className="text-[10px] font-bold text-emerald-400">xCorners: {corners.expected.home.toFixed(1)}</span>
+                          </div>
+                          <div className="space-y-2">
+                            {[
+                              { label: 'Over 3.5 Team Corners', prob: corners.home_team?.over_3_5 },
+                              { label: 'Over 4.5 Team Corners', prob: corners.home_team?.over_4_5 },
+                              { label: 'Over 5.5 Team Corners', prob: corners.home_team?.over_5_5 }
+                            ].map((t, idx) => (
+                              <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="font-bold text-slate-300">{t.label}</span>
+                                  <span className="font-black text-emerald-400">{Math.round((t.prob || 0) * 100)}%</span>
+                                </div>
+                                <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                  <div className="bg-emerald-500 h-full" style={{ width: `${(t.prob || 0) * 100}%` }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Away Team Corners */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="text-xs font-black text-white truncate max-w-[150px]">{away?.name || 'Away Team'} Corners</span>
+                            <span className="text-[10px] font-bold text-cyan-400">xCorners: {corners.expected.away.toFixed(1)}</span>
+                          </div>
+                          <div className="space-y-2">
+                            {[
+                              { label: 'Over 3.5 Team Corners', prob: corners.away_team?.over_3_5 },
+                              { label: 'Over 4.5 Team Corners', prob: corners.away_team?.over_4_5 },
+                              { label: 'Over 5.5 Team Corners', prob: corners.away_team?.over_5_5 }
+                            ].map((t, idx) => (
+                              <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="font-bold text-slate-300">{t.label}</span>
+                                  <span className="font-black text-cyan-400">{Math.round((t.prob || 0) * 100)}%</span>
+                                </div>
+                                <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                  <div className="bg-cyan-500 h-full" style={{ width: `${(t.prob || 0) * 100}%` }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Corner Model Confidence Footer */}
+                      <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Corner Confidence:</span>
+                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase border ${getConfidenceBadgeColor(corners.confidence?.label)}`}>
+                            {corners.confidence?.label || 'moderate'} ({corners.confidence?.overall || 65}%)
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          Data Quality: {corners.confidence?.data_quality || 60}% | Sample: {corners.confidence?.sample_strength || 60}%
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    /* Empty State when Corner Data is Sparse/Insufficient */
+                    <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto text-amber-400">
+                        <Flag className="w-6 h-6" />
+                      </div>
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-black text-white">Insufficient Verified Corner History</h4>
+                        <p className="text-xs text-slate-400 max-w-md mx-auto">
+                          {corners?.reason || "Corner predictions require verified historical match-level corner statistics. Data coverage for this fixture is currently under collection threshold."}
+                        </p>
+                      </div>
+                      <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-[10px] text-slate-400">
+                        <span>Home Samples: <strong className="text-white">{corners?.diagnostics?.home_sample_size ?? 0}</strong></span>
+                        <span>•</span>
+                        <span>Away Samples: <strong className="text-white">{corners?.diagnostics?.away_sample_size ?? 0}</strong></span>
+                        <span>•</span>
+                        <span>Coverage: <strong className="text-white">{Math.round((corners?.diagnostics?.corner_data_coverage ?? 0) * 100)}%</strong></span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

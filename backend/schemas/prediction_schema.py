@@ -33,6 +33,7 @@ class GoalsMarket(BaseModel):
     under_2_5: float
     over_3_5: float
     under_3_5: float
+    over_4_5: Optional[float] = None
 
 
 class BTTSMarket(BaseModel):
@@ -77,6 +78,61 @@ class BestModelSignal(BaseModel):
     label: str = Field(..., description="'Watch' | 'Moderate' | 'Strong'")
 
 
+# ==========================================
+# PHASE 2: CORNERS PREDICTION SCHEMAS
+# ==========================================
+
+class ExpectedCorners(BaseModel):
+    home: float = Field(..., description="Home expected corners (lambda_home_corners)")
+    away: float = Field(..., description="Away expected corners (lambda_away_corners)")
+    total: float = Field(..., description="Total match expected corners (lambda_total_corners)")
+
+
+class TotalCornersMarket(BaseModel):
+    over_7_5: float
+    under_7_5: float
+    over_8_5: float
+    under_8_5: float
+    over_9_5: float
+    under_9_5: float
+    over_10_5: float
+    under_10_5: float
+    over_11_5: float
+    under_11_5: float
+
+
+class TeamCornersThresholds(BaseModel):
+    over_3_5: float
+    over_4_5: float
+    over_5_5: float
+
+
+class CornerConfidence(BaseModel):
+    overall: int = Field(ge=0, le=100)
+    data_quality: int = Field(ge=0, le=100)
+    sample_strength: int = Field(ge=0, le=100)
+    model_stability: int = Field(ge=0, le=100)
+    label: str = Field(..., description="'insufficient' | 'low' | 'moderate' | 'good' | 'strong'")
+
+
+class CornerModelMetadata(BaseModel):
+    version: str = "v1_corners_nb"
+    dispersion: float
+    dispersion_source: str = Field(..., description="'competition' | 'shrunk_competition' | 'global' | 'fallback'")
+
+
+class CornersPrediction(BaseModel):
+    available: bool = Field(..., description="True if sufficient historical corner data exists")
+    reason: Optional[str] = None
+    expected: Optional[ExpectedCorners] = None
+    total_markets: Optional[TotalCornersMarket] = None
+    home_team: Optional[TeamCornersThresholds] = None
+    away_team: Optional[TeamCornersThresholds] = None
+    confidence: Optional[CornerConfidence] = None
+    model: Optional[CornerModelMetadata] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+
+
 class MatchIntelligencePrediction(BaseModel):
     fixture_id: int
     model: ModelMetadata
@@ -90,3 +146,4 @@ class MatchIntelligencePrediction(BaseModel):
     exact_scores: List[ExactScore]
     confidence: ConfidenceDetails
     best_signal: BestModelSignal
+    corners: Optional[CornersPrediction] = None
