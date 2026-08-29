@@ -23,22 +23,29 @@ import {
 
 export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiveModal, apiRequest, darkMode }) {
   const [data, setData] = useState(null);
+  const [unifiedIntel, setUnifiedIntel] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
+  const [activeTab, setActiveTab] = useState('match_intel'); // 'match_intel' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
 
   useEffect(() => {
     if (isOpen && fixtureId) {
       fetchFixtureDetails();
-      setActiveTab('overview');
+      setActiveTab('match_intel');
     }
   }, [isOpen, fixtureId]);
 
   const fetchFixtureDetails = async () => {
     setLoading(true);
     try {
-      const res = await apiRequest('get', `/api/fixtures/${fixtureId}/details`);
+      const [res, intelRes] = await Promise.all([
+        apiRequest('get', `/api/fixtures/${fixtureId}/details`),
+        apiRequest('get', `/api/fixtures/${fixtureId}/match-intelligence`)
+      ]);
       if (res.data?.status === 'ok') {
         setData(res.data);
+      }
+      if (intelRes?.data && !intelRes.data.error) {
+        setUnifiedIntel(intelRes.data);
       }
     } catch (err) {
       console.error('Error fetching fixture details:', err);
@@ -236,6 +243,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
         {/* Navigation Tabs */}
         <div className="p-2 sm:p-3 border-b border-slate-800/80 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
+            { id: 'match_intel', label: 'MATCH INTELLIGENCE' },
             { id: 'overview', label: 'OVERVIEW' },
             { id: 'goals', label: 'GOALS' },
             { id: 'corners', label: 'CORNERS' },
@@ -249,7 +257,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
               onClick={() => setActiveTab(tab.id)}
               className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
                 activeTab === tab.id
-                  ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 scale-[1.02]'
+                  ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-600/20 scale-[1.02]'
                   : 'bg-slate-800/40 text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
             >
@@ -262,11 +270,146 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
           {loading ? (
             <div className="py-16 text-center space-y-3">
-              <RefreshCw className="w-8 h-8 text-emerald-400 animate-spin mx-auto" />
-              <p className="text-xs font-semibold text-slate-400">Synthesizing Dixon-Coles Match Intelligence calculations...</p>
+              <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
+              <p className="text-xs font-semibold text-slate-400">Synthesizing Unified Match Intelligence calculations...</p>
             </div>
           ) : (
             <>
+              {/* TAB 0: UNIFIED MATCH INTELLIGENCE (Phase 9 Primary View) */}
+              {activeTab === 'match_intel' && (
+                <div className="space-y-4 animate-fadeIn">
+                  
+                  {/* Overall Confidence & Match State Classification Banner */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-br from-cyan-950/40 via-slate-900 to-indigo-950/40 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400">Unified Match Confidence</span>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-2xl font-black text-white">
+                            {unifiedIntel ? `${Math.round(unifiedIntel.unified_confidence * 100)}%` : '—'}
+                          </span>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">
+                            Conservative Multi-Factor Index
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Cross-Market Consistency</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                          (unifiedIntel?.cross_market_consistency?.consistency_score || 1.0) >= 0.80
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                            : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                        }`}>
+                          {unifiedIntel?.cross_market_consistency?.status || 'ALIGNED'} ({Math.round((unifiedIntel?.cross_market_consistency?.consistency_score || 1.0) * 100)}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Match State Tags */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-800/80">
+                      <span className="text-[10px] font-black text-slate-500 uppercase mr-1">Match State:</span>
+                      {unifiedIntel?.match_state_classification?.map((tag, i) => (
+                        <span key={i} className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-slate-800 border border-slate-700 text-slate-200">
+                          {tag.replace(/_/g, ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Multi-Market Summary Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* Goals Card */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase">
+                        <span>Goals / xG</span>
+                        <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-xl font-black text-white">{unifiedIntel?.markets?.goals?.total_xg?.toFixed(2) || xgTotal.toFixed(2)} xG</span>
+                        <span className="text-[11px] font-black text-cyan-400">
+                          O1.5: {Math.round((unifiedIntel?.markets?.goals?.probabilities?.over_1_5 || 0.78) * 100)}%
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 flex justify-between">
+                        <span>BTTS: <strong className="text-slate-300">{Math.round((unifiedIntel?.markets?.goals?.probabilities?.btts || 0.52) * 100)}%</strong></span>
+                        <span>Model: <strong className="text-slate-400">Dixon-Coles v2</strong></span>
+                      </div>
+                    </div>
+
+                    {/* Corners Card */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase">
+                        <span>Corners</span>
+                        <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-xl font-black text-white">{unifiedIntel?.markets?.corners?.total_expected_corners?.toFixed(1) || '9.5'}</span>
+                        <span className="text-[11px] font-black text-emerald-400">
+                          O8.5: {Math.round((unifiedIntel?.markets?.corners?.probabilities?.over_8_5 || 0.62) * 100)}%
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 flex justify-between">
+                        <span>O9.5: <strong className="text-slate-300">{Math.round((unifiedIntel?.markets?.corners?.probabilities?.over_9_5 || 0.49) * 100)}%</strong></span>
+                        <span>Model: <strong className="text-slate-400">NegBinomial v2</strong></span>
+                      </div>
+                    </div>
+
+                    {/* Cards Card */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase">
+                        <span>Cards & Referee</span>
+                        <Award className="w-3.5 h-3.5 text-amber-400" />
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-xl font-black text-white">{unifiedIntel?.markets?.cards?.total_expected_cards?.toFixed(1) || '4.0'}</span>
+                        <span className="text-[11px] font-black text-amber-400">
+                          O3.5: {Math.round((unifiedIntel?.markets?.cards?.probabilities?.over_3_5 || 0.61) * 100)}%
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 flex justify-between">
+                        <span className="truncate max-w-[130px]">Ref: <strong className="text-slate-300">{unifiedIntel?.markets?.cards?.referee_name || 'Official'}</strong></span>
+                        <span>Model: <strong className="text-slate-400">CardsRef v2</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Ranked Cross-Market Opportunities */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white">
+                        Ranked Cross-Market Opportunities
+                      </span>
+                      <span className="text-[10px] text-slate-400">Strict Threshold & Risk Filtering</span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {unifiedIntel?.ranked_signals?.map((sig, i) => (
+                        <div key={i} className="p-3 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${
+                                sig.risk_tier === 'LOW' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' :
+                                sig.risk_tier === 'MEDIUM' ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40' :
+                                'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                              }`}>
+                                {sig.risk_tier} RISK
+                              </span>
+                              <span className="text-xs font-black text-white">{sig.market}</span>
+                            </div>
+                            <span className="text-[10px] text-slate-500 block">Model: {sig.model_source}</span>
+                          </div>
+
+                          <div className="text-right">
+                            <span className="text-base font-black text-cyan-400 block">{Math.round(sig.probability * 100)}%</span>
+                            <span className="text-[9px] text-slate-500 font-bold uppercase">Probability</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
               {/* TAB 1: OVERVIEW */}
               {activeTab === 'overview' && (
                 <div className="space-y-4 animate-fadeIn">

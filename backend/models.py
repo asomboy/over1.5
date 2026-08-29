@@ -731,4 +731,26 @@ class DataConflict(Base):
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class UnifiedMatchIntelligenceSnapshot(Base):
+    """
+    Immutable cross-market prediction snapshot combining Goals, Corners, Cards, 
+    Referee signals, Live dynamics, and Cross-Market consistency diagnostics.
+    """
+    __tablename__ = "unified_match_intelligence_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    match_status: Mapped[str] = mapped_column(String, default="SCHEDULED", index=True) # SCHEDULED, LIVE, FINISHED
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    
+    unified_confidence: Mapped[float] = mapped_column(Float, default=0.50)
+    match_state_tags: Mapped[str] = mapped_column(Text, default="[]") # JSON list of match state tags
+    cross_market_consistency_score: Mapped[float] = mapped_column(Float, default=1.0)
+    
+    intelligence_payload: Mapped[str] = mapped_column(Text, nullable=False) # Complete serialized JSON payload
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+
 

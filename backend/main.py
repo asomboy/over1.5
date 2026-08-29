@@ -1352,6 +1352,62 @@ def get_models_live_validation(db: Session = Depends(get_db)):
     return ModelEvaluationService.get_live_performance_report(db)
 
 
+# =============================================================================
+# PHASE 9: UNIFIED MATCH INTELLIGENCE & CROSS-MARKET PREDICTION ENDPOINTS
+# =============================================================================
+
+@app.get("/api/fixtures/{fixture_id}/match-intelligence")
+def get_fixture_match_intelligence(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns complete unified Match Intelligence object combining Goals, Corners, Cards, 
+    Referee signals, Live dynamics, Cross-Market consistency diagnostics, and ranked opportunities.
+    """
+    from services.unified_match_intelligence_service import UnifiedMatchIntelligenceService
+    intel = UnifiedMatchIntelligenceService.get_unified_match_intelligence(db, fixture_id)
+    if "error" in intel:
+        raise HTTPException(status_code=404, detail=intel["error"])
+    return intel
+
+
+@app.get("/api/match-intelligence/fixtures")
+def get_upcoming_match_intelligence(limit: int = 50, db: Session = Depends(get_db)):
+    """
+    Returns list of upcoming scheduled fixtures with synthesized Match Intelligence summaries.
+    """
+    from services.unified_match_intelligence_service import UnifiedMatchIntelligenceService
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    fixtures = (
+        db.query(models.Fixture)
+        .filter(models.Fixture.status.in_(["SCHEDULED", "LIVE"]))
+        .order_by(models.Fixture.match_date.asc())
+        .limit(limit)
+        .all()
+    )
+
+    items = []
+    for f in fixtures:
+        try:
+            intel = UnifiedMatchIntelligenceService.get_unified_match_intelligence(db, f.id)
+            items.append({
+                "fixture_id": f.id,
+                "home_team": f.home_team.name if f.home_team else "Home",
+                "away_team": f.away_team.name if f.away_team else "Away",
+                "competition": f.league.name if f.league else "League",
+                "kickoff": f.match_date.isoformat() if f.match_date else None,
+                "status": f.status,
+                "unified_confidence": intel.get("unified_confidence", 0.50),
+                "match_state_tags": intel.get("match_state_classification", []),
+                "top_signal": intel.get("ranked_signals", [{}])[0] if intel.get("ranked_signals") else None,
+                "consistency_score": intel.get("cross_market_consistency", {}).get("consistency_score", 1.0)
+            })
+        except Exception as ex:
+            logger.debug(f"Error extracting intelligence summary for fixture {f.id}: {ex}")
+
+    return {"status": "ok", "fixtures_count": len(items), "fixtures": items}
+
+
+
 
 @app.post("/api/notifications/telegram/test")
 async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
