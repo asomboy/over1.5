@@ -955,9 +955,57 @@ def get_live_fixtures(db: Session = Depends(get_db)):
 
 @app.get("/api/live/performance")
 def get_live_performance(db: Session = Depends(get_db)):
-    """Returns live prediction evaluation metrics across minute buckets."""
-    from services.live_service import LiveModelEvaluationService
-    return LiveModelEvaluationService.evaluate_live_performance(db)
+    """Returns dynamic in-play prediction evaluation metrics across 6 match minute intervals."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_live_minute_performance(db)
+
+
+@app.get("/api/models/performance")
+def get_models_performance(
+    model_version: Optional[str] = None,
+    prediction_type: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Returns global probabilistic scoring metrics (Brier, Log Loss, MAE, ECE) for verified predictions."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_model_performance(db, model_version=model_version, prediction_type=prediction_type)
+
+
+@app.get("/api/models/leaderboard")
+def get_models_leaderboard(db: Session = Depends(get_db)):
+    """Returns ranked prediction markets sorted by composite Brier and calibration performance."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return {"status": "ok", "leaderboard": ModelEvaluationService.get_market_leaderboard(db)}
+
+
+@app.get("/api/models/calibration")
+def get_models_calibration(market: Optional[str] = None, db: Session = Depends(get_db)):
+    """Returns 10-decile probability reliability diagram buckets, ECE, and MCE."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_calibration_dashboard(db, market=market)
+
+
+@app.get("/api/models/drift")
+def get_models_drift(
+    window_size: int = 100, baseline_size: int = 300, db: Session = Depends(get_db)
+):
+    """Monitors model drift by comparing recent window performance against the historical baseline."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_model_drift_analysis(db, window_size=window_size, baseline_size=baseline_size)
+
+
+@app.get("/api/models/league-performance")
+def get_models_league_performance(competition: Optional[str] = None, db: Session = Depends(get_db)):
+    """Returns model performance breakdown segmented by league competition."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return {"status": "ok", "leagues": ModelEvaluationService.get_league_performance(db, competition=competition)}
+
+
+@app.get("/api/models/status")
+def get_models_status(db: Session = Depends(get_db)):
+    """Returns simple production readiness summary across all predictive model families."""
+    from services.model_evaluation_service import ModelEvaluationService
+    return ModelEvaluationService.get_models_readiness_status(db)
 
 
 @app.post("/api/notifications/telegram/test")

@@ -36,6 +36,7 @@ import {
 import AccumulatorModal from './components/AccumulatorModal';
 import MatchDetailModal from './components/MatchDetailModal';
 import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal';
+import ModelIntelligenceDashboard from './components/ModelIntelligenceDashboard';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -136,6 +137,7 @@ export default function App() {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [activeLiveFixtureId, setActiveLiveFixtureId] = useState(null);
   const [showLiveModal, setShowLiveModal] = useState(false);
+  const [showModelDashboard, setShowModelDashboard] = useState(false);
   const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
 
   // Accuracy Dashboard & Confidence state
@@ -725,6 +727,16 @@ export default function App() {
             >
               <Zap className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
               <span className="hidden sm:inline">Smart Accas</span>
+            </button>
+
+            {/* Model Evaluation Dashboard Button */}
+            <button
+              onClick={() => setShowModelDashboard(true)}
+              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-black bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 rounded-xl transition-all shadow-sm active:scale-95"
+              title="Open Model Evaluation & Calibration Dashboard"
+            >
+              <BarChart2 className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline">Model Intel</span>
             </button>
 
             {/* Sync Button */}
@@ -2828,6 +2840,14 @@ export default function App() {
           setShowLiveModal(false);
           setActiveLiveFixtureId(null);
         }}
+        apiRequest={apiRequest}
+        darkMode={darkMode}
+      />
+
+      {/* Model Intelligence Evaluation & Calibration Dashboard */}
+      <ModelIntelligenceDashboard
+        isOpen={showModelDashboard}
+        onClose={() => setShowModelDashboard(false)}
         apiRequest={apiRequest}
         darkMode={darkMode}
       />

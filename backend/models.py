@@ -2,7 +2,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean, Text, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +83,7 @@ class Fixture(Base):
     referee_statistics = relationship("RefereeMatchStatistics", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     live_state = relationship("LiveMatchState", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     live_snapshots = relationship("LivePredictionSnapshot", back_populates="fixture", cascade="all, delete-orphan")
+    evaluations = relationship("ModelEvaluation", back_populates="fixture", cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -502,3 +503,46 @@ class LivePredictionSnapshot(Base):
 
     # Relationships
     fixture = relationship("Fixture", back_populates="live_snapshots")
+
+
+class ModelEvaluation(Base):
+    """
+    Central immutable record evaluating a specific model prediction market
+    against verified real-world post-match outcomes.
+    """
+    __tablename__ = "model_evaluations"
+    __table_args__ = (
+        UniqueConstraint("fixture_id", "market", "model_version", "is_live", "match_minute", name="uq_model_eval"),
+        {'extend_existing': True}
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    prediction_snapshot_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prediction_type: Mapped[str] = mapped_column(String, nullable=False, index=True) # goals, 1x2, corners, cards, red_cards, live_goals, live_corners, live_cards
+    market: Mapped[str] = mapped_column(String, nullable=False, index=True) # over_1_5_goals, over_2_5_goals, btts, 1x2_home, over_8_5_corners, etc.
+    model_version: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    competition: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False) # 0 for pre-match
+    period: Mapped[str] = mapped_column(String, default="PRE") # PRE, 1H, HT, 2H, FT
+
+    predicted_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_outcome: Mapped[float] = mapped_column(Float, nullable=False) # 1.0 or 0.0 for binary, count for regression
+
+    confidence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    data_quality: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verified: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Precalculated atomic metric components
+    brier_component: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # (p - y)^2
+    log_loss_component: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # -(y*log(p) + (1-y)*log(1-p))
+    absolute_error: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # |p - y|
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="evaluations")

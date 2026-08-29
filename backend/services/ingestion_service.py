@@ -442,6 +442,13 @@ class DataIngestionService:
                     except Exception as v_ex:
                         logger.debug(f"Card result verification hook error: {v_ex}")
 
+                # Trigger Phase 5 Central Model Evaluation
+                try:
+                    from services.model_evaluation_service import ModelEvaluationService
+                    ModelEvaluationService.evaluate_finished_fixture(db, fixture.id)
+                except Exception as eval_ex:
+                    logger.debug(f"Model evaluation hook error: {eval_ex}")
+
                 fixture.status = "FINISHED"
                 if commit:
                     db.commit()
