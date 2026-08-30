@@ -63,7 +63,8 @@ class JobOrchestratorService:
         "live_match_poll",
         "post_match_verification",
         "model_evaluation",
-        "provider_health"
+        "provider_health",
+        "decision_intelligence"
     ]
 
     @classmethod
@@ -110,6 +111,8 @@ class JobOrchestratorService:
                 res = cls._run_model_evaluation(db)
             elif job_name == "provider_health":
                 res = cls._run_provider_health(db)
+            elif job_name == "decision_intelligence":
+                res = cls._run_decision_intelligence(db)
             else:
                 res = {"processed": 0, "created": 0, "updated": 0, "skipped": 0}
 
@@ -246,6 +249,33 @@ class JobOrchestratorService:
         """Logs provider health status checks."""
         providers = ProviderHealthService.get_providers_status(db)
         return {"processed": len(providers), "created": 0, "updated": len(providers), "skipped": 0}
+
+    @classmethod
+    def _run_decision_intelligence(cls, db: Session) -> Dict[str, Any]:
+        """Generates and captures immutable decision snapshots for upcoming and live fixtures."""
+        from services.decision_intelligence_service import DecisionIntelligenceService
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = (datetime.now(timezone.utc) + timedelta(days=2)).replace(tzinfo=None)
+
+        fixtures = (
+            db.query(Fixture)
+            .filter(
+                Fixture.status.in_(["SCHEDULED", "LIVE"]),
+                Fixture.match_date >= (now - timedelta(hours=3)),
+                Fixture.match_date <= cutoff
+            )
+            .all()
+        )
+
+        total_snaps = 0
+        for fix in fixtures:
+            try:
+                snaps = DecisionIntelligenceService.save_decision_snapshots(db, fix.id)
+                total_snaps += len(snaps)
+            except Exception as ex:
+                logger.debug(f"Decision capture skip for fixture {fix.id}: {ex}")
+
+        return {"processed": len(fixtures), "created": total_snaps, "updated": 0, "skipped": 0}
 
     @classmethod
     def get_job_history(cls, db: Session, job_name: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:

@@ -26,24 +26,26 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
   const [unifiedIntel, setUnifiedIntel] = useState(null);
   const [shotsData, setShotsData] = useState(null);
   const [matchStatsData, setMatchStatsData] = useState(null);
+  const [decisionData, setDecisionData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('match_intel'); // 'match_intel' | 'shots' | 'match_stats' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
+  const [activeTab, setActiveTab] = useState('decision_intel'); // 'decision_intel' | 'match_intel' | 'shots' | 'match_stats' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
 
   useEffect(() => {
     if (isOpen && fixtureId) {
       fetchFixtureDetails();
-      setActiveTab('match_intel');
+      setActiveTab('decision_intel');
     }
   }, [isOpen, fixtureId]);
 
   const fetchFixtureDetails = async () => {
     setLoading(true);
     try {
-      const [res, intelRes, shotsRes, statsRes] = await Promise.all([
+      const [res, intelRes, shotsRes, statsRes, decRes] = await Promise.all([
         apiRequest('get', `/api/fixtures/${fixtureId}/details`),
         apiRequest('get', `/api/fixtures/${fixtureId}/match-intelligence`),
         apiRequest('get', `/api/fixtures/${fixtureId}/shots`),
-        apiRequest('get', `/api/fixtures/${fixtureId}/match-statistics`)
+        apiRequest('get', `/api/fixtures/${fixtureId}/match-statistics`),
+        apiRequest('get', `/api/fixtures/${fixtureId}/decision`)
       ]);
       if (res.data?.status === 'ok') {
         setData(res.data);
@@ -56,6 +58,9 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
       }
       if (statsRes?.data && !statsRes.data.error) {
         setMatchStatsData(statsRes.data);
+      }
+      if (decRes?.data && !decRes.data.error) {
+        setDecisionData(decRes.data);
       }
     } catch (err) {
       console.error('Error fetching fixture details:', err);
@@ -253,6 +258,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
         {/* Navigation Tabs */}
         <div className="p-2 sm:p-3 border-b border-slate-800/80 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
+            { id: 'decision_intel', label: 'DECISION ENGINE' },
             { id: 'match_intel', label: 'MATCH INTELLIGENCE' },
             { id: 'shots', label: 'SHOTS & SOT' },
             { id: 'match_stats', label: 'MATCH STATS' },
@@ -287,7 +293,201 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
             </div>
           ) : (
             <>
-              {/* TAB 0: UNIFIED MATCH INTELLIGENCE (Phase 9 Primary View) */}
+              {/* TAB 0: PHASE 12 DECISION ENGINE (Primary Production Intelligence View) */}
+              {activeTab === 'decision_intel' && (
+                <div className="space-y-4 animate-fadeIn">
+                  
+                  {/* Decision Overview Header Banner */}
+                  <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-indigo-950/50 via-slate-900 to-slate-950 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-indigo-400">Authoritative Match Decision</span>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-3xl font-black text-white">
+                            {decisionData ? `${Math.round((decisionData.overall_confidence || 0.5) * 100)}%` : '—'}
+                          </span>
+                          <span className="text-xs font-bold text-slate-400">
+                            Decision Confidence
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Production Signal Status</span>
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-black uppercase border inline-block ${
+                          decisionData?.production_status === 'PRODUCTION'
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-lg shadow-emerald-500/10'
+                            : decisionData?.production_status === 'SHADOW'
+                            ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                            : 'bg-slate-800/80 text-slate-400 border-slate-700'
+                        }`}>
+                          {decisionData?.production_status ? `${decisionData.production_status} MODE` : 'INSUFFICIENT DATA'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800/80 text-[11px]">
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/60">
+                        <span className="text-[10px] text-slate-500 block">Markets Evaluated</span>
+                        <strong className="text-white font-black">{decisionData?.market_summary?.total_markets_evaluated || 0}</strong>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/60">
+                        <span className="text-[10px] text-slate-500 block">Qualifying Signals</span>
+                        <strong className="text-indigo-400 font-black">{decisionData?.top_signals?.length || 0}</strong>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/60">
+                        <span className="text-[10px] text-slate-500 block">Data Provenance</span>
+                        <strong className="text-emerald-400 font-black">{decisionData?.data_quality?.provenance_records_count || 0} Fields</strong>
+                      </div>
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/60">
+                        <span className="text-[10px] text-slate-500 block">Data Conflicts</span>
+                        <strong className={decisionData?.data_quality?.has_conflicts ? 'text-rose-400 font-black' : 'text-slate-400 font-black'}>
+                          {decisionData?.data_quality?.has_conflicts ? 'Conflict Detected' : 'Zero Conflicts'}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* TOP QUALIFYING SIGNALS */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-slate-300 uppercase tracking-wider block">
+                        Top Qualifying Predictive Signals
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        Ranked by conservative Decision Score
+                      </span>
+                    </div>
+
+                    {decisionData?.top_signals && decisionData.top_signals.length > 0 ? (
+                      <div className="space-y-3">
+                        {decisionData.top_signals.map((sig, i) => (
+                          <div key={i} className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3 hover:border-slate-700 transition-all">
+                            {/* Signal Title & Badges */}
+                            <div className="flex items-start justify-between">
+                              <div className="space-y-0.5">
+                                <span className="text-sm font-black text-white">{sig.market} — {sig.selection}</span>
+                                <span className="text-[10px] text-slate-500 block font-mono">Model: {sig.model_version}</span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                                  sig.risk_tier === 'LOW'
+                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                    : sig.risk_tier === 'MEDIUM'
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                    : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                }`}>
+                                  Risk: {sig.risk_tier}
+                                </span>
+
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                                  sig.signal_status === 'PRODUCTION_SIGNAL'
+                                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                                    : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                                }`}>
+                                  {sig.signal_status === 'PRODUCTION_SIGNAL' ? 'PRODUCTION' : 'SHADOW'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Triple Separate Metrics */}
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase">Model Probability</span>
+                                <span className="text-lg font-black text-cyan-400">{Math.round(sig.probability * 100)}%</span>
+                              </div>
+
+                              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase">Decision Confidence</span>
+                                <span className="text-lg font-black text-indigo-400">{Math.round(sig.confidence * 100)}%</span>
+                              </div>
+
+                              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase">Decision Score</span>
+                                <span className="text-lg font-black text-purple-400">{Math.round(sig.decision_score * 100)}%</span>
+                              </div>
+                            </div>
+
+                            {/* WHY & CAUTION Explanations */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                              {/* Supporting Reasons */}
+                              <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/20 space-y-1.5">
+                                <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider block">
+                                  ✓ Why This Prediction?
+                                </span>
+                                {sig.explanation?.primary_factors?.map((f, fi) => (
+                                  <p key={fi} className="text-[11px] text-emerald-300 font-medium">
+                                    • {f.message}
+                                  </p>
+                                ))}
+                                {sig.explanation?.supporting_factors?.slice(0, 2).map((f, fi) => (
+                                  <p key={fi} className="text-[11px] text-slate-300">
+                                    • {f.message}
+                                  </p>
+                                ))}
+                                {(!sig.explanation?.primary_factors?.length && !sig.explanation?.supporting_factors?.length) && (
+                                  <p className="text-[11px] text-slate-400">Statistical threshold satisfied by model baseline.</p>
+                                )}
+                              </div>
+
+                              {/* Caution Factors */}
+                              <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/20 space-y-1.5">
+                                <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider block">
+                                  ! Caution Factors
+                                </span>
+                                {sig.explanation?.caution_factors?.slice(0, 3).map((f, fi) => (
+                                  <p key={fi} className="text-[11px] text-amber-300">
+                                    ! {f.message}
+                                  </p>
+                                ))}
+                                {(!sig.explanation?.caution_factors || sig.explanation.caution_factors.length === 0) && (
+                                  <p className="text-[11px] text-slate-400">Zero active caution warnings recorded for this market.</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
+                        <span className="px-3 py-1 rounded-full text-xs font-black uppercase bg-slate-800 text-slate-300 border border-slate-700 inline-block">
+                          NO_SIGNAL
+                        </span>
+                        <h4 className="text-sm font-black text-white">No Candidate Passed Decision Criteria</h4>
+                        <p className="text-xs text-slate-400 max-w-md mx-auto">
+                          The system enforces strict probabilistic, empirical sample, and cross-market consistency thresholds. No speculative recommendations are manufactured.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ALL CANDIDATE SIGNALS ACCORDION / SUMMARY */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">All Evaluated Candidate Markets</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto custom-scrollbar">
+                      {decisionData?.all_candidate_signals?.map((cand, ci) => (
+                        <div key={ci} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between text-xs">
+                          <div>
+                            <span className="font-bold text-slate-200 block truncate max-w-[180px]">{cand.market}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">Score: {Math.round(cand.decision_score * 100)}% | Risk: {cand.risk_tier}</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="font-black text-cyan-400 text-sm block">{Math.round(cand.probability * 100)}%</span>
+                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded border ${
+                              cand.signal_status === 'PRODUCTION_SIGNAL' ? 'text-emerald-400 border-emerald-500/40' : (cand.signal_status === 'SHADOW_SIGNAL' ? 'text-amber-400 border-amber-500/40' : 'text-slate-500 border-slate-800')
+                            }`}>
+                              {cand.signal_status}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 1: UNIFIED MATCH INTELLIGENCE (Phase 9 View) */}
               {activeTab === 'match_intel' && (
                 <div className="space-y-4 animate-fadeIn">
                   

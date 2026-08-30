@@ -861,6 +861,49 @@ class MatchStatisticsPredictionSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class PredictionDecisionSnapshot(Base):
+    """
+    Immutable Phase 12 Decision Snapshot preserving normalized probabilities,
+    decision confidence, decision score, risk tier, signal status, historical calibration,
+    drift status, and machine-readable explainability reason codes.
+    """
+    __tablename__ = "prediction_decision_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    market: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    selection: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_decision_engine", index=True)
+
+    probability: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    decision_score: Mapped[float] = mapped_column(Float, nullable=False)
+
+    risk_tier: Mapped[str] = mapped_column(String, default="NO_SIGNAL", index=True) # LOW, MEDIUM, HIGH, NO_SIGNAL
+    signal_status: Mapped[str] = mapped_column(String, default="NO_SIGNAL", index=True) # PRODUCTION_SIGNAL, SHADOW_SIGNAL, INSUFFICIENT_DATA, DEGRADED, NO_SIGNAL, UNAVAILABLE
+
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    brier_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    log_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ece: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mce: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    data_quality: Mapped[float] = mapped_column(Float, default=0.50)
+    consistency_score: Mapped[float] = mapped_column(Float, default=1.0)
+    drift_status: Mapped[str] = mapped_column(String, default="STABLE")
+    readiness_status: Mapped[str] = mapped_column(String, default="INSUFFICIENT_DATA")
+
+    explanation_json: Mapped[str] = mapped_column(Text, default="{}")
+    diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+
 
 
 

@@ -1544,6 +1544,149 @@ def get_match_statistics_model_performance(db: Session = Depends(get_db)):
     }
 
 
+# =============================================================================
+# PHASE 12: PRODUCTION INTELLIGENCE, EXPLAINABILITY & DECISION ENGINE ENDPOINTS
+# =============================================================================
+
+@app.get("/api/fixtures/{fixture_id}/decision")
+def get_fixture_match_decision(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns authoritative match decision summary consumed by MatchDetailModal and operational UI.
+    """
+    from services.decision_intelligence_service import DecisionIntelligenceService
+    res = DecisionIntelligenceService.get_match_decision_summary(db, fixture_id)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get("/api/fixtures/{fixture_id}/signals")
+def get_fixture_top_signals(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns top qualifying production/shadow signals for a fixture with reason codes and risk tiers.
+    """
+    from services.decision_intelligence_service import DecisionIntelligenceService
+    return DecisionIntelligenceService.get_top_signals(db, fixture_id)
+
+
+@app.get("/api/fixtures/{fixture_id}/decision/explanation")
+def get_fixture_decision_explanations(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns detailed machine-readable explainability reason codes and factors across all fixture markets.
+    """
+    from services.decision_intelligence_service import DecisionIntelligenceService
+    decisions = DecisionIntelligenceService.get_fixture_decisions(db, fixture_id)
+    return {
+        "fixture_id": fixture_id,
+        "total_markets_explained": len(decisions),
+        "decisions": decisions
+    }
+
+
+@app.get("/api/fixtures/{fixture_id}/decision/history")
+def get_fixture_decision_history(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns historical immutable decision snapshot audit trail for a fixture.
+    """
+    snaps = (
+        db.query(models.PredictionDecisionSnapshot)
+        .filter(models.PredictionDecisionSnapshot.fixture_id == fixture_id)
+        .order_by(models.PredictionDecisionSnapshot.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": s.id,
+            "fixture_id": s.fixture_id,
+            "market": s.market,
+            "selection": s.selection,
+            "model_version": s.model_version,
+            "probability": s.probability,
+            "confidence": s.confidence,
+            "decision_score": s.decision_score,
+            "risk_tier": s.risk_tier,
+            "signal_status": s.signal_status,
+            "sample_size": s.sample_size,
+            "brier_score": s.brier_score,
+            "ece": s.ece,
+            "data_quality": s.data_quality,
+            "drift_status": s.drift_status,
+            "readiness_status": s.readiness_status,
+            "is_live": s.is_live,
+            "match_minute": s.match_minute,
+            "created_at": s.created_at.isoformat() if s.created_at else None
+        }
+        for s in snaps
+    ]
+
+
+@app.get("/api/models/decision-readiness")
+def get_decision_engine_readiness(db: Session = Depends(get_db)):
+    """
+    Returns empirical sample readiness gates across all decision engine markets.
+    """
+    from services.decision_intelligence_service import DecisionIntelligenceService
+    return DecisionIntelligenceService.get_decision_readiness(db)
+
+
+@app.get("/api/models/decision-performance")
+def get_decision_engine_performance(db: Session = Depends(get_db)):
+    """
+    Returns aggregate probabilistic performance metrics for the unified decision engine.
+    """
+    from services.decision_intelligence_service import DECISION_ENGINE_VERSION
+    evals = db.query(models.ModelEvaluation).all()
+    pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+    return {
+        "status": "ok",
+        "model_version": DECISION_ENGINE_VERSION,
+        "sample_size": len(pairs),
+        "metrics": CalibrationService.calculate_aggregate_metrics(pairs)
+    }
+
+
+@app.get("/api/decision/signals")
+def get_all_active_decision_signals(
+    status: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns recent decision snapshots with optional status filter (e.g. PRODUCTION_SIGNAL, SHADOW_SIGNAL).
+    """
+    q = db.query(models.PredictionDecisionSnapshot)
+    if status:
+        q = q.filter(models.PredictionDecisionSnapshot.signal_status == status)
+    snaps = q.order_by(models.PredictionDecisionSnapshot.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": s.id,
+            "fixture_id": s.fixture_id,
+            "market": s.market,
+            "selection": s.selection,
+            "probability": s.probability,
+            "confidence": s.confidence,
+            "decision_score": s.decision_score,
+            "risk_tier": s.risk_tier,
+            "signal_status": s.signal_status,
+            "sample_size": s.sample_size,
+            "is_live": s.is_live,
+            "created_at": s.created_at.isoformat() if s.created_at else None
+        }
+        for s in snaps
+    ]
+
+
+@app.get("/api/decision/status")
+def get_decision_engine_status(db: Session = Depends(get_db)):
+    """
+    Returns real-time operating metrics and snapshot counts for the decision intelligence service.
+    """
+    from services.decision_intelligence_service import DecisionIntelligenceService
+    return DecisionIntelligenceService.get_decision_status(db)
+
+
+
 
 
 

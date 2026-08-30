@@ -55,6 +55,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const [realLeaderboard, setRealLeaderboard] = useState([]);
   const [realValidation, setRealValidation] = useState(null);
 
+  // Phase 12 states
+  const [decisionStatus, setDecisionStatus] = useState(null);
+  const [decisionSignals, setDecisionSignals] = useState([]);
+
   useEffect(() => {
     if (isOpen) {
       fetchAllData();
@@ -66,7 +70,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
     try {
       const [
         stRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes, jbRes, altRes, bkRes,
-        provAudRes, confRes, mktReadRes, realLbRes, realValRes
+        provAudRes, confRes, mktReadRes, realLbRes, realValRes, decStatRes, decSigRes
       ] = await Promise.all([
         apiRequest('get', '/api/system/status'),
         apiRequest('get', '/api/data-quality/overview'),
@@ -84,7 +88,9 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         apiRequest('get', '/api/data-quality/conflicts'),
         apiRequest('get', '/api/models/market-readiness'),
         apiRequest('get', '/api/models/real-leaderboard'),
-        apiRequest('get', '/api/models/real-validation')
+        apiRequest('get', '/api/models/real-validation'),
+        apiRequest('get', '/api/decision/status'),
+        apiRequest('get', '/api/decision/signals')
       ]);
 
       if (stRes?.data) setSystemStatus(stRes.data);
@@ -104,6 +110,8 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
       if (mktReadRes?.data?.markets) setMarketReadiness(mktReadRes.data.markets);
       if (realLbRes?.data?.leaderboard) setRealLeaderboard(realLbRes.data.leaderboard);
       if (realValRes?.data) setRealValidation(realValRes.data);
+      if (decStatRes?.data) setDecisionStatus(decStatRes.data);
+      if (decSigRes?.data && Array.isArray(decSigRes.data)) setDecisionSignals(decSigRes.data);
     } catch (err) {
       console.error('Error fetching production operations intelligence:', err);
     } finally {
@@ -253,6 +261,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
         {/* NAVIGATION TABS */}
         <div className="p-2 border-b border-slate-800 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
+            { id: 'decision_engine', label: 'DECISION ENGINE' },
             { id: 'real_validation', label: 'REAL DATA VALIDATION' },
             { id: 'provenance', label: `PROVENANCE & CONFLICTS (${conflictsData.length})` },
             { id: 'overview', label: 'OVERVIEW' },
@@ -288,6 +297,117 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
             </div>
           ) : (
             <>
+              {/* TAB 0: PHASE 12 DECISION ENGINE DASHBOARD VIEW */}
+              {activeTab === 'decision_engine' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* Decision Engine KPIs */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { title: 'Decision Engine Version', val: decisionStatus?.decision_engine_version || 'v1_decision_engine', color: 'text-indigo-400', sub: 'Production Governance Layer' },
+                      { title: 'Decision Snapshots', val: decisionStatus?.total_snapshots_recorded || 0, color: 'text-white', sub: 'Immutable Historical Records' },
+                      { title: 'Production Signals', val: decisionStatus?.production_signals_recorded || 0, color: 'text-emerald-400', sub: 'Validated Sample Gates (N>=300)' },
+                      { title: 'Shadow Signals', val: decisionStatus?.shadow_signals_recorded || 0, color: 'text-amber-400', sub: 'Validating & Shadow Mode' }
+                    ].map((kpi, idx) => (
+                      <div key={idx} className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
+                        <span className="text-[10px] text-slate-400 font-bold block">{kpi.title}</span>
+                        <div className={`text-xl sm:text-2xl font-black ${kpi.color} tracking-tight`}>
+                          {kpi.val}
+                        </div>
+                        <div className="text-[10px] text-slate-500">{kpi.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Decision Governance & Gating Rules Card */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white">
+                        Phase 12 Signal Gating & Decision Governance Principles
+                      </span>
+                      <span className="text-[10px] font-black text-emerald-400 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 uppercase">
+                        Zero Fabrication Enforced
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                        <span className="font-black text-emerald-400 uppercase text-[10px] block">PRODUCTION_SIGNAL</span>
+                        <p className="text-[11px] text-slate-300">Requires verified sample N &ge; 300, ECE &le; 0.07, Decision Score &ge; 50%, healthy provider status, and zero severe cross-market conflict.</p>
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                        <span className="font-black text-amber-400 uppercase text-[10px] block">SHADOW_SIGNAL</span>
+                        <p className="text-[11px] text-slate-300">Model has statistical validity and 100 &le; N &lt; 300, undergoing walk-forward validation before production promotion.</p>
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                        <span className="font-black text-slate-400 uppercase text-[10px] block">INSUFFICIENT_DATA / NO_SIGNAL</span>
+                        <p className="text-[11px] text-slate-300">When verified real-world outcomes are N &lt; 100 or no candidate passes conservative probability criteria. No fake certainty.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recent Decision Signals Audit Table */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-white">
+                        Decision Signals Audit Trail
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        {decisionSignals.length} Recent Snapshot Records
+                      </span>
+                    </div>
+
+                    {decisionSignals.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                              <th className="py-2 px-3">Market</th>
+                              <th className="py-2 px-3">Selection</th>
+                              <th className="py-2 px-3">Prob</th>
+                              <th className="py-2 px-3">Confidence</th>
+                              <th className="py-2 px-3">Score</th>
+                              <th className="py-2 px-3">Risk</th>
+                              <th className="py-2 px-3">Status</th>
+                              <th className="py-2 px-3">Timestamp</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {decisionSignals.map((sig, i) => (
+                              <tr key={i} className="hover:bg-slate-800/30 transition-colors">
+                                <td className="py-2 px-3 font-bold text-slate-200">{sig.market}</td>
+                                <td className="py-2 px-3 text-slate-400">{sig.selection}</td>
+                                <td className="py-2 px-3 font-mono font-black text-cyan-400">{Math.round(sig.probability * 100)}%</td>
+                                <td className="py-2 px-3 font-mono font-black text-indigo-400">{Math.round(sig.confidence * 100)}%</td>
+                                <td className="py-2 px-3 font-mono font-black text-purple-400">{Math.round(sig.decision_score * 100)}%</td>
+                                <td className="py-2 px-3">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                                    sig.risk_tier === 'LOW' ? 'text-emerald-400 border-emerald-500/30' : (sig.risk_tier === 'MEDIUM' ? 'text-amber-400 border-amber-500/30' : 'text-slate-400 border-slate-700')
+                                  }`}>
+                                    {sig.risk_tier}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                                    sig.signal_status === 'PRODUCTION_SIGNAL' ? 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10' : (sig.signal_status === 'SHADOW_SIGNAL' ? 'text-amber-400 border-amber-500/40 bg-amber-500/10' : 'text-slate-400 border-slate-700')
+                                  }`}>
+                                    {sig.signal_status}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3 font-mono text-[10px] text-slate-500">{sig.created_at ? sig.created_at.slice(0, 19).replace('T', ' ') : '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 py-3 text-center">No decision snapshot records captured yet. Snapshots are recorded when match decisions are calculated or background jobs execute.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* TAB 1: REAL DATA VALIDATION (Phase 8 Main View) */}
               {activeTab === 'real_validation' && (
                 <div className="space-y-4 animate-fadeIn">
