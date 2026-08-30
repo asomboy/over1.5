@@ -1475,6 +1475,76 @@ def get_shots_model_performance(db: Session = Depends(get_db)):
     }
 
 
+# =============================================================================
+# PHASE 11: MATCH STATISTICS INTELLIGENCE ENDPOINTS
+# =============================================================================
+
+@app.get("/api/fixtures/{fixture_id}/match-statistics")
+def get_fixture_match_statistics_prediction(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns pre-match predictions across all match statistics domains:
+    Possession, Fouls, Offsides, Saves, Blocked Shots, Shot Location, and Attacking Pressure.
+    """
+    from services.match_statistics_prediction_service import MatchStatisticsPredictionEngine
+    res = MatchStatisticsPredictionEngine.predict_match_statistics(db, fixture_id)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get("/api/fixtures/{fixture_id}/match-statistics/live")
+def get_fixture_live_match_statistics_prediction(fixture_id: int, db: Session = Depends(get_db)):
+    """
+    Returns live in-play dynamic remaining Match Statistics expectations and early-resolved markets.
+    """
+    from services.match_statistics_prediction_service import MatchStatisticsPredictionEngine
+    res = MatchStatisticsPredictionEngine.predict_live_match_statistics(db, fixture_id)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get("/api/models/match-statistics/readiness")
+def get_match_statistics_model_readiness(db: Session = Depends(get_db)):
+    """
+    Returns empirical sample readiness gates for Match Statistics prediction engines.
+    """
+    from services.match_statistics_prediction_service import MatchStatisticsPredictionEngine
+    return MatchStatisticsPredictionEngine.get_match_statistics_readiness_status(db)
+
+
+@app.get("/api/models/match-statistics/calibration")
+def get_match_statistics_model_calibration(db: Session = Depends(get_db)):
+    """
+    Returns empirical calibration curves for verified match statistics markets.
+    """
+    from services.match_statistics_prediction_service import MATCH_STATS_MODEL_VERSION
+    evals = db.query(models.ModelEvaluation).filter(models.ModelEvaluation.model_version.contains(MATCH_STATS_MODEL_VERSION)).all()
+    pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+    return {
+        "status": "ok",
+        "model_version": MATCH_STATS_MODEL_VERSION,
+        "sample_size": len(pairs),
+        "calibration": CalibrationService.compute_calibration_curve(pairs)
+    }
+
+
+@app.get("/api/models/match-statistics/performance")
+def get_match_statistics_model_performance(db: Session = Depends(get_db)):
+    """
+    Returns aggregate probabilistic performance metrics for Match Statistics prediction engines.
+    """
+    from services.match_statistics_prediction_service import MATCH_STATS_MODEL_VERSION
+    evals = db.query(models.ModelEvaluation).filter(models.ModelEvaluation.model_version.contains(MATCH_STATS_MODEL_VERSION)).all()
+    pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+    return {
+        "status": "ok",
+        "model_version": MATCH_STATS_MODEL_VERSION,
+        "metrics": CalibrationService.calculate_aggregate_metrics(pairs)
+    }
+
+
+
 
 
 

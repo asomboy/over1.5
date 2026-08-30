@@ -25,8 +25,9 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
   const [data, setData] = useState(null);
   const [unifiedIntel, setUnifiedIntel] = useState(null);
   const [shotsData, setShotsData] = useState(null);
+  const [matchStatsData, setMatchStatsData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('match_intel'); // 'match_intel' | 'shots' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
+  const [activeTab, setActiveTab] = useState('match_intel'); // 'match_intel' | 'shots' | 'match_stats' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
 
   useEffect(() => {
     if (isOpen && fixtureId) {
@@ -38,10 +39,11 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
   const fetchFixtureDetails = async () => {
     setLoading(true);
     try {
-      const [res, intelRes, shotsRes] = await Promise.all([
+      const [res, intelRes, shotsRes, statsRes] = await Promise.all([
         apiRequest('get', `/api/fixtures/${fixtureId}/details`),
         apiRequest('get', `/api/fixtures/${fixtureId}/match-intelligence`),
-        apiRequest('get', `/api/fixtures/${fixtureId}/shots`)
+        apiRequest('get', `/api/fixtures/${fixtureId}/shots`),
+        apiRequest('get', `/api/fixtures/${fixtureId}/match-statistics`)
       ]);
       if (res.data?.status === 'ok') {
         setData(res.data);
@@ -51,6 +53,9 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
       }
       if (shotsRes?.data && !shotsRes.data.error) {
         setShotsData(shotsRes.data);
+      }
+      if (statsRes?.data && !statsRes.data.error) {
+        setMatchStatsData(statsRes.data);
       }
     } catch (err) {
       console.error('Error fetching fixture details:', err);
@@ -250,6 +255,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
           {[
             { id: 'match_intel', label: 'MATCH INTELLIGENCE' },
             { id: 'shots', label: 'SHOTS & SOT' },
+            { id: 'match_stats', label: 'MATCH STATS' },
             { id: 'overview', label: 'OVERVIEW' },
             { id: 'goals', label: 'GOALS' },
             { id: 'corners', label: 'CORNERS' },
@@ -1172,6 +1178,170 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
                     <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
                       <h4 className="text-sm font-black text-white">Shots Predictions Synthesizing</h4>
                       <p className="text-xs text-slate-400">Negative Binomial shot distributions computed with Bayesian shrinkage toward league baseline.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB: MATCH STATS (Phase 11 Engine) */}
+              {activeTab === 'match_stats' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {matchStatsData && matchStatsData.status === 'AVAILABLE' ? (
+                    <>
+                      {/* Possession & Attacking Pressure Row */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Possession Forecast */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Possession Forecast</span>
+                            <span className="text-[10px] font-black text-cyan-400 px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 uppercase">
+                              Conserved (100%)
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <div>
+                              <span className="text-xl font-black text-cyan-400">{matchStatsData.possession?.expected_home_possession || 50.0}%</span>
+                              <span className="text-[11px] text-slate-400 ml-1.5">{home?.name || 'Home'}</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xl font-black text-indigo-400">{matchStatsData.possession?.expected_away_possession || 50.0}%</span>
+                              <span className="text-[11px] text-slate-400 ml-1.5">{away?.name || 'Away'}</span>
+                            </div>
+                          </div>
+                          <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                            <div className="bg-cyan-500 h-full transition-all" style={{ width: `${matchStatsData.possession?.expected_home_possession || 50}%` }} />
+                            <div className="bg-indigo-500 h-full transition-all" style={{ width: `${matchStatsData.possession?.expected_away_possession || 50}%` }} />
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                            <span>Proj Range: {matchStatsData.possession?.projected_range_home?.[0]}% - {matchStatsData.possession?.projected_range_home?.[1]}%</span>
+                            <span>Diff: {matchStatsData.possession?.possession_differential > 0 ? `+${matchStatsData.possession?.possession_differential}%` : `${matchStatsData.possession?.possession_differential}%`}</span>
+                          </div>
+                        </div>
+
+                        {/* Attacking Pressure Index (MODEL_DERIVED) */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Attacking Pressure</span>
+                            <span className="text-[10px] font-black text-purple-400 px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 uppercase">
+                              MODEL_DERIVED
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <div>
+                              <span className="text-xl font-black text-white">{matchStatsData.attacking_pressure?.home_pressure_index || 50.0}</span>
+                              <span className="text-[11px] text-slate-400 ml-1.5">Home Index</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xl font-black text-white">{matchStatsData.attacking_pressure?.away_pressure_index || 50.0}</span>
+                              <span className="text-[11px] text-slate-400 ml-1.5">Away Index</span>
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-[11px] flex items-center justify-between">
+                            <span className="text-slate-400">Dominant Pressure Profile:</span>
+                            <strong className="text-purple-400 font-black">{matchStatsData.attacking_pressure?.dominant_side || 'BALANCED'}</strong>
+                          </div>
+                          <p className="text-[10px] text-slate-500">
+                            Derived from Shots (30%), SoT (25%), Corners (20%), Possession (15%), Box Shots (10%).
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Fouls & Disciplinary Model */}
+                      <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Fouls Expectations & Markets</span>
+                          <span className="text-[10px] text-slate-400">
+                            Total Expected: <strong className="text-amber-400">{matchStatsData.fouls?.expected_total_fouls?.toFixed(1) || '24.0'}</strong> ({matchStatsData.fouls?.expected_home_fouls?.toFixed(1)} vs {matchStatsData.fouls?.expected_away_fouls?.toFixed(1)})
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          {[
+                            { key: 'over_21_5', label: 'Over 21.5 Fouls', prob: matchStatsData.fouls?.probabilities?.over_21_5 },
+                            { key: 'over_23_5', label: 'Over 23.5 Fouls', prob: matchStatsData.fouls?.probabilities?.over_23_5, highlight: true },
+                            { key: 'over_25_5', label: 'Over 25.5 Fouls', prob: matchStatsData.fouls?.probabilities?.over_25_5 }
+                          ].map((m) => (
+                            <div key={m.key} className={`p-3 rounded-xl border ${m.highlight ? 'bg-amber-950/20 border-amber-500/40' : 'bg-slate-900 border-slate-800/80'} text-center space-y-1`}>
+                              <span className="text-[11px] font-bold text-slate-300 block">{m.label}</span>
+                              <span className="text-base font-black text-amber-400">{Math.round((m.prob || 0) * 100)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Offsides, Saves & Blocked Shots Breakdown Grid */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {/* Offsides */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Offsides</span>
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-xl font-black text-white">{matchStatsData.offsides?.expected_total_offsides?.toFixed(1) || '3.3'}</span>
+                            <span className="text-xs text-slate-400">{matchStatsData.offsides?.expected_home_offsides?.toFixed(1)} - {matchStatsData.offsides?.expected_away_offsides?.toFixed(1)}</span>
+                          </div>
+                          <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
+                            <span>Over 2.5 Offsides:</span>
+                            <strong className="text-cyan-400">{Math.round((matchStatsData.offsides?.probabilities?.over_2_5 || 0) * 100)}%</strong>
+                          </div>
+                        </div>
+
+                        {/* Saves */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Goalkeeper Saves</span>
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-xl font-black text-white">{matchStatsData.saves?.expected_total_saves?.toFixed(1) || '6.0'}</span>
+                            <span className="text-xs text-slate-400">{matchStatsData.saves?.expected_home_saves?.toFixed(1)} - {matchStatsData.saves?.expected_away_saves?.toFixed(1)}</span>
+                          </div>
+                          <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
+                            <span>Over 4.5 Saves:</span>
+                            <strong className="text-emerald-400">{Math.round((matchStatsData.saves?.probabilities?.over_4_5 || 0) * 100)}%</strong>
+                          </div>
+                        </div>
+
+                        {/* Blocked Shots */}
+                        <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Blocked Shots</span>
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-xl font-black text-white">{matchStatsData.blocked_shots?.expected_total_blocked_shots?.toFixed(1) || '5.5'}</span>
+                            <span className="text-xs text-slate-400">{matchStatsData.blocked_shots?.expected_home_blocked_shots?.toFixed(1)} - {matchStatsData.blocked_shots?.expected_away_blocked_shots?.toFixed(1)}</span>
+                          </div>
+                          <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
+                            <span>Over 3.5 Blocked:</span>
+                            <strong className="text-indigo-400">{Math.round((matchStatsData.blocked_shots?.probabilities?.over_3_5 || 0) * 100)}%</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Shot Location Breakdown (Inside vs Outside Box) */}
+                      <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Shot Location Decomposition</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-slate-300">Inside The Penalty Box</span>
+                              <span className="font-black text-cyan-400">{matchStatsData.shot_location?.expected_total_inside_box?.toFixed(1) || '15.0'} Shots (~62%)</span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                              <span>Over 13.5 Inside Box:</span>
+                              <strong className="text-white">{Math.round((matchStatsData.shot_location?.probabilities_inside_box?.over_13_5 || 0) * 100)}%</strong>
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-slate-300">Outside The Penalty Box</span>
+                              <span className="font-black text-indigo-400">{matchStatsData.shot_location?.expected_total_outside_box?.toFixed(1) || '9.5'} Shots (~38%)</span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                              <span>Over 8.5 Outside Box:</span>
+                              <strong className="text-white">{Math.round((matchStatsData.shot_location?.probabilities_outside_box?.over_8_5 || 0) * 100)}%</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800 text-center space-y-2">
+                      <h4 className="text-sm font-black text-white">Match Statistics Synthesizing</h4>
+                      <p className="text-xs text-slate-400">Match statistics models integrating possession conservation, fouls dispersion, offsides, saves, and location forecasts.</p>
                     </div>
                   )}
                 </div>

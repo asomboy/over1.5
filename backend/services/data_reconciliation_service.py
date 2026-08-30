@@ -94,6 +94,57 @@ class DataReconciliationService:
         return True, None
 
     @classmethod
+    def validate_fouls(cls, home_fouls: Optional[int], away_fouls: Optional[int]) -> Tuple[bool, Optional[str]]:
+        """Verifies fouls sanity: non-negative integers."""
+        if home_fouls is not None and home_fouls < 0:
+            return False, f"Invalid negative home_fouls: {home_fouls}"
+        if away_fouls is not None and away_fouls < 0:
+            return False, f"Invalid negative away_fouls: {away_fouls}"
+        return True, None
+
+    @classmethod
+    def validate_offsides(cls, home_offsides: Optional[int], away_offsides: Optional[int]) -> Tuple[bool, Optional[str]]:
+        """Verifies offsides sanity: non-negative integers."""
+        if home_offsides is not None and home_offsides < 0:
+            return False, f"Invalid negative home_offsides: {home_offsides}"
+        if away_offsides is not None and away_offsides < 0:
+            return False, f"Invalid negative away_offsides: {away_offsides}"
+        return True, None
+
+    @classmethod
+    def validate_saves(cls, home_saves: Optional[int], away_saves: Optional[int]) -> Tuple[bool, Optional[str]]:
+        """Verifies goalkeeper saves sanity: non-negative integers."""
+        if home_saves is not None and home_saves < 0:
+            return False, f"Invalid negative home_saves: {home_saves}"
+        if away_saves is not None and away_saves < 0:
+            return False, f"Invalid negative away_saves: {away_saves}"
+        return True, None
+
+    @classmethod
+    def validate_blocked_shots(cls, blocked: Optional[int], total_shots: Optional[int]) -> Tuple[bool, Optional[str]]:
+        """Verifies blocked shots do not exceed total shots."""
+        if blocked is not None and blocked < 0:
+            return False, f"Invalid negative blocked_shots: {blocked}"
+        if blocked is not None and total_shots is not None:
+            if blocked > total_shots:
+                return False, f"blocked_shots ({blocked}) exceeds total_shots ({total_shots})"
+        return True, None
+
+    @classmethod
+    def validate_shot_location(
+        cls, inside_box: Optional[int], outside_box: Optional[int], total_shots: Optional[int]
+    ) -> Tuple[bool, Optional[str]]:
+        """Verifies inside and outside box shot decomposition coherence."""
+        if inside_box is not None and inside_box < 0:
+            return False, f"Invalid negative inside_box_shots: {inside_box}"
+        if outside_box is not None and outside_box < 0:
+            return False, f"Invalid negative outside_box_shots: {outside_box}"
+        if inside_box is not None and outside_box is not None and total_shots is not None:
+            if (inside_box + outside_box) > total_shots:
+                return False, f"inside_box ({inside_box}) + outside_box ({outside_box}) exceeds total_shots ({total_shots})"
+        return True, None
+
+    @classmethod
     def validate_match_statistics_bounds(
         cls,
         home_shots: Optional[int] = None,
@@ -107,7 +158,19 @@ class DataReconciliationService:
         home_red: Optional[int] = None,
         away_red: Optional[int] = None,
         home_possession: Optional[float] = None,
-        away_possession: Optional[float] = None
+        away_possession: Optional[float] = None,
+        home_fouls: Optional[int] = None,
+        away_fouls: Optional[int] = None,
+        home_offsides: Optional[int] = None,
+        away_offsides: Optional[int] = None,
+        home_saves: Optional[int] = None,
+        away_saves: Optional[int] = None,
+        home_blocked: Optional[int] = None,
+        away_blocked: Optional[int] = None,
+        home_inside_box: Optional[int] = None,
+        away_inside_box: Optional[int] = None,
+        home_outside_box: Optional[int] = None,
+        away_outside_box: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Unified statistical bounds validator across all match statistics dimensions.
@@ -139,6 +202,27 @@ class DataReconciliationService:
 
         v_poss, err_poss = cls.validate_possession(home_possession, away_possession)
         if not v_poss: errors.append(err_poss)
+
+        v_fouls, err_fouls = cls.validate_fouls(home_fouls, away_fouls)
+        if not v_fouls: errors.append(err_fouls)
+
+        v_offs, err_offs = cls.validate_offsides(home_offsides, away_offsides)
+        if not v_offs: errors.append(err_offs)
+
+        v_saves, err_saves = cls.validate_saves(home_saves, away_saves)
+        if not v_saves: errors.append(err_saves)
+
+        v_h_block, err_h_block = cls.validate_blocked_shots(home_blocked, home_shots)
+        if not v_h_block: errors.append(err_h_block)
+
+        v_a_block, err_a_block = cls.validate_blocked_shots(away_blocked, away_shots)
+        if not v_a_block: errors.append(err_a_block)
+
+        v_h_loc, err_h_loc = cls.validate_shot_location(home_inside_box, home_outside_box, home_shots)
+        if not v_h_loc: errors.append(err_h_loc)
+
+        v_a_loc, err_a_loc = cls.validate_shot_location(away_inside_box, away_outside_box, away_shots)
+        if not v_a_loc: errors.append(err_a_loc)
 
         return {
             "valid": len(errors) == 0,

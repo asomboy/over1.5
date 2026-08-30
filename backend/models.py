@@ -182,6 +182,22 @@ class MatchStatistics(Base):
     away_possession: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     home_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_offsides: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_offsides: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_offsides: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_saves: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_saves: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_saves: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_blocked_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_blocked_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_blocked_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_inside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_inside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_inside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_outside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_outside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_outside_box_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -789,6 +805,61 @@ class ShotPredictionSnapshot(Base):
     data_quality: Mapped[float] = mapped_column(Float, default=0.50)
     diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class MatchStatisticsPredictionSnapshot(Base):
+    """
+    Immutable Pre-Match and In-Play Prediction Snapshot storage for Match Statistics models:
+    Possession, Fouls, Offsides, Saves, Blocked Shots, and Shot Locations (Inside/Outside Box).
+    """
+    __tablename__ = "match_statistics_prediction_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String, default="v1_match_stats_nb", index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    expected_home_possession: Mapped[float] = mapped_column(Float, default=50.0)
+    expected_away_possession: Mapped[float] = mapped_column(Float, default=50.0)
+
+    expected_home_fouls: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_fouls: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_fouls: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_offsides: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_offsides: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_offsides: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_saves: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_saves: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_saves: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_blocked_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_blocked_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_blocked_shots: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_inside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_inside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_inside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+
+    expected_home_outside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_away_outside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_total_outside_box_shots: Mapped[float] = mapped_column(Float, nullable=False)
+
+    fouls_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    offsides_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    saves_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    blocked_shots_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    shot_location_probabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    confidence: Mapped[float] = mapped_column(Float, default=0.50)
+    data_quality: Mapped[float] = mapped_column(Float, default=0.50)
+    diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
 
 
 
