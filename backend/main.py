@@ -1737,23 +1737,31 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
     now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
 
     try:
-        fixtures = db.query(models.Fixture).options(
+        fixtures = db.query(models.Fixture).join(models.League).options(
             joinedload(models.Fixture.league),
             joinedload(models.Fixture.home_team),
             joinedload(models.Fixture.away_team)
         ).filter(
             models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-            models.Fixture.match_date >= now_cutoff
+            models.Fixture.match_date >= now_cutoff,
+            ~models.League.name.ilike("%ncaa%"),
+            ~models.League.name.ilike("%college%"),
+            ~models.League.name.ilike("%high school%"),
+            ~models.League.name.ilike("%varsity%")
         ).order_by(models.Fixture.match_date.asc()).all()
 
         if not fixtures:
             # Fallback query: fetch all non-finished fixtures regardless of match_date cutoff
-            fixtures = db.query(models.Fixture).options(
+            fixtures = db.query(models.Fixture).join(models.League).options(
                 joinedload(models.Fixture.league),
                 joinedload(models.Fixture.home_team),
                 joinedload(models.Fixture.away_team)
             ).filter(
-                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"])
+                models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                ~models.League.name.ilike("%ncaa%"),
+                ~models.League.name.ilike("%college%"),
+                ~models.League.name.ilike("%high school%"),
+                ~models.League.name.ilike("%varsity%")
             ).order_by(models.Fixture.match_date.asc()).all()
     except Exception as query_err:
         logger.error(f"Error querying upcoming fixtures: {query_err}")

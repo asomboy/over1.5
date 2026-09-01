@@ -610,8 +610,20 @@ class DataIngestionService:
                         else:
                             league_name = api_league_name or default_name
                         
+                        # Filter out school, collegiate, youth, and non-senior soccer competitions
+                        comp_ident = f"{league_name} {season_slug} {notes} {alt_note or ''}".lower()
+                        if any(k in comp_ident for k in ["ncaa", "college", "high school", "university soccer", "varsity", "u-17", "u-18", "u-19", "u-20", "u-21", "ncaam", "ncaaw"]):
+                            continue
+                        
+                        import re
+                        if code == "all":
+                            clean_slug = re.sub(r'[^a-zA-Z0-9]+', '-', league_name.strip().lower()).strip('-')
+                            league_ext_id = f"ESPN-all-{clean_slug}"
+                        else:
+                            league_ext_id = f"ESPN-{code}-{season_slug or '2025'}"
+
                         league_obj = cls.ingest_leagues(db, [{
-                            "external_id": f"ESPN-{code}-{season_slug or '2025'}",
+                            "external_id": league_ext_id,
                             "name": league_name,
                             "country": country,
                             "season": "2025/2026"
@@ -624,9 +636,26 @@ class DataIngestionService:
                         home_data = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
                         away_data = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
 
+                        def _clean_team_name(raw_name: str) -> str:
+                            if not raw_name:
+                                return "Team"
+                            clean = raw_name.strip()
+                            if clean.lower() in ["colo-colo", "colo colo"]:
+                                return "Colo-Colo"
+                            parts = clean.split()
+                            # Check if second half is duplicate uppercase string e.g. "UNC Greensboro UNC GREENSBORO SPARTANS"
+                            if len(parts) >= 4 and f"{parts[0]} {parts[1]}".lower() == f"{parts[2]} {parts[3]}".lower():
+                                parts = parts[2:]
+                            elif len(parts) >= 3 and parts[0].lower() == parts[1].lower() and parts[1].isupper():
+                                parts.pop(0)
+                            return " ".join(parts)
+
+                        h_raw_name = home_data.get("team", {}).get("displayName", "Home Team")
+                        a_raw_name = away_data.get("team", {}).get("displayName", "Away Team")
+
                         h_team = cls.ingest_teams(db, [{
                             "external_id": f"ESPN-TEAM-{home_data.get('id')}",
-                            "name": home_data.get("team", {}).get("displayName", "Home Team"),
+                            "name": _clean_team_name(h_raw_name),
                             "short_code": home_data.get("team", {}).get("abbreviation", "HOM"),
                             "logo_url": home_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
@@ -634,7 +663,7 @@ class DataIngestionService:
 
                         a_team = cls.ingest_teams(db, [{
                             "external_id": f"ESPN-TEAM-{away_data.get('id')}",
-                            "name": away_data.get("team", {}).get("displayName", "Away Team"),
+                            "name": _clean_team_name(a_raw_name),
                             "short_code": away_data.get("team", {}).get("abbreviation", "AWY"),
                             "logo_url": away_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
