@@ -597,18 +597,6 @@ class DataIngestionService:
                         resolved_country = canon_ident.country_name
                         league_ext_id = canon_ident.provider_competition_id
                         
-                        # Filter out school, collegiate, youth, and non-senior soccer competitions
-                        comp_ident = f"{league_name} {season_slug} {notes} {alt_note or ''}".lower()
-                        if any(k in comp_ident for k in ["ncaa", "college", "high school", "university soccer", "varsity", "u-17", "u-18", "u-19", "u-20", "u-21", "ncaam", "ncaaw"]):
-                            continue
-
-                        league_obj = cls.ingest_leagues(db, [{
-                            "external_id": league_ext_id,
-                            "name": league_name,
-                            "country": resolved_country,
-                            "season": "2025/2026"
-                        }], commit=False)[0]
-
                         competitors = comp_info.get("competitors", [])
                         if len(competitors) < 2:
                             continue
@@ -632,10 +620,29 @@ class DataIngestionService:
 
                         h_raw_name = home_data.get("team", {}).get("displayName", "Home Team")
                         a_raw_name = away_data.get("team", {}).get("displayName", "Away Team")
+                        h_clean_name = _clean_team_name(h_raw_name)
+                        a_clean_name = _clean_team_name(a_raw_name)
+
+                        # Filter out school, collegiate, youth, and non-senior soccer competitions
+                        if CanonicalCompetitionService.is_school_or_youth_competition(
+                            league_name=league_name,
+                            provider_code=code,
+                            home_team_name=h_clean_name,
+                            away_team_name=a_clean_name,
+                            notes=f"{season_slug} {notes} {alt_note or ''}"
+                        ):
+                            continue
+
+                        league_obj = cls.ingest_leagues(db, [{
+                            "external_id": league_ext_id,
+                            "name": league_name,
+                            "country": resolved_country,
+                            "season": "2025/2026"
+                        }], commit=False)[0]
 
                         h_team = cls.ingest_teams(db, [{
                             "external_id": f"ESPN-TEAM-{home_data.get('id')}",
-                            "name": _clean_team_name(h_raw_name),
+                            "name": h_clean_name,
                             "short_code": home_data.get("team", {}).get("abbreviation", "HOM"),
                             "logo_url": home_data.get("team", {}).get("logo"),
                             "league_id": league_obj.id
@@ -1012,6 +1019,31 @@ class DataIngestionService:
             "teams_ingested": len(teams),
             "fixtures_ingested": len(fixtures)
         }
+
+    @classmethod
+    def purge_school_and_youth_competitions(cls, db: Session) -> int:
+        """
+        Scans SQLite database and purges any fixtures, predictions, and associated records
+        belonging to school, college, collegiate, high school, youth, or U17-U23 competitions.
+        """
+        all_fixtures = db.query(Fixture).join(League).join(Team, Fixture.home_team_id == Team.id).all()
+        purged_count = 0
+        for fix in all_fixtures:
+            h_name = fix.home_team.name if fix.home_team else ""
+            a_name = fix.away_team.name if fix.away_team else ""
+            l_name = fix.league.name if fix.league else ""
+            if CanonicalCompetitionService.is_school_or_youth_competition(
+                league_name=l_name,
+                home_team_name=h_name,
+                away_team_name=a_name
+            ):
+                db.delete(fix)
+                purged_count += 1
+
+        if purged_count > 0:
+            db.commit()
+            logger.info(f"Purged {purged_count} school/youth/collegiate fixtures from SQLite.")
+        return purged_count
 
     @classmethod
     def auto_resolve_expired_live_fixtures(cls, db: Session) -> int:

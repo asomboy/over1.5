@@ -145,3 +145,71 @@ class TestCanonicalCompetition(unittest.TestCase):
         self.assertEqual(data.get("status"), "ok")
         self.assertEqual(data.get("league_name"), "German Bundesliga")
         self.assertEqual(data.get("country"), "Germany")
+
+    def test_school_and_youth_competition_filter(self):
+        """Test accurate detection and exclusion of school, collegiate, and youth competitions."""
+        # Positive cases (should be flagged as True)
+        self.assertTrue(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="Scottish Cup Qualifying",
+            home_team_name="ST CADOC'S",
+            away_team_name="Glasgow University"
+        ))
+        self.assertTrue(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="EFL Trophy, Northern Group C",
+            home_team_name="Northampton Town",
+            away_team_name="Brighton & Hove Albion U21"
+        ))
+        self.assertTrue(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="NCAA Men's Soccer",
+            home_team_name="Ohio State Buckeyes",
+            away_team_name="Penn State Nittany Lions"
+        ))
+        self.assertTrue(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="US High School Championship",
+            home_team_name="Oak Prep",
+            away_team_name="St. Jude High School"
+        ))
+
+        # Negative cases (professional clubs - should NOT be flagged)
+        self.assertFalse(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="English Premier League",
+            home_team_name="Arsenal",
+            away_team_name="Chelsea"
+        ))
+        self.assertFalse(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="Chilean Primera",
+            home_team_name="Universidad Catolica",
+            away_team_name="Colo-Colo"
+        ))
+        self.assertFalse(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name="Peruvian Primera",
+            home_team_name="Universitario de Deportes",
+            away_team_name="Alianza Lima"
+        ))
+
+    def test_purge_school_and_youth_competitions(self):
+        """Test database purging of school/youth fixtures."""
+        league = models.League(name="Cup Qualifying", country="Scotland")
+        self.db.add(league)
+        self.db.flush()
+
+        t1 = models.Team(name="St Cadocs", league_id=league.id)
+        t2 = models.Team(name="Glasgow University", league_id=league.id)
+        self.db.add_all([t1, t2])
+        self.db.flush()
+
+        fix = models.Fixture(
+            league_id=league.id,
+            home_team_id=t1.id,
+            away_team_id=t2.id,
+            match_date=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+            status="SCHEDULED"
+        )
+        self.db.add(fix)
+        self.db.commit()
+
+        self.assertEqual(self.db.query(models.Fixture).count(), 1)
+        purged = DataIngestionService.purge_school_and_youth_competitions(self.db)
+        self.assertEqual(purged, 1)
+        self.assertEqual(self.db.query(models.Fixture).count(), 0)
+

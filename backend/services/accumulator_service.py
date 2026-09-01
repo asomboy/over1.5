@@ -11,8 +11,10 @@ if BACKEND_DIR not in sys.path:
 
 try:
     from models import Fixture, Prediction, League, Team
+    from services.canonical_competition_service import CanonicalCompetitionService
 except ImportError:
     from ..models import Fixture, Prediction, League, Team
+    from .canonical_competition_service import CanonicalCompetitionService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,13 @@ class AccumulatorGeneratorService:
         # Parse valid candidate fixtures with predictions
         candidates = []
         for fix in fixtures:
+            if CanonicalCompetitionService.is_school_or_youth_competition(
+                league_name=fix.league.name if fix.league else "",
+                home_team_name=fix.home_team.name if fix.home_team else "",
+                away_team_name=fix.away_team.name if fix.away_team else ""
+            ):
+                continue
+
             pred = fix.predictions[0] if fix.predictions else None
             if not pred:
                 continue

@@ -335,6 +335,23 @@ class CanonicalCompetitionService:
             is_international=True
         )
 
+    SCHOOL_YOUTH_COMPETITION_KEYWORDS = [
+        "ncaa", "ncaam", "ncaaw", "college", "collegiate", "high school", "middle school",
+        "prep school", "varsity", "bucs", "isssa", "inter-school", "boys soccer", "girls soccer",
+        "u-17", "u-18", "u-19", "u-20", "u-21", "u-23", "u17", "u18", "u19", "u20", "u21", "u23",
+        "under-17", "under-18", "under-19", "under-20", "under-21", "under-23",
+        "youth league", "sub-17", "sub-18", "sub-19", "sub-20", "sub-21", "sub-23",
+        "sub 17", "sub 18", "sub 19", "sub 20", "sub 21", "sub 23", "juvenil", "student league"
+    ]
+
+    PROFESSIONAL_CLUB_EXEMPTIONS = [
+        "universidad catolica", "universidad de chile", "universidad de concepcion",
+        "universitario de deportes", "universitario de vinto", "tecnico universitario",
+        "universidad san martin", "universidad cesar vallejo", "pumas unam",
+        "academia puerto cabello", "academico de viseu", "hamilton academical",
+        "universitario"
+    ]
+
     @classmethod
     def get_country_for_league_name(cls, league_name: Optional[str]) -> Tuple[str, str]:
         """
@@ -344,3 +361,47 @@ class CanonicalCompetitionService:
             return ("International", "INT")
         ident = cls.resolve_competition(league_name=league_name)
         return (ident.country_name, ident.country_code)
+
+    @classmethod
+    def is_school_or_youth_competition(
+        cls,
+        league_name: Optional[str] = "",
+        provider_code: Optional[str] = "",
+        home_team_name: Optional[str] = "",
+        away_team_name: Optional[str] = "",
+        notes: Optional[str] = ""
+    ) -> bool:
+        """
+        Authoritative validator checking if a competition, team matchup, or feed
+        belongs to school, college, collegiate, high school, youth, or U17-U23 categories.
+        """
+        combined_comp = f"{league_name or ''} {provider_code or ''} {notes or ''}".lower()
+        for kw in cls.SCHOOL_YOUTH_COMPETITION_KEYWORDS:
+            if kw in combined_comp:
+                return True
+
+        for team in [home_team_name, away_team_name]:
+            if not team:
+                continue
+            t_low = team.lower().strip()
+            
+            # Allow established senior professional clubs
+            if any(exc in t_low for exc in cls.PROFESSIONAL_CLUB_EXEMPTIONS):
+                continue
+            
+            # Check for U17 - U23 youth academy squad indicators
+            if re.search(r'\b(u|under|sub)[ -]?(17|18|19|20|21|23)\b', t_low, re.IGNORECASE):
+                return True
+            
+            # Check for school, college, university, prep, or state varsity mascot keywords
+            for kw in [
+                "university", "college", "high school", "prep school", "varsity",
+                "state buckeyes", "state bulldogs", "state spartans", "state seminoles",
+                "state wildcats", "state nittany lions", "state bears", "state cyclones",
+                "state owls", "state hornets", "state rams", "state gamecocks",
+                "state panthers", "state bison", "state redbirds", "state mountaineers"
+            ]:
+                if kw in t_low:
+                    return True
+
+        return False

@@ -1399,6 +1399,12 @@ def get_upcoming_match_intelligence(limit: int = 50, db: Session = Depends(get_d
 
     items = []
     for f in fixtures:
+        if CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name=f.league.name if f.league else "",
+            home_team_name=f.home_team.name if f.home_team else "",
+            away_team_name=f.away_team.name if f.away_team else ""
+        ):
+            continue
         try:
             intel = UnifiedMatchIntelligenceService.get_unified_match_intelligence(db, f.id)
             items.append({
@@ -1807,6 +1813,13 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
 
     result_data = []
     for fix in fixtures:
+        if CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name=fix.league.name if fix.league else "",
+            home_team_name=fix.home_team.name if fix.home_team else "",
+            away_team_name=fix.away_team.name if fix.away_team else ""
+        ):
+            continue
+
         pred = all_preds.get(fix.id)
         top_scorelines = []
         if pred and pred.top_scorelines_json:
@@ -1973,6 +1986,13 @@ def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_
         result_data = []
 
         for fix in fixtures:
+            if CanonicalCompetitionService.is_school_or_youth_competition(
+                league_name=fix.league.name if fix.league else "",
+                home_team_name=fix.home_team.name if fix.home_team else "",
+                away_team_name=fix.away_team.name if fix.away_team else ""
+            ):
+                continue
+
             pred = all_preds.get(fix.id)
 
             top_scorelines = []

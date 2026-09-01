@@ -308,10 +308,48 @@ export default function App() {
     return st === 'LIVE' || st === 'IN_PROGRESS' || st === 'HALFTIME' || st === 'FIRST_HALF' || st === 'SECOND_HALF';
   };
 
+  // Helper to exclude school, collegiate, high school, youth, or U17-U23 matches
+  const isSchoolOrYouthMatch = (fix) => {
+    if (!fix) return false;
+    const lName = (fix.competition?.name || fix.league?.name || '').toLowerCase();
+    const hName = (fix.home_team?.name || '').toLowerCase();
+    const aName = (fix.away_team?.name || '').toLowerCase();
+    const combined = `${lName} ${hName} vs ${aName}`;
+
+    // Professional club exemptions (established senior clubs)
+    const proExemptions = [
+      'universidad catolica', 'universidad de chile', 'universidad de concepcion',
+      'universitario de deportes', 'universitario de vinto', 'tecnico universitario',
+      'universidad san martin', 'universidad cesar vallejo', 'pumas unam',
+      'academia puerto cabello', 'academico de viseu', 'hamilton academical'
+    ];
+    if (proExemptions.some(exc => combined.includes(exc))) {
+      return false;
+    }
+
+    const schoolKeywords = [
+      'ncaa', 'high school', 'varsity', 'prep school', 'isssa', 'middle school',
+      'boys soccer', 'girls soccer', 'bucs', 'university', 'college',
+      'state buckeyes', 'state bulldogs', 'state spartans', 'state seminoles',
+      'state wildcats', 'state nittany lions', 'state bears', 'state cyclones',
+      'state owls', 'state hornets', 'state rams', 'state gamecocks',
+      'state panthers', 'state bison', 'state redbirds', 'state mountaineers'
+    ];
+
+    if (schoolKeywords.some(kw => combined.includes(kw))) {
+      return true;
+    }
+
+    if (/\b(u|under|sub)[ -]?(17|18|19|20|21|23)\b/i.test(combined)) {
+      return true;
+    }
+
+    return false;
+  };
 
   // Unique list of leagues for filter dropdown (combined across upcoming and finished)
   const leaguesList = useMemo(() => {
-    const allMatches = [...fixtures, ...finishedFixtures];
+    const allMatches = [...fixtures, ...finishedFixtures].filter(f => !isSchoolOrYouthMatch(f));
     const leagues = new Set(allMatches.map(f => f.league?.name).filter(Boolean));
     return Array.from(leagues).sort();
   }, [fixtures, finishedFixtures]);
@@ -462,7 +500,7 @@ export default function App() {
   const top5Over15Picks = useMemo(() => {
     if (!fixtures.length) return [];
     
-    let dayMatches = [...fixtures];
+    let dayMatches = fixtures.filter(f => !isSchoolOrYouthMatch(f));
     if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
       dayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
     }
@@ -477,7 +515,7 @@ export default function App() {
   const top5FinishedPicks = useMemo(() => {
     if (!finishedFixtures.length) return [];
     
-    let dayMatches = [...finishedFixtures];
+    let dayMatches = finishedFixtures.filter(f => !isSchoolOrYouthMatch(f));
     if (selectedPickDay && selectedPickDay !== 'ALL_DAYS') {
       dayMatches = dayMatches.filter(f => getGMT1DayKey(f.match_date) === selectedPickDay);
     }
@@ -491,6 +529,7 @@ export default function App() {
   // Filter & Sort Logic for Main Fixtures Table (Upcoming / Live)
   const filteredFixtures = useMemo(() => {
     let result = fixtures.filter(fix => {
+      if (isSchoolOrYouthMatch(fix)) return false;
       const homeName = fix.home_team?.name?.toLowerCase() || '';
       const awayName = fix.away_team?.name?.toLowerCase() || '';
       const leagueName = fix.league?.name?.toLowerCase() || '';
@@ -522,6 +561,7 @@ export default function App() {
   // Filtered Finished Fixtures for Results Tab (Strict Day & League Filtering)
   const filteredFinishedFixtures = useMemo(() => {
     let result = finishedFixtures.filter(fix => {
+      if (isSchoolOrYouthMatch(fix)) return false;
       const homeName = fix.home_team?.name?.toLowerCase() || '';
       const awayName = fix.away_team?.name?.toLowerCase() || '';
       const leagueName = fix.league?.name?.toLowerCase() || '';
