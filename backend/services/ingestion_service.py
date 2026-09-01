@@ -502,6 +502,7 @@ class DataIngestionService:
             ).delete(synchronize_session=False)
             db.commit()
         except Exception as e:
+            db.rollback()
             logger.warning(f"Error purging synthetic placeholders: {e}")
 
         # Primary: Real-time Live Ingestion from ESPN Soccer API (Global & Top Leagues from present date)
@@ -713,6 +714,7 @@ class DataIngestionService:
                             "live_clock": live_clock if status == "LIVE" else None,
                         })
                     except Exception as ev_ex:
+                        db.rollback()
                         logger.warning(f"Error processing ESPN event {ev.get('id')}: {str(ev_ex)}")
 
         if all_espn_payloads:
