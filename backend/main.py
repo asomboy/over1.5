@@ -37,6 +37,7 @@ try:
     from services.telegram_service import TelegramNotificationService
     from services.weather_service import WeatherService
     from services.whatsapp_service import WhatsAppNotificationService
+    from services.canonical_competition_service import CanonicalCompetitionService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY
@@ -57,6 +58,7 @@ except ImportError:
     from .services.telegram_service import TelegramNotificationService
     from .services.weather_service import WeatherService
     from .services.whatsapp_service import WhatsAppNotificationService
+    from .services.canonical_competition_service import CanonicalCompetitionService
 
 logger = logging.getLogger(__name__)
 
@@ -814,10 +816,20 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
             "best_signal": {"market": "Over 1.5 Goals", "probability": o15, "signal_score": 82, "label": "Strong" if o15 >= 0.78 else "Moderate"}
         }
 
+    c_name, c_code = CanonicalCompetitionService.get_country_for_league_name(fixture.league.name if fixture.league else None)
     return {
         "status": "ok",
         "fixture_id": fixture_id,
         "league_name": fixture.league.name if fixture.league else "League",
+        "country": fixture.league.country if (fixture.league and fixture.league.country) else c_name,
+        "country_code": c_code,
+        "competition": {
+            "id": fixture.league.id if fixture.league else None,
+            "name": fixture.league.name if fixture.league else "League",
+            "country": fixture.league.country if (fixture.league and fixture.league.country) else c_name,
+            "country_code": c_code,
+            "season": fixture.league.season if fixture.league else ""
+        },
         "home_team": {
             "name": fixture.home_team.name if fixture.home_team else "Home Team",
             "elo_rating": round(home_elo.rating, 1) if home_elo else 1500.0,
@@ -1860,10 +1872,17 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
                 "market_odds": implied_market_odds,
                 "value_edge_pct": value_edge_pct
             },
+            "competition": {
+                "id": fix.league.id if fix.league else None,
+                "name": fix.league.name if fix.league else "Unknown Competition",
+                "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
+                "country_code": CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[1],
+                "season": fix.league.season if fix.league else ""
+            },
             "league": {
                 "id": fix.league.id if fix.league else None,
                 "name": fix.league.name if fix.league else "Unknown League",
-                "country": fix.league.country if fix.league else "",
+                "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
                 "season": fix.league.season if fix.league else ""
             },
             "home_team": {
@@ -2004,10 +2023,17 @@ def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_
                 "over_1_5_hit": (total_actual_goals >= 2) if total_actual_goals is not None else None,
                 "over_2_5_hit": (total_actual_goals >= 3) if total_actual_goals is not None else None,
                 "live_clock": "FT",
+                "competition": {
+                    "id": fix.league.id if fix.league else None,
+                    "name": fix.league.name if fix.league else "Unknown Competition",
+                    "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
+                    "country_code": CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[1],
+                    "season": fix.league.season if fix.league else ""
+                },
                 "league": {
                     "id": fix.league.id if fix.league else None,
                     "name": fix.league.name if fix.league else "Unknown League",
-                    "country": fix.league.country if fix.league else "",
+                    "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
                     "season": fix.league.season if fix.league else ""
                 },
                 "home_team": {

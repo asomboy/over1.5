@@ -143,7 +143,11 @@ class TestIngestionService(unittest.TestCase):
         self.assertEqual(stat_a.matches_analyzed_home, 1)
         self.assertEqual(stat_a.avg_home_goals_scored, 2.0)
 
-    def test_api_ingest_sync_endpoint(self):
+    from unittest.mock import patch, AsyncMock
+
+    @patch("services.ingestion_service.DataIngestionService.fetch_and_ingest_from_api", new_callable=AsyncMock)
+    @patch("services.prediction_service.PoissonPredictionEngine.predict_all_upcoming_fixtures")
+    def test_api_ingest_sync_endpoint(self, mock_predict, mock_ingest):
         response = self.client.post("/api/ingest/sync")
         self.assertEqual(response.status_code, 200)
         data = response.json()

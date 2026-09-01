@@ -21,21 +21,31 @@ import {
   AlertTriangle
 } from 'lucide-react';
 
-export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiveModal, apiRequest, darkMode }) {
+export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiveModal, apiRequest, darkMode, initialTab = 'decision_intel' }) {
   const [data, setData] = useState(null);
   const [unifiedIntel, setUnifiedIntel] = useState(null);
   const [shotsData, setShotsData] = useState(null);
   const [matchStatsData, setMatchStatsData] = useState(null);
   const [decisionData, setDecisionData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('decision_intel'); // 'decision_intel' | 'match_intel' | 'shots' | 'match_stats' | 'overview' | 'goals' | 'corners' | 'cards' | 'result' | 'team_goals' | 'halves'
+  const [activeTab, setActiveTab] = useState(initialTab || 'decision_intel');
 
   useEffect(() => {
     if (isOpen && fixtureId) {
       fetchFixtureDetails();
-      setActiveTab('decision_intel');
+      setActiveTab(initialTab || 'decision_intel');
     }
-  }, [isOpen, fixtureId]);
+  }, [isOpen, fixtureId, initialTab]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   const fetchFixtureDetails = async () => {
     setLoading(true);
@@ -165,7 +175,14 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
+    <div 
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fadeIn"
+    >
       <div className={`w-full max-w-2xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors ${
         darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
@@ -259,6 +276,7 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
         <div className="p-2 sm:p-3 border-b border-slate-800/80 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
             { id: 'decision_intel', label: 'DECISION ENGINE' },
+            { id: 'h2h', label: 'H2H HISTORY' },
             { id: 'match_intel', label: 'MATCH INTELLIGENCE' },
             { id: 'shots', label: 'SHOTS & SOT' },
             { id: 'match_stats', label: 'MATCH STATS' },
@@ -483,6 +501,127 @@ export default function MatchDetailModal({ fixtureId, isOpen, onClose, onOpenLiv
                         </div>
                       ))}
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 1: HEAD-TO-HEAD HISTORY & MATCHUP INSIGHTS */}
+              {activeTab === 'h2h' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* H2H Summary Header Banner */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-950/40 via-slate-900 to-cyan-950/40 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400">Head-to-Head Record</span>
+                        <h3 className="text-base sm:text-lg font-black text-white">
+                          {home?.name || 'Home'} vs {away?.name || 'Away'}
+                        </h3>
+                      </div>
+                      <span className="text-xs font-bold text-slate-400">
+                        {data?.h2h_history?.length || 0} Recorded Matches
+                      </span>
+                    </div>
+
+                    {/* H2H Metrics Strip */}
+                    {(() => {
+                      const h2hList = data?.h2h_history || [];
+                      const totalMatches = h2hList.length;
+                      if (totalMatches === 0) return null;
+
+                      let hWins = 0, draws = 0, aWins = 0, totalGoals = 0, over15Count = 0, over25Count = 0;
+                      h2hList.forEach((m) => {
+                        const tg = m.total_goals ?? (m.home_score != null && m.away_score != null ? m.home_score + m.away_score : null);
+                        if (tg != null) {
+                          totalGoals += tg;
+                          if (tg >= 2) over15Count++;
+                          if (tg >= 3) over25Count++;
+                        }
+                        if (m.home_score != null && m.away_score != null) {
+                          if (m.home_score > m.away_score) hWins++;
+                          else if (m.home_score === m.away_score) draws++;
+                          else aWins++;
+                        }
+                      });
+
+                      const avgGoals = totalMatches > 0 ? (totalGoals / totalMatches).toFixed(1) : '—';
+                      const o15Pct = totalMatches > 0 ? Math.round((over15Count / totalMatches) * 100) : 0;
+                      const o25Pct = totalMatches > 0 ? Math.round((over25Count / totalMatches) * 100) : 0;
+
+                      return (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800/80">
+                          <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-center">
+                            <span className="text-[10px] font-bold text-slate-400 block uppercase">H2H Record (W-D-L)</span>
+                            <span className="text-sm font-black text-white font-mono">{hWins} - {draws} - {aWins}</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-center">
+                            <span className="text-[10px] font-bold text-slate-400 block uppercase">Avg H2H Goals</span>
+                            <span className="text-sm font-black text-cyan-400 font-mono">{avgGoals} GPG</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-center">
+                            <span className="text-[10px] font-bold text-emerald-400 block uppercase">H2H Over 1.5 Hit</span>
+                            <span className="text-sm font-black text-emerald-400 font-mono">{o15Pct}%</span>
+                          </div>
+                          <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-center">
+                            <span className="text-[10px] font-bold text-slate-400 block uppercase">H2H Over 2.5 Hit</span>
+                            <span className="text-sm font-black text-indigo-400 font-mono">{o25Pct}%</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Past Head-to-Head Match Records List */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-white block">
+                      Past Head-to-Head Encounters
+                    </span>
+
+                    {data?.h2h_history && data.h2h_history.length > 0 ? (
+                      <div className="space-y-2">
+                        {data.h2h_history.map((h2h, idx) => {
+                          const dateStr = h2h.match_date ? (typeof h2h.match_date === 'string' ? h2h.match_date.slice(0, 10) : new Date(h2h.match_date).toISOString().slice(0, 10)) : 'Recent';
+                          const tg = h2h.total_goals ?? (h2h.home_score != null && h2h.away_score != null ? h2h.home_score + h2h.away_score : '—');
+                          const isOver15 = typeof tg === 'number' ? tg >= 2 : false;
+
+                          return (
+                            <div key={idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center space-x-3">
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                                  {dateStr}
+                                </span>
+                                <div className="space-y-0.5">
+                                  <span className="text-xs font-bold text-slate-100 block">
+                                    {h2h.home_team_name || home?.name} vs {h2h.away_team_name || away?.name}
+                                  </span>
+                                  {h2h.league_name && (
+                                    <span className="text-[10px] text-slate-500 block">{h2h.league_name}</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 font-mono font-black text-xs text-white">
+                                  {h2h.score || `${h2h.home_score ?? 0} - ${h2h.away_score ?? 0}`}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
+                                  isOver15 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700'
+                                }`}>
+                                  {tg} Goals
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center space-y-2">
+                        <Shield className="w-8 h-8 text-slate-600 mx-auto" />
+                        <h4 className="text-xs font-bold text-slate-400">Insufficient Verified Historical H2H Data</h4>
+                        <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                          These two teams have no recorded head-to-head encounters in our historical database for this competition period. Predictions rely on independent team performance, attack/defense ratings, and league distribution priors.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

@@ -20,6 +20,7 @@ try:
     )
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
     from services.elo_service import EloRatingService, TeamFormService
+    from services.canonical_competition_service import CanonicalCompetitionService
 except ImportError:
     from ..models import (
         League, Team, Fixture, HistoricalResult, MatchStatistics, Prediction,
@@ -28,6 +29,7 @@ except ImportError:
     )
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
     from .elo_service import EloRatingService, TeamFormService
+    from .canonical_competition_service import CanonicalCompetitionService
 
 logger = logging.getLogger(__name__)
 
@@ -583,50 +585,27 @@ class DataIngestionService:
                         alt_note = comp_info.get("altGameNote")
                         season_slug = ev.get("season", {}).get("slug", "")
                         
-                        if code == "all":
-                            if alt_note:
-                                league_name = alt_note
-                            elif notes:
-                                league_name = notes
-                            elif "scottish" in season_slug:
-                                league_name = "Scottish Premiership"
-                            elif "premier-league" in season_slug or "england-premier" in season_slug:
-                                league_name = "English Premier League"
-                            elif "championship" in season_slug:
-                                league_name = "English Championship"
-                            elif "laliga" in season_slug:
-                                league_name = "Spanish LALIGA"
-                            elif "serie-a" in season_slug:
-                                league_name = "Italian Serie A"
-                            elif "bundesliga" in season_slug:
-                                league_name = "German Bundesliga"
-                            elif "ligue-1" in season_slug:
-                                league_name = "French Ligue 1"
-                            elif "major-league-soccer" in season_slug or "mls" in season_slug:
-                                league_name = "Major League Soccer"
-                            elif api_league_name:
-                                league_name = api_league_name
-                            else:
-                                league_name = "Global Cup Competitions & Friendlies"
-                        else:
-                            league_name = api_league_name or default_name
+                        # Resolve canonical competition identity and country
+                        canon_ident = CanonicalCompetitionService.resolve_competition(
+                            provider_code=code,
+                            league_name=api_league_name or default_name,
+                            season_slug=season_slug,
+                            alt_note=alt_note,
+                            notes=notes
+                        )
+                        league_name = canon_ident.competition_name
+                        resolved_country = canon_ident.country_name
+                        league_ext_id = canon_ident.provider_competition_id
                         
                         # Filter out school, collegiate, youth, and non-senior soccer competitions
                         comp_ident = f"{league_name} {season_slug} {notes} {alt_note or ''}".lower()
                         if any(k in comp_ident for k in ["ncaa", "college", "high school", "university soccer", "varsity", "u-17", "u-18", "u-19", "u-20", "u-21", "ncaam", "ncaaw"]):
                             continue
-                        
-                        import re
-                        if code == "all":
-                            clean_slug = re.sub(r'[^a-zA-Z0-9]+', '-', league_name.strip().lower()).strip('-')
-                            league_ext_id = f"ESPN-all-{clean_slug}"
-                        else:
-                            league_ext_id = f"ESPN-{code}-{season_slug or '2025'}"
 
                         league_obj = cls.ingest_leagues(db, [{
                             "external_id": league_ext_id,
                             "name": league_name,
-                            "country": country,
+                            "country": resolved_country,
                             "season": "2025/2026"
                         }], commit=False)[0]
 
