@@ -588,14 +588,29 @@ class DecisionIntelligenceService:
     @classmethod
     def get_decision_readiness(cls, db: Session) -> Dict[str, Any]:
         """Returns empirical sample-size validation status across all decision engine markets."""
-        evals_count = db.query(ModelEvaluation).count()
-        validated_count = db.query(ModelEvaluation).filter(ModelEvaluation.readiness_status == "VALIDATED").count()
+        evals = db.query(ModelEvaluation).all()
+        evals_count = len(evals)
+
+        # Evaluate distinct markets
+        markets = {}
+        for e in evals:
+            mk = e.market or "unknown"
+            markets.setdefault(mk, []).append((e.predicted_probability, e.actual_outcome))
+
+        validated_markets_count = 0
+        for mk, pairs in markets.items():
+            if len(pairs) >= 300:
+                cal = CalibrationService.compute_calibration_curve(pairs)
+                if cal.get("ece", 1.0) <= 0.07:
+                    validated_markets_count += 1
+
+        overall_status = "VALIDATED" if (evals_count >= 300 and validated_markets_count >= 1) else ("VALIDATING" if evals_count >= 100 else "INSUFFICIENT_DATA")
 
         return {
             "decision_engine_version": DECISION_ENGINE_VERSION,
             "total_evaluations": evals_count,
-            "validated_markets_count": validated_count,
-            "overall_status": "VALIDATED" if (evals_count >= 300 and validated_count >= 5) else ("VALIDATING" if evals_count >= 100 else "INSUFFICIENT_DATA"),
+            "validated_markets_count": validated_markets_count,
+            "overall_status": overall_status,
             "required_sample": MIN_PRODUCTION_VALIDATION_SAMPLE,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
