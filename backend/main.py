@@ -1,13 +1,21 @@
 import os
 import sys
 import json
+import math
 import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, Request, Query
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+import re
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -38,6 +46,7 @@ try:
     from services.weather_service import WeatherService
     from services.whatsapp_service import WhatsAppNotificationService
     from services.canonical_competition_service import CanonicalCompetitionService
+    from services.calibration_service import CalibrationService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY
@@ -59,14 +68,41 @@ except ImportError:
     from .services.weather_service import WeatherService
     from .services.whatsapp_service import WhatsAppNotificationService
     from .services.canonical_competition_service import CanonicalCompetitionService
+    from .services.calibration_service import CalibrationService
 
 logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Input Validation Models & Dependencies (Pydantic)
+# -----------------------------------------------------------------------------
+class FixtureQueryParams(BaseModel):
+    date: Optional[str] = None
+    league: Optional[str] = "ALL"
+    limit: Optional[int] = Field(50, ge=1, le=200)
+
+def validate_fixture_query(
+    date: Optional[str] = Query(None, description="Match date filter (ISO YYYY-MM-DD)"),
+    league: Optional[str] = Query("ALL", description="League name or 'ALL'"),
+    limit: Optional[int] = Query(50, ge=1, le=200, description="Max results limit (1-200)")
+) -> FixtureQueryParams:
+    if date is not None and date != "" and date != "ALL":
+        try:
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+                datetime.strptime(date, '%Y-%m-%d')
+            else:
+                datetime.fromisoformat(date.replace('Z', '+00:00'))
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Invalid date format '{date}'. Expected ISO format (e.g. YYYY-MM-DD).")
+    
+    return FixtureQueryParams(date=date if (date and date != "ALL") else None, league=league or "ALL", limit=limit or 50)
+
 
 # Track the last successful sync time to prevent redundant API calls
 # while ensuring daily updates are loaded automatically on request.
 LAST_SYNC_TIME: Optional[datetime] = None
 
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
+
 
 async def scheduled_data_refresh():
     """
@@ -88,6 +124,9 @@ async def scheduled_data_refresh():
 
             calculate_all_league_statistics(calc_db)
             calculate_all_team_statistics(calc_db)
+            DataIngestionService.purge_school_and_youth_competitions(calc_db)
+            DataIngestionService.repair_and_canonicalize_fixture_leagues(calc_db)
+            DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
             PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
             logger.info("Scheduled data refresh completed successfully.")
         except Exception as e:
@@ -114,6 +153,8 @@ async def scheduled_live_score_refresh():
                 loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
             finally:
                 loop.close()
+            DataIngestionService.purge_school_and_youth_competitions(calc_db)
+            DataIngestionService.repair_and_canonicalize_fixture_leagues(calc_db)
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
         except Exception as e:
             logger.error(f"Error in scheduled live score refresh: {e}")
@@ -123,35 +164,72 @@ async def scheduled_live_score_refresh():
     await asyncio.to_thread(run_live_refresh)
 
 
-async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_id: Optional[str] = None, is_night_digest: bool = False):
+async def scheduled_telegram_daily_digest(
+    bot_token: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    window_key: Optional[str] = None
+):
     """
-    Automated background worker job executing twice daily:
-    - Night Digest (10:00 PM GMT / 22:00 UTC): Gathers picks for early morning fixtures (1:00 AM – 6:50 AM GMT) for next day.
-    - Morning Digest (07:00 AM GMT / 07:00 UTC): Gathers picks for the rest of today's fixtures (7:00 AM – 11:59 PM GMT).
+    Automated background worker job executing 3 times daily:
+    1. Morning Window (06:00 UTC / 07:00 GMT+1): 3-Odds Ticket for 00:00 - 11:59 GMT+1 matches.
+    2. Afternoon Window (11:30 UTC / 12:30 GMT+1): 3-Odds Ticket for 12:00 - 16:59 GMT+1 matches.
+    3. Evening Window (16:30 UTC / 17:30 GMT+1): 3-Odds Ticket for 17:00 - 23:59 GMT+1 matches.
     """
-    logger.info("Executing scheduled Telegram picks broadcast...")
+    logger.info(f"Executing scheduled Telegram 3-Odds Accumulator broadcast (window: {window_key or 'auto'})...")
     calc_db = SessionLocal()
     try:
         utc_now = datetime.now(timezone.utc)
-        current_hour = utc_now.hour
-        is_night = is_night_digest or (current_hour >= 20 or current_hour < 3)
+        current_hour_utc = utc_now.hour
 
-        if is_night:
-            title_cat = "EARLY MORNING PICKS"
-            time_win_str = "1:00 AM – 6:50 AM GMT"
-            target_date = (utc_now + timedelta(days=1)).date() if current_hour >= 20 else utc_now.date()
-            start_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 50, 0)
-            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 6, 50, 0)
+        # Determine target window (auto-detect if not specified)
+        if not window_key or window_key == "auto":
+            if current_hour_utc < 10:
+                active_window = "morning"
+            elif 10 <= current_hour_utc < 15:
+                active_window = "afternoon"
+            else:
+                active_window = "evening"
         else:
-            title_cat = "DAILY TOP PICKS"
-            target_date = utc_now.date()
-            # If broadcast runs late (e.g. 10:20 AM / 11:00 AM), dynamically filter from current broadcast time onwards (e.g. 11:00 AM - 11:59 PM)
-            start_hour_gmt = max(7, (utc_now + timedelta(hours=1)).hour)
-            time_win_str = f"{start_hour_gmt}:00 AM – 11:59 PM GMT" if start_hour_gmt < 12 else f"{start_hour_gmt - 12 if start_hour_gmt > 12 else 12}:00 PM – 11:59 PM GMT"
-            naive_now_cutoff = (utc_now - timedelta(minutes=15)).replace(tzinfo=None)
-            start_dt_utc = max(datetime(target_date.year, target_date.month, target_date.day, 6, 50, 0), naive_now_cutoff)
-            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59)
+            active_window = window_key.lower().strip()
 
+        target_date = utc_now.date()
+        naive_now = utc_now.replace(tzinfo=None)
+
+        if active_window == "morning":
+            window_title = "Morning 3-Odds Ticket"
+            time_win_str = "12:00 AM – 11:59 AM GMT+1"
+            start_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
+            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 10, 59, 59)
+            # Previous window was yesterday's evening window (5 PM - 11:59 PM GMT+1 / 16:00 - 22:59 UTC)
+            prev_win_title = "Yesterday's Evening Ticket"
+            prev_date_str = (utc_now - timedelta(days=1)).strftime("%A, %b %d, %Y")
+            prev_start_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0) - timedelta(hours=8)
+            prev_end_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0) - timedelta(seconds=1)
+
+        elif active_window == "afternoon":
+            window_title = "Afternoon 3-Odds Ticket"
+            time_win_str = "12:00 PM – 04:59 PM GMT+1"
+            start_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 11, 0, 0)
+            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 15, 59, 59)
+            # Previous window was today's morning window
+            prev_win_title = "Morning Ticket"
+            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
+            prev_start_utc = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
+            prev_end_utc = datetime(target_date.year, target_date.month, target_date.day, 10, 59, 59)
+
+        else: # evening
+            window_title = "Evening 3-Odds Ticket"
+            time_win_str = "05:00 PM – 11:59 PM GMT+1"
+            start_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 16, 0, 0)
+            end_dt_utc = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59)
+            # Previous window was today's afternoon window
+            prev_win_title = "Afternoon Ticket"
+            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
+            prev_start_utc = datetime(target_date.year, target_date.month, target_date.day, 11, 0, 0)
+            prev_end_utc = datetime(target_date.year, target_date.month, target_date.day, 15, 59, 59)
+
+        # Dynamic query for scheduled matches in this window (from now onwards)
+        query_start = max(start_dt_utc, naive_now - timedelta(minutes=15))
         fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -161,52 +239,16 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
             )
             .filter(
                 models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                models.Fixture.match_date >= start_dt_utc,
+                models.Fixture.match_date >= query_start,
                 models.Fixture.match_date <= end_dt_utc
             )
             .order_by(models.Fixture.match_date.asc())
             .all()
         )
 
-        if not fixtures:
-            logger.info("No fixtures found for target window. Triggering automatic API ingestion fallback...")
-            try:
-                await DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY)
-                PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
-                fixtures = (
-                    calc_db.query(models.Fixture)
-                    .options(
-                        joinedload(models.Fixture.league),
-                        joinedload(models.Fixture.home_team),
-                        joinedload(models.Fixture.away_team)
-                    )
-                    .filter(
-                        models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                        models.Fixture.match_date >= start_dt_utc,
-                        models.Fixture.match_date <= end_dt_utc
-                    )
-                    .order_by(models.Fixture.match_date.asc())
-                    .all()
-                )
-            except Exception as ing_err:
-                logger.error(f"Error during scheduled digest ingestion fallback: {ing_err}")
-
-        # STEP 1: Process and broadcast Outcome Recap for the PREVIOUS broadcast window
         all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
 
-        if is_night:
-            # Previous window for 10 PM night broadcast is Today's Daytime/Evening window (7 AM - 9:59 PM GMT)
-            prev_win_title = "Daily Picks"
-            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
-            prev_start_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 6, 50, 0)
-            prev_end_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 21, 59, 59)
-        else:
-            # Previous window for 7 AM morning broadcast is Today's Early Morning window (1 AM - 6:50 AM GMT)
-            prev_win_title = "Early Morning Picks"
-            prev_date_str = utc_now.strftime("%A, %b %d, %Y")
-            prev_start_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 0, 50, 0)
-            prev_end_utc = datetime(utc_now.year, utc_now.month, utc_now.day, 6, 50, 0)
-
+        # STEP 1: Process and broadcast Outcome Recap for previous window if results exist
         finished_fixtures = (
             calc_db.query(models.Fixture)
             .options(
@@ -226,6 +268,12 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
         if finished_fixtures:
             recap_items = []
             for fix in finished_fixtures:
+                if CanonicalCompetitionService.is_school_or_youth_competition(
+                    league_name=fix.league.name if fix.league else "",
+                    home_team_name=fix.home_team.name if fix.home_team else "",
+                    away_team_name=fix.away_team.name if fix.away_team else ""
+                ):
+                    continue
                 pred = all_preds.get(fix.id)
                 h_score = fix.home_score if fix.home_score is not None else 0
                 a_score = fix.away_score if fix.away_score is not None else 0
@@ -239,41 +287,49 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
                     "prob": prob,
                     "is_won": total_goals >= 2
                 })
-            await TelegramNotificationService.broadcast_outcome_recap(
-                recap_items,
-                window_title=prev_win_title,
-                date_str=prev_date_str,
-                bot_token=bot_token,
-                chat_id=chat_id
-            )
+            if recap_items:
+                await TelegramNotificationService.broadcast_outcome_recap(
+                    recap_items[:5],
+                    window_title=prev_win_title,
+                    date_str=prev_date_str,
+                    bot_token=bot_token,
+                    chat_id=chat_id
+                )
 
-        # STEP 2: Process and broadcast NEW upcoming picks for the upcoming window
-        picks = []
+        # STEP 2: Process candidate picks for this window
+        candidate_picks = []
         for fix in fixtures:
+            if CanonicalCompetitionService.is_school_or_youth_competition(
+                league_name=fix.league.name if fix.league else "",
+                home_team_name=fix.home_team.name if fix.home_team else "",
+                away_team_name=fix.away_team.name if fix.away_team else ""
+            ):
+                continue
+
             pred = all_preds.get(fix.id)
             if not pred:
                 pred = PoissonPredictionEngine.predict_fixture(calc_db, fix.id)
             if not pred:
                 continue
-            match_date_str = fix.match_date.isoformat() + "Z" if fix.match_date else ""
-            picks.append({
-                "home_team": {"name": fix.home_team.name if fix.home_team else "Home"},
-                "away_team": {"name": fix.away_team.name if fix.away_team else "Away"},
-                "league": {"name": fix.league.name if fix.league else "League"},
-                "match_date": match_date_str,
-                "prediction": {
-                    "over_1_5_probability": float(pred.over_1_5_probability or 0.75),
-                    "most_likely_score": pred.most_likely_score or "2-1"
-                }
-            })
-        picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
-        top_7_picks = picks[:7]
 
-        # FALLBACK WINDOW: If window returned 0 picks, expand to next 24h upcoming fixtures
-        if not top_7_picks:
-            logger.info(f"No prediction picks available in primary window ({title_cat}). Executing 24-hour fallback search...")
-            now_cutoff = (utc_now - timedelta(minutes=15)).replace(tzinfo=None)
-            next_24h = (utc_now + timedelta(hours=24)).replace(tzinfo=None)
+            prob = float(pred.over_1_5_probability or 0.75)
+            market_odds = TelegramNotificationService.calculate_market_odds(prob)
+            candidate_picks.append({
+                "fixture_id": fix.id,
+                "home": fix.home_team.name if fix.home_team else "Home",
+                "away": fix.away_team.name if fix.away_team else "Away",
+                "league": fix.league.name if fix.league else "League",
+                "match_date": fix.match_date,
+                "prob": prob,
+                "odds": market_odds,
+                "xg": float(pred.expected_goals_xg or 2.60),
+                "score": pred.most_likely_score or "2-1"
+            })
+
+        # Fallback to next 24h if this specific window has fewer than 2 matches
+        if len(candidate_picks) < 2:
+            logger.info(f"Few fixtures in primary window ({window_title}). Expanding candidate search across next 24h...")
+            next_24h = naive_now + timedelta(hours=24)
             fallback_fixtures = (
                 calc_db.query(models.Fixture)
                 .options(
@@ -283,45 +339,59 @@ async def scheduled_telegram_daily_digest(bot_token: Optional[str] = None, chat_
                 )
                 .filter(
                     models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                    models.Fixture.match_date >= now_cutoff,
+                    models.Fixture.match_date >= naive_now,
                     models.Fixture.match_date <= next_24h
                 )
                 .order_by(models.Fixture.match_date.asc())
                 .all()
             )
             for fix in fallback_fixtures:
+                if CanonicalCompetitionService.is_school_or_youth_competition(
+                    league_name=fix.league.name if fix.league else "",
+                    home_team_name=fix.home_team.name if fix.home_team else "",
+                    away_team_name=fix.away_team.name if fix.away_team else ""
+                ):
+                    continue
                 pred = all_preds.get(fix.id)
                 if not pred:
                     pred = PoissonPredictionEngine.predict_fixture(calc_db, fix.id)
                 if pred:
-                    match_date_str = fix.match_date.isoformat() + "Z" if fix.match_date else ""
-                    picks.append({
-                        "home_team": {"name": fix.home_team.name if fix.home_team else "Home"},
-                        "away_team": {"name": fix.away_team.name if fix.away_team else "Away"},
-                        "league": {"name": fix.league.name if fix.league else "League"},
-                        "match_date": match_date_str,
-                        "prediction": {
-                            "over_1_5_probability": float(pred.over_1_5_probability or 0.75),
-                            "most_likely_score": pred.most_likely_score or "2-1"
-                        }
+                    prob = float(pred.over_1_5_probability or 0.75)
+                    candidate_picks.append({
+                        "fixture_id": fix.id,
+                        "home": fix.home_team.name if fix.home_team else "Home",
+                        "away": fix.away_team.name if fix.away_team else "Away",
+                        "league": fix.league.name if fix.league else "League",
+                        "match_date": fix.match_date,
+                        "prob": prob,
+                        "odds": TelegramNotificationService.calculate_market_odds(prob),
+                        "xg": float(pred.expected_goals_xg or 2.60),
+                        "score": pred.most_likely_score or "2-1"
                     })
-            picks.sort(key=lambda x: x["prediction"]["over_1_5_probability"], reverse=True)
-            top_7_picks = picks[:7]
 
-        if not top_7_picks:
-            logger.info(f"No prediction picks available to broadcast for window ({title_cat}). Suppressing dispatch.")
+        if not candidate_picks:
+            logger.info(f"No prediction candidates available for Telegram {window_title}. Suppressing dispatch.")
             return
 
-        await TelegramNotificationService.broadcast_daily_top_picks(
-            top_7_picks,
+        # Rank candidates by Over 1.5 probability and expected goals
+        candidate_picks.sort(key=lambda x: (x["prob"], x["xg"]), reverse=True)
+        ticket = TelegramNotificationService.find_best_3_odds_ticket(candidate_picks, target_odds=3.00)
+        
+        # Exclude legs used in ticket to list distinct remaining top bankers
+        ticket_fixture_ids = {l.get("fixture_id") for l in (ticket.get("legs", []) if ticket else [])}
+        top_bankers = [p for p in candidate_picks if p.get("fixture_id") not in ticket_fixture_ids][:4]
+
+        await TelegramNotificationService.broadcast_3_odds_window(
+            window_title=window_title,
+            time_range_str=time_win_str,
+            ticket=ticket,
+            top_bankers=top_bankers,
             bot_token=bot_token,
-            chat_id=chat_id,
-            title_category=title_cat,
-            time_window_str=time_win_str
+            chat_id=chat_id
         )
-        await WhatsAppNotificationService.broadcast_daily_top_picks(top_7_picks)
+        logger.info(f"Telegram {window_title} broadcast dispatched successfully!")
     except Exception as e:
-        logger.error(f"Error executing scheduled Telegram broadcast: {e}")
+        logger.error(f"Error executing scheduled Telegram 3-Odds broadcast: {e}")
     finally:
         calc_db.close()
 
@@ -359,33 +429,46 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule night 10:00 PM GMT Telegram digest broadcast (22:00 UTC) for Early Morning 1am-6:50am games
+    # Schedule 3 Daily Telegram 3-Odds Accumulator Broadcasts (Morning, Afternoon, Evening)
+    # 1. Morning Window (06:00 UTC / 07:00 AM GMT+1)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour=22,
+        hour=6,
         minute=0,
         timezone='UTC',
-        kwargs={'is_night_digest': True},
-        id='daily_telegram_2200_night_digest',
+        kwargs={'window_key': 'morning'},
+        id='daily_telegram_0600_morning_3odds',
         replace_existing=True
     )
 
-    # Schedule morning 07:00 AM GMT Telegram digest broadcast (07:00 UTC) for Rest of Day games
+    # 2. Afternoon Window (11:30 UTC / 12:30 PM GMT+1)
     scheduler.add_job(
         scheduled_telegram_daily_digest,
         'cron',
-        hour=7,
-        minute=0,
+        hour=11,
+        minute=30,
         timezone='UTC',
-        kwargs={'is_night_digest': False},
-        id='daily_telegram_0700_morning_digest',
+        kwargs={'window_key': 'afternoon'},
+        id='daily_telegram_1130_afternoon_3odds',
+        replace_existing=True
+    )
+
+    # 3. Evening Window (16:30 UTC / 05:30 PM GMT+1)
+    scheduler.add_job(
+        scheduled_telegram_daily_digest,
+        'cron',
+        hour=16,
+        minute=30,
+        timezone='UTC',
+        kwargs={'window_key': 'evening'},
+        id='daily_telegram_1630_evening_3odds',
         replace_existing=True
     )
 
     try:
         scheduler.start()
-        logger.info("APScheduler initialized: Midnight cron, 6h refresh, 60s live score refresh, 10:00 PM GMT & 07:00 AM GMT Telegram digest jobs registered.")
+        logger.info("APScheduler initialized: 6h data refresh, 60s live score refresh, and 3x daily Telegram 3-Odds Broadcasts (06:00, 11:30, 16:30 UTC).")
     except Exception as e:
         logger.warning(f"Scheduler start skipped or running under WSGI: {e}")
 
@@ -420,6 +503,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+# Rate limiter (slowapi) — limit abusive clients, allow legitimate polling
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
 app = FastAPI(
     title="Soccer Goal Predictor API",
     description="Backend API service for Soccer Goal Predictor app with 12-hour APScheduler automation",
@@ -427,11 +513,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Register rate-limit exceeded handler
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "status": "error",
+            "message": "Too Many Requests",
+            "detail": f"Rate limit exceeded: {exc.detail}"
+        }
+    )
+
+# CORS — only explicit origins, no wildcard in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -443,7 +544,8 @@ if os.path.exists(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, 
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
 @app.get("/")
-async def read_root():
+@limiter.limit("60/minute")
+async def read_root(request: Request):
     if os.path.exists(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
     return {
@@ -453,27 +555,34 @@ async def read_root():
     }
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint required by project spec."""
-    return {"status": "ok"}
+@limiter.limit("60/minute")
+def health_check(request: Request):
+    """Health check endpoint required by project spec (<100ms response, no DB calls)."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 
 @app.get("/api/statistics")
-def read_all_team_statistics(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def read_all_team_statistics(request: Request, db: Session = Depends(get_db)):
     """Retrieve stored statistics for all teams."""
     stats = get_all_team_statistics(db)
     return {"status": "ok", "count": len(stats), "data": stats}
 
 
 @app.get("/api/statistics/league")
-def read_all_league_statistics(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def read_all_league_statistics(request: Request, db: Session = Depends(get_db)):
     """Retrieve stored statistics for all leagues."""
     stats = get_all_league_statistics(db)
     return {"status": "ok", "count": len(stats), "data": stats}
 
 
 @app.get("/api/statistics/league/{league_id}")
-def read_league_statistics(league_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def read_league_statistics(request: Request, league_id: int, db: Session = Depends(get_db)):
     """Retrieve stored statistics for a specific league."""
     stat = get_league_statistics(db, league_id)
     if not stat:
@@ -482,7 +591,8 @@ def read_league_statistics(league_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/statistics/league/recalculate")
-def trigger_recalculate_league_statistics(
+@limiter.limit("10/minute")
+def trigger_recalculate_league_statistics(request: Request, 
     league_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
@@ -501,7 +611,8 @@ def trigger_recalculate_league_statistics(
 
 
 @app.get("/api/statistics/{team_id}")
-def read_team_statistics(team_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def read_team_statistics(request: Request, team_id: int, db: Session = Depends(get_db)):
     """Retrieve stored statistics for a specific team."""
     stat = get_team_statistics(db, team_id)
     if not stat:
@@ -510,7 +621,8 @@ def read_team_statistics(team_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/statistics/recalculate")
-def trigger_recalculate_statistics(
+@limiter.limit("10/minute")
+def trigger_recalculate_statistics(request: Request, 
     team_id: Optional[int] = None,
     last_n: int = 10,
     db: Session = Depends(get_db)
@@ -530,7 +642,8 @@ def trigger_recalculate_statistics(
 
 
 @app.post("/api/ingest/sync")
-async def sync_data(db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def sync_data(request: Request, db: Session = Depends(get_db)):
     """
     Triggers non-blocking automated ingestion sync for competitions, teams,
     historical results, and upcoming fixtures in a background thread.
@@ -556,21 +669,24 @@ async def sync_data(db: Session = Depends(get_db)):
 
 
 @app.post("/api/ingest/leagues")
-def ingest_leagues_endpoint(payload: list[dict], db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def ingest_leagues_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """Ingest a list of league/competition records with duplicate prevention."""
     leagues = DataIngestionService.ingest_leagues(db, payload)
     return {"status": "ok", "count": len(leagues), "data": leagues}
 
 
 @app.post("/api/ingest/teams")
-def ingest_teams_endpoint(payload: list[dict], db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def ingest_teams_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """Ingest a list of team records with duplicate prevention."""
     teams = DataIngestionService.ingest_teams(db, payload)
     return {"status": "ok", "count": len(teams), "data": teams}
 
 
 @app.post("/api/ingest/fixtures")
-def ingest_fixtures_endpoint(payload: list[dict], db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def ingest_fixtures_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """
     Ingest historical results and upcoming fixtures with duplicate prevention
     and automatic statistic updates.
@@ -580,7 +696,8 @@ def ingest_fixtures_endpoint(payload: list[dict], db: Session = Depends(get_db))
 
 
 @app.post("/api/predictions/predict/{fixture_id}")
-def trigger_predict_fixture(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def trigger_predict_fixture(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Calculate Poisson prediction for a single fixture and store in database."""
     pred = PoissonPredictionEngine.predict_fixture(db, fixture_id)
     if not pred:
@@ -589,14 +706,16 @@ def trigger_predict_fixture(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/predictions/predict-all")
-def trigger_predict_all_upcoming(db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def trigger_predict_all_upcoming(request: Request, db: Session = Depends(get_db)):
     """Calculate Poisson predictions for all upcoming fixtures."""
     preds = PoissonPredictionEngine.predict_all_upcoming_fixtures(db)
     return {"status": "ok", "count": len(preds), "data": preds}
 
 
 @app.get("/api/predictions/accuracy")
-def get_prediction_accuracy(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_prediction_accuracy(request: Request, db: Session = Depends(get_db)):
     """
     Calculates historical hit rates and accuracy metrics for finished fixtures,
     including overall precision and per-league hit-rate breakdown.
@@ -695,7 +814,8 @@ def get_prediction_accuracy(db: Session = Depends(get_db)):
 
 
 @app.get("/api/predictions/{fixture_id}")
-def read_fixture_prediction(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def read_fixture_prediction(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Retrieve stored Match Intelligence prediction for a specific fixture."""
     intel = PoissonPredictionEngine.generate_match_intelligence_prediction(db, fixture_id)
     if intel:
@@ -707,13 +827,15 @@ def read_fixture_prediction(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/accumulators/generate")
-def generate_smart_accumulators(day: Optional[str] = None, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def generate_smart_accumulators(request: Request, day: Optional[str] = None, db: Session = Depends(get_db)):
     """Generates 3 curated betting accumulator options (Safe Double, 5-Fold, High Yield)."""
     return AccumulatorGeneratorService.generate_accumulators(db, match_day=day)
 
 
 @app.get("/api/fixtures/{fixture_id}/details")
-def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_details(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Retrieves deep H2H history, recent form streaks, xG breakdown, top scorelines, and Match Intelligence Core for a fixture."""
     fixture = (
         db.query(models.Fixture)
@@ -726,13 +848,16 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
         .first()
     )
     if not fixture:
-        return {"status": "error", "message": f"Fixture {fixture_id} not found."}
+        return JSONResponse(
+            status_code=404,
+            content={"status": "FIXTURE_NOT_FOUND", "message": f"The requested fixture {fixture_id} could not be found."}
+        )
 
     pred = db.query(models.Prediction).filter(models.Prediction.fixture_id == fixture_id).first()
-    home_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.home_team_id).first()
-    away_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.away_team_id).first()
-    home_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.home_team_id).first()
-    away_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.away_team_id).first()
+    home_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.home_team_id).first() if fixture.home_team_id else None
+    away_elo = db.query(models.EloRating).filter(models.EloRating.team_id == fixture.away_team_id).first() if fixture.away_team_id else None
+    home_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.home_team_id).first() if fixture.home_team_id else None
+    away_streak = db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id == fixture.away_team_id).first() if fixture.away_team_id else None
 
     top_scorelines = []
     if pred and pred.top_scorelines_json:
@@ -742,189 +867,241 @@ def get_fixture_details(fixture_id: int, db: Session = Depends(get_db)):
             top_scorelines = []
 
     # Fetch last 5 head-to-head completed matches
-    h2h_fixtures = (
-        db.query(models.Fixture)
-        .filter(
-            models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-            ((models.Fixture.home_team_id == fixture.home_team_id) & (models.Fixture.away_team_id == fixture.away_team_id)) |
-            ((models.Fixture.home_team_id == fixture.away_team_id) & (models.Fixture.away_team_id == fixture.home_team_id))
-        )
-        .order_by(models.Fixture.match_date.desc())
-        .limit(5)
-        .all()
-    )
-
     h2h_data = []
-    for h in h2h_fixtures:
-        h2h_data.append({
-            "match_date": h.match_date.isoformat() if h.match_date else "",
-            "home_team_name": h.home_team.name if h.home_team else "Home",
-            "away_team_name": h.away_team.name if h.away_team else "Away",
-            "score": f"{h.home_score if h.home_score is not None else '-'}-{h.away_score if h.away_score is not None else '-'}",
-            "total_goals": (h.home_score or 0) + (h.away_score or 0)
-        })
+    if fixture.home_team_id and fixture.away_team_id:
+        h2h_fixtures = (
+            db.query(models.Fixture)
+            .options(
+                joinedload(models.Fixture.league),
+                joinedload(models.Fixture.home_team),
+                joinedload(models.Fixture.away_team)
+            )
+            .filter(
+                models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                ((models.Fixture.home_team_id == fixture.home_team_id) & (models.Fixture.away_team_id == fixture.away_team_id)) |
+                ((models.Fixture.home_team_id == fixture.away_team_id) & (models.Fixture.away_team_id == fixture.home_team_id))
+            )
+            .order_by(models.Fixture.match_date.desc())
+            .limit(5)
+            .all()
+        )
+
+        for h in h2h_fixtures:
+            h_score = h.home_score
+            a_score = h.away_score
+            has_scores = h_score is not None and a_score is not None
+            tot_goals = (h_score + a_score) if has_scores else None
+            h2h_data.append({
+                "match_date": h.match_date.isoformat() if h.match_date else "",
+                "home_team_name": h.home_team.name if h.home_team else None,
+                "away_team_name": h.away_team.name if h.away_team else None,
+                "league_name": h.league.name if h.league else None,
+                "score": f"{h_score if h_score is not None else '-'}-{a_score if a_score is not None else '-'}",
+                "home_score": h_score,
+                "away_score": a_score,
+                "total_goals": tot_goals
+            })
 
     # Generate or parse full Match Intelligence Core prediction payload
     intel = PoissonPredictionEngine.generate_match_intelligence_prediction(db, fixture_id)
     if not intel:
-        h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
-        a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
-        tot_xg = round(h_xg + a_xg, 2)
-        o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
-        o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
-        o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
-        o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
-        btts_p = float(pred.btts_probability or 0.55) if pred else 0.55
-        conf_int = int((pred.confidence_score or 0.50) * 100) if pred else 50
-        most_likely = (pred.most_likely_score if pred else None) or "2-1"
+        if pred:
+            h_xg = round(float(pred.predicted_home_score), 2) if (pred.predicted_home_score is not None) else 1.45
+            a_xg = round(float(pred.predicted_away_score), 2) if (pred.predicted_away_score is not None) else 1.15
+            tot_xg = round(h_xg + a_xg, 2)
+            o15 = float(pred.over_1_5_probability or 0.78)
+            o25 = float(pred.over_2_5_probability or 0.52)
+            o05 = float(pred.over_0_5_probability or 0.90)
+            o35 = float(pred.over_3_5_probability or 0.28)
+            btts_p = float(pred.btts_probability or 0.55)
+            conf_int = int((pred.confidence_score or 0.50) * 100)
+            most_likely = pred.most_likely_score or "2-1"
 
-        intel = {
-            "fixture_id": fixture_id,
-            "model": {"version": "v2_match_intelligence", "generated_at": datetime.now(timezone.utc).isoformat()},
-            "expected_goals": {"home": h_xg, "away": a_xg, "total": tot_xg},
-            "result": {
-                "home_win": float(pred.home_win_probability or 0.45) if pred else 0.45,
-                "draw": float(pred.draw_probability or 0.25) if pred else 0.25,
-                "away_win": float(pred.away_win_probability or 0.30) if pred else 0.30
-            },
-            "goals": {
-                "over_0_5": o05, "under_0_5": round(1.0 - o05, 4),
-                "over_1_5": o15, "under_1_5": round(1.0 - o15, 4),
-                "over_2_5": o25, "under_2_5": round(1.0 - o25, 4),
-                "over_3_5": o35, "under_3_5": round(1.0 - o35, 4),
-                "over_4_5": float(pred.over_4_5_probability or 0.12) if pred else 0.12
-            },
-            "btts": {"yes": btts_p, "no": round(1.0 - btts_p, 4)},
-            "home_team_goals": {
-                "over_0_5": round(1.0 - math.exp(-h_xg), 4), "under_0_5": round(math.exp(-h_xg), 4),
-                "over_1_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg), 4), "under_1_5": round(math.exp(-h_xg) * (1.0 + h_xg), 4),
-                "over_2_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4), "under_2_5": round(math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4)
-            },
-            "away_team_goals": {
-                "over_0_5": round(1.0 - math.exp(-a_xg), 4), "under_0_5": round(math.exp(-a_xg), 4),
-                "over_1_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg), 4), "under_1_5": round(math.exp(-a_xg) * (1.0 + a_xg), 4),
-                "over_2_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4), "under_2_5": round(math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4)
-            },
-            "halves": {
-                "first_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.45), 4),
-                "first_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.45) * (1.0 + tot_xg * 0.45), 4),
-                "second_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.55), 4),
-                "second_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.55) * (1.0 + tot_xg * 0.55), 4)
-            },
-            "exact_scores": top_scorelines or [{"home": 2, "away": 1, "score": most_likely, "probability": 0.12}],
-            "confidence": {"overall": conf_int, "data_quality": 65, "model_stability": 65, "sample_quality": "moderate"},
-            "best_signal": {"market": "Over 1.5 Goals", "probability": o15, "signal_score": 82, "label": "Strong" if o15 >= 0.78 else "Moderate"}
-        }
+            intel = {
+                "fixture_id": fixture_id,
+                "model": {"version": "v2_match_intelligence", "generated_at": datetime.now(timezone.utc).isoformat()},
+                "expected_goals": {"home": h_xg, "away": a_xg, "total": tot_xg},
+                "result": {
+                    "home_win": float(pred.home_win_probability or 0.45),
+                    "draw": float(pred.draw_probability or 0.25),
+                    "away_win": float(pred.away_win_probability or 0.30)
+                },
+                "goals": {
+                    "over_0_5": o05, "under_0_5": round(1.0 - o05, 4),
+                    "over_1_5": o15, "under_1_5": round(1.0 - o15, 4),
+                    "over_2_5": o25, "under_2_5": round(1.0 - o25, 4),
+                    "over_3_5": o35, "under_3_5": round(1.0 - o35, 4),
+                    "over_4_5": float(pred.over_4_5_probability or 0.12)
+                },
+                "btts": {"yes": btts_p, "no": round(1.0 - btts_p, 4)},
+                "home_team_goals": {
+                    "over_0_5": round(1.0 - math.exp(-h_xg), 4), "under_0_5": round(math.exp(-h_xg), 4),
+                    "over_1_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg), 4), "under_1_5": round(math.exp(-h_xg) * (1.0 + h_xg), 4),
+                    "over_2_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4), "under_2_5": round(math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4)
+                },
+                "away_team_goals": {
+                    "over_0_5": round(1.0 - math.exp(-a_xg), 4), "under_0_5": round(math.exp(-a_xg), 4),
+                    "over_1_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg), 4), "under_1_5": round(math.exp(-a_xg) * (1.0 + a_xg), 4),
+                    "over_2_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4), "under_2_5": round(math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4)
+                },
+                "halves": {
+                    "first_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.45), 4),
+                    "first_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.45) * (1.0 + tot_xg * 0.45), 4),
+                    "second_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.55), 4),
+                    "second_half_over_1_5": round(1.0 - math.exp(-tot_xg * 0.55) * (1.0 + tot_xg * 0.55), 4)
+                },
+                "exact_scores": top_scorelines or [{"home": 2, "away": 1, "score": most_likely, "probability": 0.12}],
+                "confidence": {"overall": conf_int, "data_quality": 65, "model_stability": 65, "sample_quality": "moderate"},
+                "best_signal": {"market": "Over 1.5 Goals", "probability": o15, "signal_score": 82, "label": "Strong" if o15 >= 0.78 else "Moderate"}
+            }
 
     c_name, c_code = CanonicalCompetitionService.get_country_for_league_name(fixture.league.name if fixture.league else None)
-    return {
-        "status": "ok",
-        "fixture_id": fixture_id,
-        "league_name": fixture.league.name if fixture.league else "League",
+    
+    home_team_data = {
+        "id": fixture.home_team.id if fixture.home_team else None,
+        "name": fixture.home_team.name if fixture.home_team else None,
+        "short_code": fixture.home_team.short_code if fixture.home_team else None,
+        "logo": fixture.home_team.logo_url if fixture.home_team else None,
+        "logo_url": fixture.home_team.logo_url if fixture.home_team else None,
+        "elo_rating": round(home_elo.rating, 1) if home_elo else 1500.0,
+        "last_5_results": json.loads(home_streak.last_5_results) if (home_streak and home_streak.last_5_results) else [],
+        "goals_scored_last_5": home_streak.goals_scored_last_5 if home_streak else 0,
+        "goals_conceded_last_5": home_streak.goals_conceded_last_5 if home_streak else 0,
+    } if fixture.home_team else None
+
+    away_team_data = {
+        "id": fixture.away_team.id if fixture.away_team else None,
+        "name": fixture.away_team.name if fixture.away_team else None,
+        "short_code": fixture.away_team.short_code if fixture.away_team else None,
+        "logo": fixture.away_team.logo_url if fixture.away_team else None,
+        "logo_url": fixture.away_team.logo_url if fixture.away_team else None,
+        "elo_rating": round(away_elo.rating, 1) if away_elo else 1500.0,
+        "last_5_results": json.loads(away_streak.last_5_results) if (away_streak and away_streak.last_5_results) else [],
+        "goals_scored_last_5": away_streak.goals_scored_last_5 if away_streak else 0,
+        "goals_conceded_last_5": away_streak.goals_conceded_last_5 if away_streak else 0,
+    } if fixture.away_team else None
+
+    competition_data = {
+        "id": fixture.league.id if fixture.league else None,
+        "name": fixture.league.name if fixture.league else None,
         "country": fixture.league.country if (fixture.league and fixture.league.country) else c_name,
         "country_code": c_code,
-        "competition": {
-            "id": fixture.league.id if fixture.league else None,
-            "name": fixture.league.name if fixture.league else "League",
-            "country": fixture.league.country if (fixture.league and fixture.league.country) else c_name,
-            "country_code": c_code,
-            "season": fixture.league.season if fixture.league else ""
-        },
-        "home_team": {
-            "name": fixture.home_team.name if fixture.home_team else "Home Team",
-            "elo_rating": round(home_elo.rating, 1) if home_elo else 1500.0,
-            "last_5_results": json.loads(home_streak.last_5_results) if (home_streak and home_streak.last_5_results) else [],
-            "goals_scored_last_5": home_streak.goals_scored_last_5 if home_streak else 0,
-            "goals_conceded_last_5": home_streak.goals_conceded_last_5 if home_streak else 0,
-        },
-        "away_team": {
-            "name": fixture.away_team.name if fixture.away_team else "Away Team",
-            "elo_rating": round(away_elo.rating, 1) if away_elo else 1500.0,
-            "last_5_results": json.loads(away_streak.last_5_results) if (away_streak and away_streak.last_5_results) else [],
-            "goals_scored_last_5": away_streak.goals_scored_last_5 if away_streak else 0,
-            "goals_conceded_last_5": away_streak.goals_conceded_last_5 if away_streak else 0,
-        },
-        "h2h_history": h2h_data,
-        "prediction": {
-            "predicted_home_score": intel["expected_goals"]["home"],
-            "predicted_away_score": intel["expected_goals"]["away"],
-            "expected_goals_xg": intel["expected_goals"]["total"],
-            "over_1_5_probability": intel["goals"]["over_1_5"],
-            "over_2_5_probability": intel["goals"]["over_2_5"],
-            "over_0_5_probability": intel["goals"]["over_0_5"],
-            "over_3_5_probability": intel["goals"]["over_3_5"],
-            "under_2_5_probability": intel["goals"]["under_2_5"],
-            "btts_probability": intel["btts"]["yes"],
-            "confidence_score": round(intel["confidence"]["overall"] / 100.0, 2),
-            "most_likely_score": intel["exact_scores"][0]["score"] if intel["exact_scores"] else "2-1",
-            "top_scorelines": top_scorelines or intel["exact_scores"][:5],
+        "season": fixture.league.season if fixture.league else ""
+    } if fixture.league else {
+        "id": None,
+        "name": None,
+        "country": c_name,
+        "country_code": c_code,
+        "season": ""
+    }
 
-            # Match Intelligence unified schema
-            "match_intelligence": intel,
-            "model": intel["model"],
-            "expected_goals": intel["expected_goals"],
-            "result": intel["result"],
-            "goals": intel["goals"],
-            "btts": intel["btts"],
-            "home_team_goals": intel["home_team_goals"],
-            "away_team_goals": intel["away_team_goals"],
-            "halves": intel["halves"],
-            "exact_scores": intel["exact_scores"],
-            "confidence": intel["confidence"],
-            "best_signal": intel["best_signal"],
-            "corners": intel.get("corners"),
-            "cards": intel.get("cards")
-        },
+    prediction_payload = {
+        "predicted_home_score": intel["expected_goals"]["home"],
+        "predicted_away_score": intel["expected_goals"]["away"],
+        "expected_goals_xg": intel["expected_goals"]["total"],
+        "over_1_5_probability": intel["goals"]["over_1_5"],
+        "over_2_5_probability": intel["goals"]["over_2_5"],
+        "over_0_5_probability": intel["goals"]["over_0_5"],
+        "over_3_5_probability": intel["goals"]["over_3_5"],
+        "under_2_5_probability": intel["goals"]["under_2_5"],
+        "btts_probability": intel["btts"]["yes"],
+        "confidence_score": round(intel["confidence"]["overall"] / 100.0, 2),
+        "most_likely_score": intel["exact_scores"][0]["score"] if intel.get("exact_scores") else "2-1",
+        "top_scorelines": top_scorelines or (intel.get("exact_scores") or [])[:5],
+
+        # Match Intelligence unified schema
         "match_intelligence": intel,
+        "model": intel.get("model"),
+        "expected_goals": intel.get("expected_goals"),
+        "result": intel.get("result"),
+        "goals": intel.get("goals"),
+        "btts": intel.get("btts"),
+        "home_team_goals": intel.get("home_team_goals"),
+        "away_team_goals": intel.get("away_team_goals"),
+        "halves": intel.get("halves"),
+        "exact_scores": intel.get("exact_scores"),
+        "confidence": intel.get("confidence"),
+        "best_signal": intel.get("best_signal"),
         "corners": intel.get("corners"),
         "cards": intel.get("cards")
+    } if intel else None
+
+    return {
+        "status": "ok",
+        "id": fixture.id,
+        "fixture_id": fixture.id,
+        "provider_fixture_id": fixture.external_id,
+        "kickoff_time": fixture.match_date.isoformat() if fixture.match_date else None,
+        "status_code": fixture.status,
+        "match_status": fixture.status,
+        "match_minute": getattr(fixture, "live_clock", None),
+        "home_score": fixture.home_score,
+        "away_score": fixture.away_score,
+        "league_name": fixture.league.name if fixture.league else None,
+        "country": fixture.league.country if (fixture.league and fixture.league.country) else c_name,
+        "country_code": c_code,
+        "competition": competition_data,
+        "home_team": home_team_data,
+        "away_team": away_team_data,
+        "h2h_history": h2h_data,
+        "prediction": prediction_payload,
+        "match_intelligence": intel,
+        "corners": intel.get("corners") if intel else None,
+        "cards": intel.get("cards") if intel else None
     }
 
 
 @app.get("/api/corners/backtest")
-def get_corners_backtest(min_samples: int = 5, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_corners_backtest(request: Request, min_samples: int = 5, db: Session = Depends(get_db)):
     """Runs a chronological backtest on historical matches with observed corner counts."""
     from services.corners_service import CornersBacktestService
     return CornersBacktestService.run_chronological_backtest(db, min_samples=min_samples)
 
 
 @app.get("/api/corners/data-quality")
-def get_corners_data_quality(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_corners_data_quality(request: Request, db: Session = Depends(get_db)):
     """Audits database corner data completeness, eligible matches, coverage, and competition breakdowns."""
     from services.corners_service import CornerDataQualityService
     return CornerDataQualityService.get_database_corner_data_quality(db)
 
 
 @app.get("/api/corners/performance")
-def get_corners_performance_dashboard(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_corners_performance_dashboard(request: Request, db: Session = Depends(get_db)):
     """Exposes production corner model validation status, Brier scores, calibration, and baseline comparisons."""
     from services.corners_service import CornersBacktestService
     return CornersBacktestService.run_chronological_backtest(db, min_samples=100)
 
 
 @app.get("/api/cards/backtest")
-def get_cards_backtest(min_samples: int = 5, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_cards_backtest(request: Request, min_samples: int = 5, db: Session = Depends(get_db)):
     """Runs a chronological backtest on historical matches with observed card counts."""
     from services.cards_service import CardsBacktestService
     return CardsBacktestService.run_chronological_backtest(db, min_samples=min_samples)
 
 
 @app.get("/api/cards/data-quality")
-def get_cards_data_quality(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_cards_data_quality(request: Request, db: Session = Depends(get_db)):
     """Audits database card data completeness, referee coverage, eligible matches, and competition breakdowns."""
     from services.cards_service import CardDataQualityService
     return CardDataQualityService.get_database_card_data_quality(db)
 
 
 @app.get("/api/cards/performance")
-def get_cards_performance_dashboard(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_cards_performance_dashboard(request: Request, db: Session = Depends(get_db)):
     """Exposes production card model validation status, Brier scores, calibration, and baseline comparisons."""
     from services.cards_service import CardsBacktestService
     return CardsBacktestService.run_chronological_backtest(db, min_samples=100)
 
 
 @app.get("/api/fixtures/{fixture_id}/live-intelligence")
-def get_fixture_live_intelligence(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_live_intelligence(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Computes dynamic in-play prediction probabilities for a live or scheduled fixture."""
     from services.live_service import LiveMatchIntelligenceService
     intel = LiveMatchIntelligenceService.get_live_intelligence(db, fixture_id)
@@ -934,7 +1111,8 @@ def get_fixture_live_intelligence(fixture_id: int, db: Session = Depends(get_db)
 
 
 @app.get("/api/live/fixtures")
-def get_live_fixtures(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_live_fixtures(request: Request, db: Session = Depends(get_db)):
     """Returns all currently live fixtures with live minutes, scores, and best live signals."""
     from services.live_service import LiveMatchIntelligenceService
     from models import Fixture, LiveMatchState
@@ -966,14 +1144,16 @@ def get_live_fixtures(db: Session = Depends(get_db)):
 
 
 @app.get("/api/live/performance")
-def get_live_performance(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_live_performance(request: Request, db: Session = Depends(get_db)):
     """Returns dynamic in-play prediction evaluation metrics across 6 match minute intervals."""
     from services.model_evaluation_service import ModelEvaluationService
     return ModelEvaluationService.get_live_minute_performance(db)
 
 
 @app.get("/api/models/performance")
-def get_models_performance(
+@limiter.limit("60/minute")
+def get_models_performance(request: Request, 
     model_version: Optional[str] = None,
     prediction_type: Optional[str] = None,
     db: Session = Depends(get_db)
@@ -984,21 +1164,24 @@ def get_models_performance(
 
 
 @app.get("/api/models/leaderboard")
-def get_models_leaderboard(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_leaderboard(request: Request, db: Session = Depends(get_db)):
     """Returns ranked prediction markets sorted by composite Brier and calibration performance."""
     from services.model_evaluation_service import ModelEvaluationService
     return {"status": "ok", "leaderboard": ModelEvaluationService.get_market_leaderboard(db)}
 
 
 @app.get("/api/models/calibration")
-def get_models_calibration(market: Optional[str] = None, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_calibration(request: Request, market: Optional[str] = None, db: Session = Depends(get_db)):
     """Returns 10-decile probability reliability diagram buckets, ECE, and MCE."""
     from services.model_evaluation_service import ModelEvaluationService
     return ModelEvaluationService.get_calibration_dashboard(db, market=market)
 
 
 @app.get("/api/models/drift")
-def get_models_drift(
+@limiter.limit("60/minute")
+def get_models_drift(request: Request, 
     window_size: int = 100, baseline_size: int = 300, db: Session = Depends(get_db)
 ):
     """Monitors model drift by comparing recent window performance against the historical baseline."""
@@ -1007,70 +1190,80 @@ def get_models_drift(
 
 
 @app.get("/api/models/league-performance")
-def get_models_league_performance(competition: Optional[str] = None, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_league_performance(request: Request, competition: Optional[str] = None, db: Session = Depends(get_db)):
     """Returns model performance breakdown segmented by league competition."""
     from services.model_evaluation_service import ModelEvaluationService
     return {"status": "ok", "leagues": ModelEvaluationService.get_league_performance(db, competition=competition)}
 
 
 @app.get("/api/models/status")
-def get_models_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_status(request: Request, db: Session = Depends(get_db)):
     """Returns simple production readiness summary across all predictive model families."""
     from services.model_evaluation_service import ModelEvaluationService
     return ModelEvaluationService.get_models_readiness_status(db)
 
 
 @app.get("/api/data-quality/overview")
-def get_data_quality_overview(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_quality_overview(request: Request, db: Session = Depends(get_db)):
     """Returns global data coverage metrics across goals, corners, cards, referees, and live snapshots."""
     from services.data_quality_service import DataQualityService
     return DataQualityService.calculate_global_coverage(db)
 
 
 @app.get("/api/data-quality/competitions")
-def get_data_quality_competitions(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_quality_competitions(request: Request, db: Session = Depends(get_db)):
     """Returns data quality coverage segmented by competition."""
     from services.data_quality_service import DataQualityService
     return {"status": "ok", "competitions": DataQualityService.calculate_competition_coverage(db)}
 
 
 @app.get("/api/data-quality/backfill-status")
-def get_data_quality_backfill_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_quality_backfill_status(request: Request, db: Session = Depends(get_db)):
     """Returns historical backfill and enrichment progress."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.get_backfill_status(db)
 
 
 @app.post("/api/data-quality/backfill-run")
-def run_data_quality_backfill(batch_size: int = 50, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def run_data_quality_backfill(request: Request, batch_size: int = 50, db: Session = Depends(get_db)):
     """Triggers a controlled batch historical enrichment pass."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.discover_and_enrich_batch(db, batch_size=batch_size)
 
 
 @app.get("/api/models/readiness")
-def get_models_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_readiness(request: Request, db: Session = Depends(get_db)):
     """Returns production readiness status and activation gates for all prediction models."""
     from services.production_validation_service import ProductionValidationService
     return ProductionValidationService.get_all_models_readiness_report(db)
 
 
 @app.get("/api/fixtures/{fixture_id}/feature-coverage")
-def get_fixture_feature_coverage(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_feature_coverage(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Returns feature payload and temporal coverage diagnostics for a specific fixture."""
     from services.feature_store_service import FeatureStoreService
     return FeatureStoreService.build_fixture_features_payload(db, fixture_id)
 
 
 @app.get("/api/system/providers")
-def get_system_providers(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_providers(request: Request, db: Session = Depends(get_db)):
     """Returns external data provider operational health and latency logs."""
     from services.provider_health_service import ProviderHealthService
     return {"status": "ok", "providers": ProviderHealthService.get_providers_status(db)}
 
 
 @app.get("/api/system/intelligence-status")
-def get_system_intelligence_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_intelligence_status(request: Request, db: Session = Depends(get_db)):
     """Central production intelligence status report summarizing data coverage, model validation, and provider health."""
     from services.data_quality_service import DataQualityService
     from services.production_validation_service import ProductionValidationService
@@ -1098,13 +1291,15 @@ def get_system_intelligence_status(db: Session = Depends(get_db)):
 # =============================================================================
 
 @app.get("/api/system/health")
-def get_system_health():
+@limiter.limit("60/minute")
+def get_system_health(request: Request):
     """Liveness probe confirming FastAPI application process is active and responsive."""
     return {"status": "HEALTHY", "service": "Soccer Goal Predictor / Match Intelligence", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/api/system/readiness")
-def get_system_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_readiness(request: Request, db: Session = Depends(get_db)):
     """Readiness probe validating database connectivity, migrations, and core services."""
     try:
         # Test DB query
@@ -1123,7 +1318,8 @@ def get_system_readiness(db: Session = Depends(get_db)):
 
 
 @app.get("/api/system/status")
-def get_system_operational_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_operational_status(request: Request, db: Session = Depends(get_db)):
     """Comprehensive production health status summarizing database, providers, jobs, and alerts."""
     from services.provider_health_service import ProviderHealthService
     from services.alert_service import AlertService
@@ -1160,7 +1356,8 @@ def get_system_operational_status(db: Session = Depends(get_db)):
 
 
 @app.get("/api/system/jobs")
-def get_system_jobs(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_jobs(request: Request, db: Session = Depends(get_db)):
     """Lists available production jobs and recent executions."""
     from services.job_orchestrator_service import JobOrchestratorService
     return {
@@ -1170,7 +1367,8 @@ def get_system_jobs(db: Session = Depends(get_db)):
 
 
 @app.get("/api/system/jobs/{job_name}")
-def get_system_job_status(job_name: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_job_status(request: Request, job_name: str, db: Session = Depends(get_db)):
     """Returns latest execution status for a specific job."""
     from services.job_orchestrator_service import JobOrchestratorService
     history = JobOrchestratorService.get_job_history(db, job_name=job_name, limit=1)
@@ -1180,28 +1378,32 @@ def get_system_job_status(job_name: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/system/jobs/{job_name}/history")
-def get_system_job_history(job_name: str, limit: int = 20, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_job_history(request: Request, job_name: str, limit: int = 20, db: Session = Depends(get_db)):
     """Returns execution history logs for a specific job."""
     from services.job_orchestrator_service import JobOrchestratorService
     return {"job_name": job_name, "history": JobOrchestratorService.get_job_history(db, job_name=job_name, limit=limit)}
 
 
 @app.post("/api/system/jobs/{job_name}/run")
-def run_system_job(job_name: str, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def run_system_job(request: Request, job_name: str, db: Session = Depends(get_db)):
     """Manually triggers immediate execution of a production job."""
     from services.job_orchestrator_service import JobOrchestratorService
     return JobOrchestratorService.execute_job(db, job_name)
 
 
 @app.get("/api/system/alerts")
-def get_system_alerts(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_system_alerts(request: Request, db: Session = Depends(get_db)):
     """Returns all currently active operational system alerts."""
     from services.alert_service import AlertService
     return {"status": "ok", "alerts": AlertService.get_active_alerts(db)}
 
 
 @app.post("/api/system/alerts/{alert_id}/resolve")
-def resolve_system_alert(alert_id: str, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def resolve_system_alert(request: Request, alert_id: str, db: Session = Depends(get_db)):
     """Marks an active system alert as resolved."""
     from services.alert_service import AlertService
     success = AlertService.resolve_alert(db, alert_id)
@@ -1209,14 +1411,16 @@ def resolve_system_alert(alert_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/system/backups")
-def get_system_backups():
+@limiter.limit("60/minute")
+def get_system_backups(request: Request):
     """Lists available SQLite backup archives."""
     from services.backup_service import BackupService
     return {"status": "ok", "backups": BackupService.list_backups()}
 
 
 @app.post("/api/system/backups/run")
-def run_system_backup():
+@limiter.limit("10/minute")
+def run_system_backup(request: Request):
     """Executes an online live SQLite backup and integrity verification."""
     from services.backup_service import BackupService
     return BackupService.create_database_backup()
@@ -1227,7 +1431,8 @@ def run_system_backup():
 # =============================================================================
 
 @app.get("/api/data-quality/validation")
-def get_data_quality_validation(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_quality_validation(request: Request, db: Session = Depends(get_db)):
     """Returns dataset completeness and validation eligibility."""
     from services.data_quality_service import DataQualityService
     cov = DataQualityService.calculate_global_coverage(db)
@@ -1235,7 +1440,8 @@ def get_data_quality_validation(db: Session = Depends(get_db)):
 
 
 @app.get("/api/data-quality/provenance")
-def get_data_provenance(fixture_id: Optional[int] = None, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_provenance(request: Request, fixture_id: Optional[int] = None, db: Session = Depends(get_db)):
     """Returns field-level data provenance and audit trail."""
     from services.data_reconciliation_service import DataReconciliationService
     if fixture_id:
@@ -1260,14 +1466,16 @@ def get_data_provenance(fixture_id: Optional[int] = None, db: Session = Depends(
 
 
 @app.get("/api/data-quality/conflicts")
-def get_data_conflicts(status: Optional[str] = "CONFLICT", db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_data_conflicts(request: Request, status: Optional[str] = "CONFLICT", db: Session = Depends(get_db)):
     """Returns recorded data conflicts between external providers."""
     from services.data_reconciliation_service import DataReconciliationService
     return {"status": "ok", "conflicts": DataReconciliationService.get_all_conflicts(db, status=status)}
 
 
 @app.post("/api/data-quality/conflicts/{conflict_id}/resolve")
-def resolve_data_conflict(conflict_id: int, resolved_value: str, notes: Optional[str] = None, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def resolve_data_conflict(request: Request, conflict_id: int, resolved_value: str, notes: Optional[str] = None, db: Session = Depends(get_db)):
     """Resolves an open data conflict with operator notes."""
     from services.data_reconciliation_service import DataReconciliationService
     success = DataReconciliationService.resolve_conflict(db, conflict_id, resolved_value, notes)
@@ -1275,14 +1483,16 @@ def resolve_data_conflict(conflict_id: int, resolved_value: str, notes: Optional
 
 
 @app.get("/api/data-quality/backfill-progress")
-def get_backfill_progress(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_backfill_progress(request: Request, db: Session = Depends(get_db)):
     """Returns detailed progress for historical data backfill."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.get_backfill_status(db)
 
 
 @app.post("/api/data-quality/backfill/start")
-def start_backfill(db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def start_backfill(request: Request, db: Session = Depends(get_db)):
     """Starts or triggers an automated historical data backfill pass."""
     from services.historical_data_service import HistoricalDataService
     HistoricalDataService.resume_backfill()
@@ -1290,28 +1500,32 @@ def start_backfill(db: Session = Depends(get_db)):
 
 
 @app.post("/api/data-quality/backfill/pause")
-def pause_backfill():
+@limiter.limit("10/minute")
+def pause_backfill(request: Request):
     """Pauses historical data backfill."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.pause_backfill()
 
 
 @app.post("/api/data-quality/backfill/resume")
-def resume_backfill():
+@limiter.limit("10/minute")
+def resume_backfill(request: Request):
     """Resumes historical data backfill."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.resume_backfill()
 
 
 @app.post("/api/data-quality/backfill/retry")
-def retry_backfill(db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def retry_backfill(request: Request, db: Session = Depends(get_db)):
     """Resets failed backfill items allowing them to be retried."""
     from services.historical_data_service import HistoricalDataService
     return HistoricalDataService.retry_failed_backfills(db)
 
 
 @app.get("/api/models/real-validation")
-def get_models_real_validation(limit: int = 200, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_real_validation(request: Request, limit: int = 200, db: Session = Depends(get_db)):
     """Returns chronological walk-forward validation dataset and readiness."""
     from services.validation_dataset_service import ValidationDatasetService
     from services.production_validation_service import ProductionValidationService
@@ -1329,28 +1543,32 @@ def get_models_real_validation(limit: int = 200, db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/real-calibration")
-def get_models_real_calibration(prediction_type: str = "goals", db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_real_calibration(request: Request, prediction_type: str = "goals", db: Session = Depends(get_db)):
     """Returns 10-decile empirical calibration reliability table from verified historical outcomes."""
     from services.model_evaluation_service import ModelEvaluationService
     return ModelEvaluationService.get_calibration_report(db, prediction_type=prediction_type)
 
 
 @app.get("/api/models/real-leaderboard")
-def get_models_real_leaderboard(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_real_leaderboard(request: Request, db: Session = Depends(get_db)):
     """Returns ranked model comparison leaderboard on real match outcomes."""
     from services.production_validation_service import ProductionValidationService
     return ProductionValidationService.get_real_leaderboard(db)
 
 
 @app.get("/api/models/market-readiness")
-def get_models_market_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_market_readiness(request: Request, db: Session = Depends(get_db)):
     """Returns granular market-level sample gates across all goals, corners, and cards markets."""
     from services.production_validation_service import ProductionValidationService
     return ProductionValidationService.get_market_level_readiness(db)
 
 
 @app.get("/api/models/ensemble-status")
-def get_models_ensemble_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_ensemble_status(request: Request, db: Session = Depends(get_db)):
     """Returns adaptive ensemble activation state, gate, and weights."""
     from services.ensemble_service import AdaptiveEnsembleService
     weights = AdaptiveEnsembleService.calculate_dynamic_ensemble_weights(db, "over_1_5_goals")
@@ -1358,7 +1576,8 @@ def get_models_ensemble_status(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/live-validation")
-def get_models_live_validation(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_models_live_validation(request: Request, db: Session = Depends(get_db)):
     """Returns live in-play prediction performance across minute buckets and signals."""
     from services.model_evaluation_service import ModelEvaluationService
     return ModelEvaluationService.get_live_performance_report(db)
@@ -1369,7 +1588,8 @@ def get_models_live_validation(db: Session = Depends(get_db)):
 # =============================================================================
 
 @app.get("/api/fixtures/{fixture_id}/match-intelligence")
-def get_fixture_match_intelligence(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_match_intelligence(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns complete unified Match Intelligence object combining Goals, Corners, Cards, 
     Referee signals, Live dynamics, Cross-Market consistency diagnostics, and ranked opportunities.
@@ -1382,7 +1602,8 @@ def get_fixture_match_intelligence(fixture_id: int, db: Session = Depends(get_db
 
 
 @app.get("/api/match-intelligence/fixtures")
-def get_upcoming_match_intelligence(limit: int = 50, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_upcoming_match_intelligence(request: Request, limit: int = 50, db: Session = Depends(get_db)):
     """
     Returns list of upcoming scheduled fixtures with synthesized Match Intelligence summaries.
     """
@@ -1430,7 +1651,8 @@ def get_upcoming_match_intelligence(limit: int = 50, db: Session = Depends(get_d
 # =============================================================================
 
 @app.get("/api/fixtures/{fixture_id}/shots")
-def get_fixture_shots_prediction(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_shots_prediction(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns pre-match Total Shots and Shots-on-Target predictions and discrete PMF distributions.
     """
@@ -1442,7 +1664,8 @@ def get_fixture_shots_prediction(fixture_id: int, db: Session = Depends(get_db))
 
 
 @app.get("/api/fixtures/{fixture_id}/shots/live")
-def get_fixture_live_shots_prediction(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_live_shots_prediction(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns live in-play dynamic remaining Shots and SoT expectations.
     """
@@ -1454,7 +1677,8 @@ def get_fixture_live_shots_prediction(fixture_id: int, db: Session = Depends(get
 
 
 @app.get("/api/models/shots/readiness")
-def get_shots_model_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_shots_model_readiness(request: Request, db: Session = Depends(get_db)):
     """
     Returns empirical sample readiness gates for Shots and SoT prediction engines.
     """
@@ -1463,7 +1687,8 @@ def get_shots_model_readiness(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/shots/calibration")
-def get_shots_model_calibration(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_shots_model_calibration(request: Request, db: Session = Depends(get_db)):
     """
     Returns empirical calibration and reliability curves for verified shot markets.
     """
@@ -1479,7 +1704,8 @@ def get_shots_model_calibration(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/shots/performance")
-def get_shots_model_performance(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_shots_model_performance(request: Request, db: Session = Depends(get_db)):
     """
     Returns aggregate probabilistic performance metrics for Shots and SoT prediction engines.
     """
@@ -1498,7 +1724,8 @@ def get_shots_model_performance(db: Session = Depends(get_db)):
 # =============================================================================
 
 @app.get("/api/fixtures/{fixture_id}/match-statistics")
-def get_fixture_match_statistics_prediction(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_match_statistics_prediction(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns pre-match predictions across all match statistics domains:
     Possession, Fouls, Offsides, Saves, Blocked Shots, Shot Location, and Attacking Pressure.
@@ -1511,7 +1738,8 @@ def get_fixture_match_statistics_prediction(fixture_id: int, db: Session = Depen
 
 
 @app.get("/api/fixtures/{fixture_id}/match-statistics/live")
-def get_fixture_live_match_statistics_prediction(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_live_match_statistics_prediction(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns live in-play dynamic remaining Match Statistics expectations and early-resolved markets.
     """
@@ -1523,7 +1751,8 @@ def get_fixture_live_match_statistics_prediction(fixture_id: int, db: Session = 
 
 
 @app.get("/api/models/match-statistics/readiness")
-def get_match_statistics_model_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_match_statistics_model_readiness(request: Request, db: Session = Depends(get_db)):
     """
     Returns empirical sample readiness gates for Match Statistics prediction engines.
     """
@@ -1532,7 +1761,8 @@ def get_match_statistics_model_readiness(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/match-statistics/calibration")
-def get_match_statistics_model_calibration(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_match_statistics_model_calibration(request: Request, db: Session = Depends(get_db)):
     """
     Returns empirical calibration curves for verified match statistics markets.
     """
@@ -1548,7 +1778,8 @@ def get_match_statistics_model_calibration(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/match-statistics/performance")
-def get_match_statistics_model_performance(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_match_statistics_model_performance(request: Request, db: Session = Depends(get_db)):
     """
     Returns aggregate probabilistic performance metrics for Match Statistics prediction engines.
     """
@@ -1567,7 +1798,8 @@ def get_match_statistics_model_performance(db: Session = Depends(get_db)):
 # =============================================================================
 
 @app.get("/api/fixtures/{fixture_id}/decision")
-def get_fixture_match_decision(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_match_decision(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns authoritative match decision summary consumed by MatchDetailModal and operational UI.
     """
@@ -1579,7 +1811,8 @@ def get_fixture_match_decision(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/fixtures/{fixture_id}/signals")
-def get_fixture_top_signals(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_top_signals(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns top qualifying production/shadow signals for a fixture with reason codes and risk tiers.
     """
@@ -1588,7 +1821,8 @@ def get_fixture_top_signals(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/fixtures/{fixture_id}/decision/explanation")
-def get_fixture_decision_explanations(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_decision_explanations(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns detailed machine-readable explainability reason codes and factors across all fixture markets.
     """
@@ -1602,7 +1836,8 @@ def get_fixture_decision_explanations(fixture_id: int, db: Session = Depends(get
 
 
 @app.get("/api/fixtures/{fixture_id}/decision/history")
-def get_fixture_decision_history(fixture_id: int, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_fixture_decision_history(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """
     Returns historical immutable decision snapshot audit trail for a fixture.
     """
@@ -1639,7 +1874,8 @@ def get_fixture_decision_history(fixture_id: int, db: Session = Depends(get_db))
 
 
 @app.get("/api/models/decision-readiness")
-def get_decision_engine_readiness(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_decision_engine_readiness(request: Request, db: Session = Depends(get_db)):
     """
     Returns empirical sample readiness gates across all decision engine markets.
     """
@@ -1648,7 +1884,8 @@ def get_decision_engine_readiness(db: Session = Depends(get_db)):
 
 
 @app.get("/api/models/decision-performance")
-def get_decision_engine_performance(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_decision_engine_performance(request: Request, db: Session = Depends(get_db)):
     """
     Returns aggregate probabilistic performance metrics for the unified decision engine.
     """
@@ -1664,7 +1901,8 @@ def get_decision_engine_performance(db: Session = Depends(get_db)):
 
 
 @app.get("/api/decision/signals")
-def get_all_active_decision_signals(
+@limiter.limit("60/minute")
+def get_all_active_decision_signals(request: Request, 
     status: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db)
@@ -1696,7 +1934,8 @@ def get_all_active_decision_signals(
 
 
 @app.get("/api/decision/status")
-def get_decision_engine_status(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_decision_engine_status(request: Request, db: Session = Depends(get_db)):
     """
     Returns real-time operating metrics and snapshot counts for the decision intelligence service.
     """
@@ -1710,21 +1949,22 @@ def get_decision_engine_status(db: Session = Depends(get_db)):
 
 
 @app.post("/api/notifications/telegram/test")
-async def send_telegram_test_notification(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
-    """Sends a test Telegram notification message."""
-    test_msg = (
-        "🟢 <b>SOCCER GOAL PREDICTOR TEST NOTIFICATION</b>\n\n"
-        "Your Telegram Bot connection is successfully configured!\n"
-        "You will receive daily top predictions at 08:00 UTC."
-    )
-    success = await TelegramNotificationService.send_message(test_msg, bot_token=bot_token, chat_id=chat_id)
-    if success:
-        return {"status": "ok", "message": "Test Telegram message sent successfully!"}
-    return {"status": "error", "message": "Failed to send Telegram message. Please verify BOT_TOKEN and CHAT_ID."}
+@limiter.limit("10/minute")
+async def send_telegram_test_notification(request: Request, bot_token: Optional[str] = None, chat_id: Optional[str] = None, window: Optional[str] = "auto"):
+    """Sends a live 3-Odds Accumulator Ticket test notification directly to Telegram."""
+    try:
+        await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id, window_key=window)
+        return {
+            "status": "ok",
+            "message": f"Live 3-Odds Accumulator ticket dispatched to Telegram successfully! (Window: {window})"
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to dispatch Telegram message: {str(e)}"}
 
 
 @app.post("/api/notifications/whatsapp/test")
-async def send_whatsapp_test_notification(phone: Optional[str] = None, api_key: Optional[str] = None):
+@limiter.limit("10/minute")
+async def send_whatsapp_test_notification(request: Request, phone: Optional[str] = None, api_key: Optional[str] = None):
     """Sends a test WhatsApp notification message via CallMeBot API."""
     test_msg = (
         "⚽ *SOCCER GOAL PREDICTOR TEST NOTIFICATION*\n\n"
@@ -1738,14 +1978,16 @@ async def send_whatsapp_test_notification(phone: Optional[str] = None, api_key: 
 
 
 @app.post("/api/notifications/broadcast")
-async def trigger_manual_broadcast(bot_token: Optional[str] = None, chat_id: Optional[str] = None):
-    """Triggers immediate prediction broadcast to Telegram and WhatsApp."""
-    await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id)
-    return {"status": "ok", "message": "Broadcast triggered successfully to Telegram and WhatsApp!"}
+@limiter.limit("10/minute")
+async def trigger_manual_broadcast(request: Request, bot_token: Optional[str] = None, chat_id: Optional[str] = None, window: Optional[str] = "auto"):
+    """Triggers immediate 3-Odds Accumulator broadcast to Telegram across Morning, Afternoon, or Evening window."""
+    await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id, window_key=window)
+    return {"status": "ok", "message": f"3-Odds Accumulator broadcast triggered successfully to Telegram (Window: {window})!"}
 
 
 @app.get("/api/fixtures/upcoming")
-async def get_upcoming_fixtures(db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = Depends(validate_fixture_query), db: Session = Depends(get_db)):
     """
     Retrieve all upcoming/scheduled global fixtures starting from present date
     with full team, league, and Poisson goal prediction details.
@@ -1900,14 +2142,14 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
             },
             "home_team": {
                 "id": fix.home_team.id if fix.home_team else None,
-                "name": fix.home_team.name if fix.home_team else "Home Team",
-                "short_code": fix.home_team.short_code if fix.home_team else "HOM",
+                "name": fix.home_team.name if fix.home_team else None,
+                "short_code": fix.home_team.short_code if fix.home_team else None,
                 "logo_url": fix.home_team.logo_url if fix.home_team else None
             },
             "away_team": {
                 "id": fix.away_team.id if fix.away_team else None,
-                "name": fix.away_team.name if fix.away_team else "Away Team",
-                "short_code": fix.away_team.short_code if fix.away_team else "AWY",
+                "name": fix.away_team.name if fix.away_team else None,
+                "short_code": fix.away_team.short_code if fix.away_team else None,
                 "logo_url": fix.away_team.logo_url if fix.away_team else None
             },
             "prediction": {
@@ -1953,11 +2195,13 @@ async def get_upcoming_fixtures(db: Session = Depends(get_db)):
 
 
 @app.get("/api/fixtures/finished")
-def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends(validate_fixture_query), db: Session = Depends(get_db)):
     """
     Retrieve completed match results with final scores and Over 1.5 goal prediction outcomes.
     Supports optional `date` filter (YYYY-MM-DD format).
     """
+    date = params.date
     try:
         query = db.query(models.Fixture).options(
             joinedload(models.Fixture.league),
@@ -2058,14 +2302,14 @@ def get_finished_fixtures(date: Optional[str] = None, db: Session = Depends(get_
                 },
                 "home_team": {
                     "id": fix.home_team.id if fix.home_team else None,
-                    "name": fix.home_team.name if fix.home_team else "Home Team",
-                    "short_code": fix.home_team.short_code if fix.home_team else "HOM",
+                    "name": fix.home_team.name if fix.home_team else None,
+                    "short_code": fix.home_team.short_code if fix.home_team else None,
                     "logo_url": fix.home_team.logo_url if fix.home_team else None
                 },
                 "away_team": {
                     "id": fix.away_team.id if fix.away_team else None,
-                    "name": fix.away_team.name if fix.away_team else "Away Team",
-                    "short_code": fix.away_team.short_code if fix.away_team else "AWY",
+                    "name": fix.away_team.name if fix.away_team else None,
+                    "short_code": fix.away_team.short_code if fix.away_team else None,
                     "logo_url": fix.away_team.logo_url if fix.away_team else None
                 },
                 "prediction": {
