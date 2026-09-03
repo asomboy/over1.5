@@ -2146,16 +2146,61 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
         value_edge_pct = round((o15 - implied_market_prob) * 100, 1)
         is_value_bet = (o15 >= 0.78) and (value_edge_pct >= 4.0)
 
+        # Dynamic Status & Live Clock Evaluation:
+        # Guarantee matches that have kicked off never stay stuck on SCHEDULED
+        eff_status = str(fix.status or "SCHEDULED").upper()
+        eff_home_score = getattr(fix, "home_score", None)
+        eff_away_score = getattr(fix, "away_score", None)
+        eff_live_clock = getattr(fix, "live_clock", None)
+
+        if fix.match_date:
+            naive_m_date = fix.match_date.replace(tzinfo=None) if fix.match_date.tzinfo else fix.match_date
+            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            if eff_status in ["SCHEDULED", "PRE_EVENT", "PRE"] and naive_m_date <= (now_utc_naive - timedelta(minutes=1)):
+                if naive_m_date >= (now_utc_naive - timedelta(hours=3)):
+                    eff_status = "LIVE"
+                    mins_elapsed = max(1, int((now_utc_naive - naive_m_date).total_seconds() / 60))
+                    if not eff_live_clock or eff_live_clock == "0'":
+                        if mins_elapsed <= 45:
+                            eff_live_clock = f"{mins_elapsed}'"
+                        elif mins_elapsed <= 60:
+                            eff_live_clock = "HT"
+                        elif mins_elapsed <= 105:
+                            eff_live_clock = f"{mins_elapsed - 15}'"
+                        else:
+                            eff_live_clock = "90+'"
+                    if eff_home_score is None:
+                        eff_home_score = 0
+                    if eff_away_score is None:
+                        eff_away_score = 0
+                elif naive_m_date < (now_utc_naive - timedelta(hours=3)):
+                    eff_status = "FINISHED"
+                    eff_live_clock = "FT"
+                    if eff_home_score is None:
+                        eff_home_score = 0
+                    if eff_away_score is None:
+                        eff_away_score = 0
+
+        # Dynamic Canonical Competition & Country Resolution
+        canon_ident = CanonicalCompetitionService.resolve_competition(
+            league_name=fix.league.name if fix.league else None,
+            home_team_name=fix.home_team.name if fix.home_team else None,
+            away_team_name=fix.away_team.name if fix.away_team else None
+        )
+        resolved_league_name = canon_ident.competition_name
+        resolved_country = canon_ident.country_name
+        resolved_country_code = canon_ident.country_code
+
         result_data.append({
             "id": fix.id,
             "external_id": fix.external_id,
             "match_date": match_date_str,
-            "status": fix.status,
+            "status": eff_status,
             "venue": fix.venue,
             "weather": weather_data,
-            "home_score": getattr(fix, "home_score", None),
-            "away_score": getattr(fix, "away_score", None),
-            "live_clock": getattr(fix, "live_clock", None),
+            "home_score": eff_home_score,
+            "away_score": eff_away_score,
+            "live_clock": eff_live_clock,
             "value_bet": {
                 "is_value_bet": is_value_bet,
                 "model_odds": model_odds,
@@ -2164,15 +2209,15 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
             },
             "competition": {
                 "id": fix.league.id if fix.league else None,
-                "name": fix.league.name if fix.league else "Unknown Competition",
-                "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
-                "country_code": CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[1],
+                "name": resolved_league_name,
+                "country": resolved_country,
+                "country_code": resolved_country_code,
                 "season": fix.league.season if fix.league else ""
             },
             "league": {
                 "id": fix.league.id if fix.league else None,
-                "name": fix.league.name if fix.league else "Unknown League",
-                "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
+                "name": resolved_league_name,
+                "country": resolved_country,
                 "season": fix.league.season if fix.league else ""
             },
             "home_team": {
@@ -2330,6 +2375,16 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
                     s = str(fix.match_date).replace(" ", "T")
                     match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
 
+            # Dynamic Canonical Competition & Country Resolution
+            canon_ident = CanonicalCompetitionService.resolve_competition(
+                league_name=fix.league.name if fix.league else None,
+                home_team_name=fix.home_team.name if fix.home_team else None,
+                away_team_name=fix.away_team.name if fix.away_team else None
+            )
+            resolved_league_name = canon_ident.competition_name
+            resolved_country = canon_ident.country_name
+            resolved_country_code = canon_ident.country_code
+
             result_data.append({
                 "id": fix.id,
                 "external_id": fix.external_id,
@@ -2344,15 +2399,15 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
                 "live_clock": "FT",
                 "competition": {
                     "id": fix.league.id if fix.league else None,
-                    "name": fix.league.name if fix.league else "Unknown Competition",
-                    "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
-                    "country_code": CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[1],
+                    "name": resolved_league_name,
+                    "country": resolved_country,
+                    "country_code": resolved_country_code,
                     "season": fix.league.season if fix.league else ""
                 },
                 "league": {
                     "id": fix.league.id if fix.league else None,
-                    "name": fix.league.name if fix.league else "Unknown League",
-                    "country": fix.league.country if (fix.league and fix.league.country) else CanonicalCompetitionService.get_country_for_league_name(fix.league.name if fix.league else None)[0],
+                    "name": resolved_league_name,
+                    "country": resolved_country,
                     "season": fix.league.season if fix.league else ""
                 },
                 "home_team": {

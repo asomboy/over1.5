@@ -338,7 +338,18 @@ export default function App() {
   const isMatchLive = (fix) => {
     if (!fix || !fix.status) return false;
     const st = String(fix.status).toUpperCase();
-    return st === 'LIVE' || st === 'IN_PROGRESS' || st === 'IN_PLAY' || st === 'INPLAY' || st === 'HALFTIME' || st === 'HT' || st === 'FIRST_HALF' || st === '1H' || st === 'SECOND_HALF' || st === '2H' || st === 'ET' || st === 'OVERTIME' || st === 'SHOOTOUT';
+    if (st === 'LIVE' || st === 'IN_PROGRESS' || st === 'IN_PLAY' || st === 'INPLAY' || st === 'HALFTIME' || st === 'HT' || st === 'FIRST_HALF' || st === '1H' || st === 'SECOND_HALF' || st === '2H' || st === 'ET' || st === 'OVERTIME' || st === 'SHOOTOUT') {
+      return true;
+    }
+    // Client-side kickoff inference: If match date has passed by >= 1 min and < 3.5 hours, it is LIVE!
+    if (fix.match_date && st !== 'FINISHED' && st !== 'FT' && st !== 'AET' && st !== 'PEN' && st !== 'POSTPONED' && st !== 'CANCELLED' && st !== 'ABANDONED') {
+      const matchTime = parseMatchDate(fix.match_date)?.getTime();
+      const now = Date.now();
+      if (matchTime && matchTime <= (now - 60000) && matchTime >= (now - 3.5 * 3600000)) {
+        return true;
+      }
+    }
+    return false;
   };
 
   // Helper to exclude school, collegiate, high school, youth, or U17-U23 matches
@@ -486,18 +497,33 @@ export default function App() {
 
   // Helper for rendering Live Score / Match Status Badge
   const renderLiveStatusBadge = (fix) => {
-    if (isMatchLive(fix)) {
+    const isLive = isMatchLive(fix);
+    const mTime = parseMatchDate(fix?.match_date)?.getTime();
+    const now = Date.now();
+    const isFinished = fix?.status === 'FINISHED' || fix?.status === 'FT' || (mTime && mTime < (now - 3.5 * 3600000) && fix?.status !== 'POSTPONED' && fix?.status !== 'CANCELLED' && fix?.status !== 'ABANDONED');
+
+    if (isLive) {
+      let clockStr = fix?.live_clock;
+      if (!clockStr || clockStr === "0'") {
+        if (mTime) {
+          const elapsedMins = Math.max(1, Math.floor((now - mTime) / 60000));
+          if (elapsedMins <= 45) clockStr = `${elapsedMins}'`;
+          else if (elapsedMins <= 60) clockStr = 'HT';
+          else if (elapsedMins <= 105) clockStr = `${elapsedMins - 15}'`;
+          else clockStr = "90+'";
+        }
+      }
       return (
         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-rose-600 text-white shadow-lg ring-2 ring-rose-400 animate-pulse">
           <Radio className="w-3 h-3 text-white animate-spin" />
-          <span>🔴 LIVE {fix.live_clock || ''} &bull; {fix.home_score ?? 0} - {fix.away_score ?? 0}</span>
+          <span>🔴 LIVE {clockStr ? `${clockStr} ` : ''}&bull; {fix?.home_score ?? 0} - {fix?.away_score ?? 0}</span>
         </span>
       );
     }
-    if (fix.status === 'FINISHED') {
+    if (isFinished) {
       return (
         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-slate-800 text-slate-200 border border-slate-700">
-          <span>FT &bull; {fix.home_score ?? 0} - {fix.away_score ?? 0}</span>
+          <span>FT &bull; {fix?.home_score ?? 0} - {fix?.away_score ?? 0}</span>
         </span>
       );
     }
@@ -1664,7 +1690,7 @@ export default function App() {
                               </span>
                             </div>
                             <span className="text-[10px] text-slate-400 truncate">
-                              {fix.league?.name || 'League'}
+                              {fix.competition?.name || fix.league?.name || 'League'}
                             </span>
                           </div>
                         </div>
@@ -1796,7 +1822,7 @@ export default function App() {
                           {/* Competition Name Badge */}
                           <td className="py-3 px-3">
                             <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
-                              {fix.league?.name || 'League'}
+                              {fix.competition?.name || fix.league?.name || 'League'}
                             </span>
                           </td>
 
