@@ -1,3 +1,12 @@
+# ==============================================================================
+# Render Blueprint Configuration for Soccer Goal Predictor
+# 
+# IMPORTANT: Sensitive and instance-specific environment variables 
+# (specifically FOOTBALL_API_KEY and DATABASE_URL) have sync: false.
+# They MUST be manually configured in the Render Dashboard Environment settings
+# for the soccer-goal-predictor-api service.
+# ==============================================================================
+
 services:
   # Backend FastAPI Web Service
   - type: web
@@ -11,6 +20,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: FOOTBALL_API_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        sync: false
 
   # Frontend Vite React Static Site
   - type: web

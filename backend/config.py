@@ -6,8 +6,8 @@ class Settings:
     Centralized configuration management for Soccer Goal Predictor / Match Intelligence Platform.
     Provides environment-driven configuration with safe development defaults.
     """
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./backend/soccer.db")
+    DEFAULT_DB_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soccer.db")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     
     # Provider Settings
@@ -73,13 +73,10 @@ class Settings:
 settings = Settings()
 DATABASE_URL = settings.DATABASE_URL
 CORS_ORIGINS = [
+    "https://soccer-goal-predictor-web.onrender.com",
     "http://localhost:5173",
     "http://localhost:3000",
-    "http://localhost:5000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
-    "https://over1-5.onrender.com",
-    "https://over1-5-web.onrender.com",
-    "*"
 ]
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "")

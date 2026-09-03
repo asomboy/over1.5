@@ -135,6 +135,11 @@ class CanonicalCompetitionService:
         (r"\b(afc champions league elite|afc champions league two|afc champions league|afc asian cup|asean champ)\b", "Asia", "AFC"),
         (r"\b(fifa club world cup|fifa world cup)\b", "International", "INT"),
 
+        # NCAA / College / University Soccer (must be before country patterns)
+        (r"\b(ncaaw|ncaa\s*w(omen)?)\b", "USA", "US"),
+        (r"\b(ncaam|ncaa\s*m(en)?)\b", "USA", "US"),
+        (r"\b(ncaa|college soccer|collegiate)\b", "USA", "US"),
+
         # 2. Country-Specific Prefixes & Unique Tournaments
         # Scotland
         (r"\b(scottish|spfl|scotland)\b", "Scotland", "GB-SCT"),
@@ -257,6 +262,48 @@ class CanonicalCompetitionService:
         (r"\b(friendly|friendlies|club friendly)\b", "International", "INT"),
     ]
 
+    # Known Club Signatures for Reliable Competition & Country Derivation
+    CLUB_SIGNATURES = [
+        # Japan (J1 League)
+        (r"\b(avispa fukuoka|urawa red diamonds|kawasaki frontale|yokohama f\. marinos|yokohama f marinos|kashima antlers|vissel kobe|gamba osaka|cerezo osaka|sanfrecce hiroshima|nagoya grampus|fc tokyo|kashiwa reysol|shonan bellmare|kyoto sanga|albirex niigata|sagan tosu|consadole sapporo|machida zelvia|tokyo verdy|jubilo iwata)\b", "Japanese J1 League", "Japan", "JP", False),
+        
+        # Scotland (Scottish Premiership)
+        (r"\b(celtic|rangers|heart of midlothian|hearts|aberdeen|hibernian|kilmarnock|motherwell|st mirren|dundee united|dundee|st johnstone|falkirk|ross county|livingston)\b", "Scottish Premiership", "Scotland", "GB-SCT", False),
+        
+        # Argentina (Argentine Liga Profesional)
+        (r"\b(boca juniors|river plate|racing club|independiente|san lorenzo|velez sarsfield|estudiantes de la plata|talleres de cordoba|rosario central|newell'?s old boys|argentinos juniors|lanus|huracan|belgrano|godoy cruz|defensa y justicia|platense|banfield|tigre|gimnasia la plata|instituto de cordoba)\b", "Argentine Liga Profesional", "Argentina", "AR", False),
+        
+        # Brazil (Brasileirao Serie A)
+        (r"\b(flamengo|palmeiras|sao paulo|corinthians|santos|gremio|internacional|fluminense|botafogo|atletico mineiro|cruzeiro|vasco da gama|bahia|fortaleza|athletico paranaense|cuiaba|vitoria|juventude|criciuma|atletico goianiense)\b", "Brazilian Serie A", "Brazil", "BR", False),
+
+        # Mexico (Liga MX)
+        (r"\b(club america|america|guadalajara|chivas|cruz azul|pumas unam|tigres uanl|monterrey|toluca|santos laguna|leon|pachuca|atlas|necaxa|puebla|mazatlan|tijuana|queretaro|fc juarez|atletico san luis)\b", "Mexican Liga MX", "Mexico", "MX", False),
+
+        # Venezuelan Liga FUTVE teams
+        (r"anzo[áa]tegui|monagas|carabobo|trujillanos|metropolitanos|rayo zuliano|zulia\s*fc|deportivo la guaira|academia puerto cabello|ucv\s*fc|estudiantes de m[ée]rida|deportivo t[áa]chira|zamora\s*fc|mineros de guayana|portuguesa\s*fc|llaneros|caracas\s*fc|inter de barinas", "Liga FUTVE", "Venezuela", "VE", False),
+
+        # Colombian Primera A teams
+        (r"millonarios|atletico nacional|atl[ée]tico nacional|am[ée]rica de cali|santa fe|deportivo cali|independiente medell[ií]n|once caldas|deportes tolima|la equidad|deportivo pereira|aguilas doradas|[aá]guilas doradas|bucaramanga|envigado|deportivo pasto|jaguares de c[oó]rdoba|patriotas|alianza fc", "Colombian Primera A", "Colombia", "CO", False),
+
+        # Chilean Primera Division
+        (r"colo[- ]colo|universidad de chile|universidad cat[oó]lica|uni[oó]n espa[ñn]ola|audax italiano|palestino|everton de vi[ñn]a|cobreloa|coquimbo unido|o'higgins|huachipato|deportes iquique|cobresal|[ñn]ublense", "Chilean Primera Division", "Chile", "CL", False),
+
+        # Peruvian Liga 1
+        (r"alianza lima|sporting cristal|universitario de deportes|melgar|cienciano|cusco fc|sport boys|c[eé]sar vallejo|utc cajamarca|carlos mannucci|ad tarma", "Peruvian Liga 1", "Peru", "PE", False),
+
+        # Uruguayan Primera
+        (r"pe[ñn]arol|nacional montevideo|defensor sporting|danubio|liverpool montevideo|wanderers montevideo|boston river|progreso|cerro largo", "Uruguayan Primera Division", "Uruguay", "UY", False),
+
+        # Ecuadorian LigaPro
+        (r"ldu quito|liga de quito|barcelona sc|emelec|independiente del valle|aucas|el nacional quito|deportivo cuenca|macar[aá]|mushuc runa|orense", "Ecuadorian LigaPro", "Ecuador", "EC", False),
+
+        # Paraguayan Primera
+        (r"olimpia asunci[oó]n|cerro porte[ñn]o|libertad asunci[oó]n|guaran[ií] asunci[oó]n|nacional asunci[oó]n|sportivo luque[ñn]o|tacuary|sportivo ameliano", "Paraguayan Primera Division", "Paraguay", "PY", False),
+
+        # Bolivian Primera
+        (r"bol[ií]var|the strongest|wilstermann|oriente petrolero|blooming|always ready|aurora cochabamba|guabir[aá]|nacional potos[ií]", "Bolivian Primera Division", "Bolivia", "BO", False),
+    ]
+
     @classmethod
     def resolve_competition(
         cls,
@@ -264,22 +311,24 @@ class CanonicalCompetitionService:
         league_name: Optional[str] = None,
         season_slug: Optional[str] = None,
         alt_note: Optional[str] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        home_team_name: Optional[str] = None,
+        away_team_name: Optional[str] = None
     ) -> CompetitionIdentity:
         """
-        Derives canonical competition name, country name, and country code.
-        Precedence:
-        1. Stable provider feed code (if specific, e.g. 'eng.1', 'esp.1', 'ita.1').
-        2. Clean competition name and notes matching against authoritative pattern rules.
-        3. Safe fallback ('Unknown Competition' / 'International'). Never fabricates a country.
+        Derives canonical competition name, country name, and country code with strict precedence:
+        1. Stable provider feed code (e.g. 'jpn.1', 'eng.1', 'esp.1', 'ita.1').
+        2. Clean, specific alt_note pattern matching (e.g. 'Japanese J1 League' -> Japan).
+        3. Authoritative team club signatures (e.g. Avispa Fukuoka / Urawa Red Diamonds -> Japan).
+        4. Clean competition name and notes matching against authoritative pattern rules.
+        5. Safe fallback ('Unknown Competition' / 'International'). Never fabricates a country.
         """
         code_key = (provider_code or "").strip().lower()
 
         # 1. Direct provider code match (when not generic 'all')
         if code_key and code_key != "all" and code_key in cls.ESPN_CODE_MAP:
             c_name, country, c_code, is_intl = cls.ESPN_CODE_MAP[code_key]
-            # Use specific league name if available, else standard canonical name
-            clean_name = (league_name or c_name).strip()
+            clean_name = (alt_note or league_name or c_name).strip()
             return CompetitionIdentity(
                 provider="ESPN",
                 provider_competition_id=f"ESPN-{code_key}",
@@ -289,12 +338,66 @@ class CanonicalCompetitionService:
                 is_international=is_intl
             )
 
-        # 2. Derive from available display titles and notes
+        # Cross-reference club team signatures to detect team nationality
+        club_match = None
+        combined_teams = f"{home_team_name or ''} {away_team_name or ''}".lower()
+        if combined_teams.strip():
+            for pattern, comp_name, country, c_code, is_intl in cls.CLUB_SIGNATURES:
+                if re.search(pattern, combined_teams, re.IGNORECASE):
+                    club_match = (comp_name, country, c_code, is_intl)
+                    break
+
+        # 2. Direct alt_note pattern matching (Highest accuracy for event-level overrides)
+        if alt_note and alt_note.strip():
+            clean_alt = alt_note.strip()
+            for pattern, country, c_code in cls.PATTERN_RULES:
+                if re.search(pattern, clean_alt, re.IGNORECASE):
+                    is_alt_intl = country in ["Europe", "South America", "North America", "Africa", "Asia", "International"]
+                    # If club signatures clearly indicate a domestic league from a different country
+                    # (e.g. Venezuelan teams mislabeled by ESPN as Colombian Primera A),
+                    # prioritize authoritative club nationality unless alt_note is continental/international.
+                    if club_match and not is_alt_intl and club_match[1] != country:
+                        clean_id_slug = re.sub(r'[^a-zA-Z0-9]+', '-', club_match[0].lower()).strip('-')
+                        return CompetitionIdentity(
+                            provider="ESPN",
+                            provider_competition_id=f"ESPN-all-{clean_id_slug}",
+                            competition_name=club_match[0],
+                            country_name=club_match[1],
+                            country_code=club_match[2],
+                            is_international=club_match[3]
+                        )
+
+                    clean_id_slug = re.sub(r'[^a-zA-Z0-9]+', '-', clean_alt.lower()).strip('-')
+                    return CompetitionIdentity(
+                        provider="ESPN",
+                        provider_competition_id=f"ESPN-all-{clean_id_slug}",
+                        competition_name=clean_alt,
+                        country_name=country,
+                        country_code=c_code,
+                        is_international=is_alt_intl
+                    )
+
+        # 3. Club team signatures matching for ambiguous or generic stage labels
+        if club_match:
+            clean_id_slug = re.sub(r'[^a-zA-Z0-9]+', '-', club_match[0].lower()).strip('-')
+            return CompetitionIdentity(
+                provider="ESPN",
+                provider_competition_id=f"ESPN-all-{clean_id_slug}",
+                competition_name=club_match[0],
+                country_name=club_match[1],
+                country_code=club_match[2],
+                is_international=club_match[3]
+            )
+
+        # 4. Derive from available display titles and notes (ignoring generic stage strings)
+        generic_stages = ["regular-season", "league-phase", "group-stage", "first-round", "second-round", "third-round", "quarterfinals", "semifinals", "final", "finals", "playoffs"]
+        filtered_league_name = league_name if (league_name and league_name.lower() not in ["global matches & cup competitions", "all"]) else None
+        
         candidate_text = " ".join(filter(None, [
             alt_note,
-            league_name,
+            filtered_league_name,
             notes,
-            season_slug
+            season_slug if (season_slug and season_slug.lower() not in generic_stages) else None
         ])).strip()
 
         if not candidate_text:
@@ -308,7 +411,7 @@ class CanonicalCompetitionService:
             )
 
         # Resolve primary competition display name
-        display_name = (alt_note or league_name or notes or "Unknown Competition").strip()
+        display_name = (alt_note or filtered_league_name or notes or "Unknown Competition").strip()
         
         # Check against authoritative pattern rules
         for pattern, country, c_code in cls.PATTERN_RULES:
@@ -324,7 +427,7 @@ class CanonicalCompetitionService:
                     is_international=is_intl
                 )
 
-        # 3. Safe fallback if unmapped: Honest display, no fake country
+        # 5. Safe fallback if unmapped: Honest display, no fake country
         clean_id_slug = re.sub(r'[^a-zA-Z0-9]+', '-', display_name.lower()).strip('-')
         return CompetitionIdentity(
             provider="ESPN",

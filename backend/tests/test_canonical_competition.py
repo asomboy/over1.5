@@ -213,3 +213,59 @@ class TestCanonicalCompetition(unittest.TestCase):
         self.assertEqual(purged, 1)
         self.assertEqual(self.db.query(models.Fixture).count(), 0)
 
+    def test_ncaa_resolution_and_filtering(self):
+        """Test that NCAA altGameNotes resolve to USA and get filtered out."""
+        ident_w = CanonicalCompetitionService.resolve_competition(alt_note="NCAAW Soccer")
+        self.assertEqual(ident_w.country_name, "USA")
+        self.assertEqual(ident_w.country_code, "US")
+        self.assertIn("ncaaw", ident_w.competition_name.lower())
+
+        ident_m = CanonicalCompetitionService.resolve_competition(alt_note="NCAAM Soccer")
+        self.assertEqual(ident_m.country_name, "USA")
+        self.assertEqual(ident_m.country_code, "US")
+
+        # Flagged by is_school_or_youth_competition
+        self.assertTrue(CanonicalCompetitionService.is_school_or_youth_competition(
+            league_name=ident_w.competition_name,
+            home_team_name="Alabama A&M Bulldogs",
+            away_team_name="Ohio Bobcats"
+        ))
+
+    def test_venezuelan_club_signature_overrides_colombian_alt_note(self):
+        """Test that Venezuelan Liga FUTVE clubs are correctly identified even if ESPN mislabels altGameNote as Colombian Primera A."""
+        ident = CanonicalCompetitionService.resolve_competition(
+            provider_code="all",
+            alt_note="Colombian Primera A",
+            home_team_name="Anzoátegui FC",
+            away_team_name="Monagas SC"
+        )
+        self.assertEqual(ident.competition_name, "Liga FUTVE")
+        self.assertEqual(ident.country_name, "Venezuela")
+        self.assertEqual(ident.country_code, "VE")
+
+    def test_purge_ncaa_team_logo_url(self):
+        """Test that fixtures with NCAA logo URLs are purged even if league/team names are unfamiliar."""
+        league = models.League(name="Some Soccer Showcase", country="USA")
+        self.db.add(league)
+        self.db.flush()
+
+        t1 = models.Team(name="Team Alpha", logo_url="https://a.espncdn.com/i/teamlogos/ncaa/500/123.png", league_id=league.id)
+        t2 = models.Team(name="Team Beta", league_id=league.id)
+        self.db.add_all([t1, t2])
+        self.db.flush()
+
+        fix = models.Fixture(
+            league_id=league.id,
+            home_team_id=t1.id,
+            away_team_id=t2.id,
+            match_date=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+            status="SCHEDULED"
+        )
+        self.db.add(fix)
+        self.db.commit()
+
+        self.assertEqual(self.db.query(models.Fixture).count(), 1)
+        purged = DataIngestionService.purge_school_and_youth_competitions(self.db)
+        self.assertEqual(purged, 1)
+        self.assertEqual(self.db.query(models.Fixture).count(), 0)
+

@@ -17,7 +17,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import inspect
+from sqlalchemy import func, inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Ensure backend directory is in sys.path for cross-directory imports
@@ -400,6 +400,23 @@ async def scheduled_telegram_daily_digest(
 async def lifespan(app: FastAPI):
     # Create SQLite database and tables on application startup
     init_db()
+
+    # Database maintenance on application startup: purge youth/NCAA, repair leagues, auto-resolve stale live matches
+    try:
+        from services.ingestion_service import DataIngestionService
+        startup_db = SessionLocal()
+        purged = DataIngestionService.purge_school_and_youth_competitions(startup_db)
+        if purged > 0:
+            logger.info(f"Startup: Purged {purged} school/youth fixtures from database")
+        repaired = DataIngestionService.repair_and_canonicalize_fixture_leagues(startup_db)
+        if repaired > 0:
+            logger.info(f"Startup: Repaired {repaired} fixture leagues to canonical identities")
+        resolved = DataIngestionService.auto_resolve_expired_live_fixtures(startup_db)
+        if resolved > 0:
+            logger.info(f"Startup: Auto-resolved {resolved} expired live fixtures")
+        startup_db.close()
+    except Exception as e:
+        logger.warning(f"Startup maintenance error: {e}")
 
     # Schedule daily midnight refresh at 00:00 UTC
     scheduler.add_job(
@@ -2004,10 +2021,11 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
         ).filter(
             models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
             models.Fixture.match_date >= now_cutoff,
-            ~models.League.name.ilike("%ncaa%"),
-            ~models.League.name.ilike("%college%"),
-            ~models.League.name.ilike("%high school%"),
-            ~models.League.name.ilike("%varsity%")
+            ~func.lower(models.League.name).like("%ncaa%"),
+            ~func.lower(models.League.name).like("%college%"),
+            ~func.lower(models.League.name).like("%high school%"),
+            ~func.lower(models.League.name).like("%varsity%"),
+            ~func.lower(models.League.name).like("%university%"),
         ).order_by(models.Fixture.match_date.asc()).all()
 
         if not fixtures:
@@ -2018,10 +2036,11 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
                 joinedload(models.Fixture.away_team)
             ).filter(
                 models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
-                ~models.League.name.ilike("%ncaa%"),
-                ~models.League.name.ilike("%college%"),
-                ~models.League.name.ilike("%high school%"),
-                ~models.League.name.ilike("%varsity%")
+                ~func.lower(models.League.name).like("%ncaa%"),
+                ~func.lower(models.League.name).like("%college%"),
+                ~func.lower(models.League.name).like("%high school%"),
+                ~func.lower(models.League.name).like("%varsity%"),
+                ~func.lower(models.League.name).like("%university%"),
             ).order_by(models.Fixture.match_date.asc()).all()
     except Exception as query_err:
         logger.error(f"Error querying upcoming fixtures: {query_err}")
@@ -2055,6 +2074,22 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
 
     result_data = []
     for fix in fixtures:
+        # Comprehensive Python-level school/youth filter
+        l_name_lower = (fix.league.name if fix.league else "").lower()
+        h_name_lower = (fix.home_team.name if fix.home_team else "").lower()
+        a_name_lower = (fix.away_team.name if fix.away_team else "").lower()
+
+        # Check league name
+        if any(kw in l_name_lower for kw in ['ncaa', 'ncaam', 'ncaaw', 'college', 'high school', 'varsity', 'university soccer']):
+            continue
+
+        # Check team logo URLs for NCAA pattern (if available)
+        h_logo = (fix.home_team.logo_url if fix.home_team else "") or ""
+        a_logo = (fix.away_team.logo_url if fix.away_team else "") or ""
+        if "teamlogos/ncaa/" in h_logo or "teamlogos/ncaa/" in a_logo:
+            continue
+
+        # Existing is_school_or_youth_competition check (keep it)
         if CanonicalCompetitionService.is_school_or_youth_competition(
             league_name=fix.league.name if fix.league else "",
             home_team_name=fix.home_team.name if fix.home_team else "",
@@ -2203,12 +2238,17 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
     """
     date = params.date
     try:
-        query = db.query(models.Fixture).options(
+        query = db.query(models.Fixture).join(models.League).options(
             joinedload(models.Fixture.league),
             joinedload(models.Fixture.home_team),
             joinedload(models.Fixture.away_team)
         ).filter(
-            models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
+            models.Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+            ~func.lower(models.League.name).like("%ncaa%"),
+            ~func.lower(models.League.name).like("%college%"),
+            ~func.lower(models.League.name).like("%high school%"),
+            ~func.lower(models.League.name).like("%varsity%"),
+            ~func.lower(models.League.name).like("%university%"),
         )
 
         if date:
@@ -2230,6 +2270,21 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
         result_data = []
 
         for fix in fixtures:
+            # Comprehensive Python-level school/youth filter
+            l_name_lower = (fix.league.name if fix.league else "").lower()
+            h_name_lower = (fix.home_team.name if fix.home_team else "").lower()
+            a_name_lower = (fix.away_team.name if fix.away_team else "").lower()
+
+            # Check league name
+            if any(kw in l_name_lower for kw in ['ncaa', 'ncaam', 'ncaaw', 'college', 'high school', 'varsity', 'university soccer']):
+                continue
+
+            # Check team logo URLs for NCAA pattern (if available)
+            h_logo = (fix.home_team.logo_url if fix.home_team else "") or ""
+            a_logo = (fix.away_team.logo_url if fix.away_team else "") or ""
+            if "teamlogos/ncaa/" in h_logo or "teamlogos/ncaa/" in a_logo:
+                continue
+
             if CanonicalCompetitionService.is_school_or_youth_competition(
                 league_name=fix.league.name if fix.league else "",
                 home_team_name=fix.home_team.name if fix.home_team else "",

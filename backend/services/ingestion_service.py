@@ -576,7 +576,7 @@ class DataIngestionService:
                     continue
                 events = data.get("events", [])
                 leagues_list = data.get("leagues", [])
-                api_league_name = leagues_list[0].get("name") if leagues_list and leagues_list[0].get("name") else None
+                api_league_name = leagues_list[0].get("name") if (code != "all" and leagues_list and leagues_list[0].get("name")) else None
                 
                 for ev in events:
                     try:
@@ -585,24 +585,32 @@ class DataIngestionService:
                         alt_note = comp_info.get("altGameNote")
                         season_slug = ev.get("season", {}).get("slug", "")
                         
-                        # Resolve canonical competition identity and country
-                        canon_ident = CanonicalCompetitionService.resolve_competition(
-                            provider_code=code,
-                            league_name=api_league_name or default_name,
-                            season_slug=season_slug,
-                            alt_note=alt_note,
-                            notes=notes
-                        )
-                        league_name = canon_ident.competition_name
-                        resolved_country = canon_ident.country_name
-                        league_ext_id = canon_ident.provider_competition_id
-                        
+                        odds_list = comp_info.get("odds", [])
+                        odds_league_code = None
+                        if odds_list and isinstance(odds_list, list) and len(odds_list) > 0:
+                            odds_league_code = odds_list[0].get("tracking", {}).get("tags", {}).get("league")
+
+                        event_code = odds_league_code if (odds_league_code and odds_league_code in CanonicalCompetitionService.ESPN_CODE_MAP) else code
+
                         competitors = comp_info.get("competitors", [])
                         if len(competitors) < 2:
                             continue
 
                         home_data = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
                         away_data = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
+
+                        # === EARLY EXIT: Skip NCAA/university/school events before any DB writes ===
+                        _alt_lower = (alt_note or '').lower()
+                        _season_lower = (season_slug or '').lower()
+                        _combined_early = f"{_alt_lower} {_season_lower}"
+                        if any(kw in _combined_early for kw in ['ncaaw', 'ncaam', 'ncaa ', 'ncaa-', 'college soccer', 'high school soccer']):
+                            continue
+
+                        # Also check team logo URLs for NCAA pattern
+                        _home_logo = home_data.get("team", {}).get("logo", "") or ""
+                        _away_logo = away_data.get("team", {}).get("logo", "") or ""
+                        if "teamlogos/ncaa/" in _home_logo or "teamlogos/ncaa/" in _away_logo:
+                            continue
 
                         def _clean_team_name(raw_name: str) -> str:
                             if not raw_name:
@@ -622,6 +630,20 @@ class DataIngestionService:
                         a_raw_name = away_data.get("team", {}).get("displayName", "Away Team")
                         h_clean_name = _clean_team_name(h_raw_name)
                         a_clean_name = _clean_team_name(a_raw_name)
+
+                        # Resolve canonical competition identity and country
+                        canon_ident = CanonicalCompetitionService.resolve_competition(
+                            provider_code=event_code,
+                            league_name=api_league_name or default_name,
+                            season_slug=season_slug,
+                            alt_note=alt_note,
+                            notes=notes,
+                            home_team_name=h_clean_name,
+                            away_team_name=a_clean_name
+                        )
+                        league_name = canon_ident.competition_name
+                        resolved_country = canon_ident.country_name
+                        league_ext_id = canon_ident.provider_competition_id
 
                         # Filter out school, collegiate, youth, and non-senior soccer competitions
                         if CanonicalCompetitionService.is_school_or_youth_competition(
@@ -663,29 +685,58 @@ class DataIngestionService:
                         match_date = dt_parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
                         status_type = ev.get("status", {}).get("type", {})
-                        status_name = status_type.get("name", "STATUS_SCHEDULED")
-                        live_clock = ev.get("status", {}).get("displayClock")
-
-                        status_name_upper = str(status_name).upper()
-                        if any(k in status_name_upper for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
-                            status = "FINISHED"
-                        elif any(k in status_name_upper for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME"]):
-                            status = "LIVE"
-                        elif any(k in status_name_upper for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
-                            status = "POSTPONED"
-                        else:
-                            status = "SCHEDULED"
+                        status_name = str(status_type.get("name", "STATUS_SCHEDULED")).upper()
+                        status_state = str(status_type.get("state", "")).lower()
+                        status_detail = str(status_type.get("shortDetail") or status_type.get("detail") or "").strip()
+                        live_clock = ev.get("status", {}).get("displayClock") or (status_detail if ("'" in status_detail or "HT" in status_detail) else None)
 
                         venue = comp_info.get("venue", {}).get("fullName")
                         raw_h_score = home_data.get("score") if home_data.get("score") is not None else home_data.get("displayValue")
                         raw_a_score = away_data.get("score") if away_data.get("score") is not None else away_data.get("displayValue")
+                        parsed_h_score = extract_score_value(raw_h_score)
+                        parsed_a_score = extract_score_value(raw_a_score)
 
-                        if status == "SCHEDULED":
+                        if status_state == "post" or any(k in status_name for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
+                            status = "FINISHED"
+                        elif status_state == "in" or any(k in status_name for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME", "LIVE", "IN PROGRESS", "SHOOTOUT"]):
+                            status = "LIVE"
+                        elif any(k in status_name for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
+                            status = "POSTPONED"
                             parsed_h_score = None
                             parsed_a_score = None
                         else:
-                            parsed_h_score = extract_score_value(raw_h_score)
-                            parsed_a_score = extract_score_value(raw_a_score)
+                            # Fallback: Infer status from match kickoff time
+                            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+                            # If match kicked off 1+ minutes ago and within 3-hour window
+                            if match_date <= (now_utc_naive - timedelta(minutes=1)) and match_date >= (now_utc_naive - timedelta(hours=3)):
+                                status = "LIVE"
+                                mins_elapsed = max(1, int((now_utc_naive - match_date).total_seconds() / 60))
+                                if not live_clock or live_clock == "0'":
+                                    if mins_elapsed <= 45:
+                                        live_clock = f"{mins_elapsed}'"
+                                    elif mins_elapsed <= 60:
+                                        live_clock = "HT"
+                                    elif mins_elapsed <= 105:
+                                        live_clock = f"{mins_elapsed - 15}'"
+                                    else:
+                                        live_clock = "90+'"
+                                # Default scores to 0-0 if ESPN hasn't reported yet
+                                if parsed_h_score is None:
+                                    parsed_h_score = 0
+                                if parsed_a_score is None:
+                                    parsed_a_score = 0
+                            elif match_date > (now_utc_naive - timedelta(hours=3, minutes=30)) and match_date <= (now_utc_naive - timedelta(hours=3)):
+                                # Match likely finished but ESPN didn't report - mark as finished
+                                status = "FINISHED"
+                                if parsed_h_score is None:
+                                    parsed_h_score = 0
+                                if parsed_a_score is None:
+                                    parsed_a_score = 0
+                                live_clock = "FT"
+                            else:
+                                status = "SCHEDULED"
+                                parsed_h_score = None
+                                parsed_a_score = None
 
                         all_espn_payloads.append({
                             "external_id": f"ESPN-FIX-{ev.get('id')}",
@@ -697,7 +748,7 @@ class DataIngestionService:
                             "venue": venue,
                             "home_score": parsed_h_score,
                             "away_score": parsed_a_score,
-                            "live_clock": live_clock if status == "LIVE" else None,
+                            "live_clock": live_clock if status == "LIVE" else ("FT" if status == "FINISHED" else None),
                         })
                     except Exception as ev_ex:
                         db.rollback()
@@ -1032,6 +1083,12 @@ class DataIngestionService:
             h_name = fix.home_team.name if fix.home_team else ""
             a_name = fix.away_team.name if fix.away_team else ""
             l_name = fix.league.name if fix.league else ""
+            h_logo = (fix.home_team.logo_url if fix.home_team else "") or ""
+            a_logo = (fix.away_team.logo_url if fix.away_team else "") or ""
+            if "teamlogos/ncaa/" in h_logo or "teamlogos/ncaa/" in a_logo:
+                db.delete(fix)
+                purged_count += 1
+                continue
             if CanonicalCompetitionService.is_school_or_youth_competition(
                 league_name=l_name,
                 home_team_name=h_name,
@@ -1082,4 +1139,61 @@ class DataIngestionService:
             db.commit()
 
         return resolved_count
+
+    @classmethod
+    def repair_and_canonicalize_fixture_leagues(cls, db: Session) -> int:
+        """
+        Scans all fixtures in the database and re-resolves their correct canonical
+        competition and country using team club signatures, external IDs, and notes,
+        fixing any historical misattributions (e.g. Japanese fixtures mapped to Argentina or England).
+        """
+        from sqlalchemy.orm import joinedload
+        fixtures = db.query(Fixture).options(
+            joinedload(Fixture.league),
+            joinedload(Fixture.home_team),
+            joinedload(Fixture.away_team)
+        ).all()
+
+        repaired_count = 0
+        for fix in fixtures:
+            h_name = fix.home_team.name if fix.home_team else ""
+            a_name = fix.away_team.name if fix.away_team else ""
+            current_l_name = fix.league.name if fix.league else ""
+            
+            # Re-resolve definitive canonical league and country
+            canon_ident = CanonicalCompetitionService.resolve_competition(
+                league_name=current_l_name,
+                home_team_name=h_name,
+                away_team_name=a_name
+            )
+
+            # If the resolved canonical league differs from the current league
+            if fix.league is None or fix.league.name != canon_ident.competition_name or fix.league.country != canon_ident.country_name:
+                target_league = db.query(League).filter(
+                    League.name == canon_ident.competition_name,
+                    League.country == canon_ident.country_name
+                ).first()
+
+                if not target_league:
+                    target_league = League(
+                        external_id=canon_ident.provider_competition_id,
+                        name=canon_ident.competition_name,
+                        country=canon_ident.country_name,
+                        season="2025/2026"
+                    )
+                    db.add(target_league)
+                    db.flush()
+
+                fix.league_id = target_league.id
+                if fix.home_team:
+                    fix.home_team.league_id = target_league.id
+                if fix.away_team:
+                    fix.away_team.league_id = target_league.id
+                repaired_count += 1
+
+        if repaired_count > 0:
+            db.commit()
+            logger.info(f"Successfully repaired and canonicalized {repaired_count} fixture leagues.")
+
+        return repaired_count
 

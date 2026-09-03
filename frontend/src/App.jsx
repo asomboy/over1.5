@@ -113,8 +113,13 @@ export default function App() {
   // Layout View Mode (Default: Compact Table/List View)
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
 
-  // Dark / Light Theme state (Default: Dark Mode)
-  const [darkMode, setDarkMode] = useState(true);
+  // Dark / Light Theme state (Default: Dark Mode persisted to localStorage)
+  const [darkMode, setDarkMode] = useState(() => 
+    localStorage.getItem('sgp-theme') !== 'light'
+  );
+
+  // Cold start warning detector for initial API load (>8s)
+  const [isWarmingUp, setIsWarmingUp] = useState(false);
 
   // Filter & Search states (Main Table Default: Ascending Order by Kickoff Date starting from current date upward)
   const [searchTerm, setSearchTerm] = useState('');
@@ -140,6 +145,34 @@ export default function App() {
   const [showLiveModal, setShowLiveModal] = useState(false);
   const [showModelDashboard, setShowModelDashboard] = useState(false);
   const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
+
+  // Dynamic Document Title Updates based on open modal
+  useEffect(() => {
+    if (showDetailModal) {
+      document.title = 'Match Analysis | Soccer Goal Predictor';
+    } else if (showLiveModal) {
+      document.title = 'Live Match | Soccer Goal Predictor';
+    } else if (showAccaModal) {
+      document.title = 'Smart Accumulator | Soccer Goal Predictor';
+    } else if (showModelDashboard) {
+      document.title = 'Model Intelligence | Soccer Goal Predictor';
+    } else {
+      document.title = 'Soccer Goal Predictor | AI Match Analytics & Goal Predictions';
+    }
+  }, [showDetailModal, showLiveModal, showAccaModal, showModelDashboard]);
+
+  // Detect slow cold-start initial load (>8s)
+  useEffect(() => {
+    let timer;
+    if (loading) {
+      timer = setTimeout(() => {
+        setIsWarmingUp(true);
+      }, 8000);
+    } else {
+      setIsWarmingUp(false);
+    }
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   const openFixtureDetail = (fixtureId, initialTab = 'decision_intel') => {
     setActiveDetailFixtureId(fixtureId);
@@ -305,7 +338,7 @@ export default function App() {
   const isMatchLive = (fix) => {
     if (!fix || !fix.status) return false;
     const st = String(fix.status).toUpperCase();
-    return st === 'LIVE' || st === 'IN_PROGRESS' || st === 'HALFTIME' || st === 'FIRST_HALF' || st === 'SECOND_HALF';
+    return st === 'LIVE' || st === 'IN_PROGRESS' || st === 'IN_PLAY' || st === 'INPLAY' || st === 'HALFTIME' || st === 'HT' || st === 'FIRST_HALF' || st === '1H' || st === 'SECOND_HALF' || st === '2H' || st === 'ET' || st === 'OVERTIME' || st === 'SHOOTOUT';
   };
 
   // Helper to exclude school, collegiate, high school, youth, or U17-U23 matches
@@ -315,6 +348,13 @@ export default function App() {
     const hName = (fix.home_team?.name || '').toLowerCase();
     const aName = (fix.away_team?.name || '').toLowerCase();
     const combined = `${lName} ${hName} vs ${aName}`;
+
+    // Check team logo URLs for NCAA pattern
+    const hLogo = (fix.home_team?.logo_url || '').toLowerCase();
+    const aLogo = (fix.away_team?.logo_url || '').toLowerCase();
+    if (hLogo.includes('teamlogos/ncaa/') || aLogo.includes('teamlogos/ncaa/')) {
+      return true;
+    }
 
     // Professional club exemptions (established senior clubs)
     const proExemptions = [
@@ -328,12 +368,16 @@ export default function App() {
     }
 
     const schoolKeywords = [
-      'ncaa', 'high school', 'varsity', 'prep school', 'isssa', 'middle school',
-      'boys soccer', 'girls soccer', 'bucs', 'university', 'college',
+      'ncaa', 'ncaam', 'ncaaw', 'high school', 'varsity', 'prep school', 'isssa', 'middle school',
+      'boys soccer', 'girls soccer', 'bucs', 'university', 'college', 'collegiate',
       'state buckeyes', 'state bulldogs', 'state spartans', 'state seminoles',
       'state wildcats', 'state nittany lions', 'state bears', 'state cyclones',
       'state owls', 'state hornets', 'state rams', 'state gamecocks',
-      'state panthers', 'state bison', 'state redbirds', 'state mountaineers'
+      'state panthers', 'state bison', 'state redbirds', 'state mountaineers',
+      'highlanders', 'greyhounds', 'nittany lions', 'red storm', 'thundering herd',
+      'davidson wildcats', 'unc greensboro', 'loyola maryland', 'bucknell bison',
+      'hofstra pride', 'george mason', 'marshall thundering', 'la salle explorers',
+      'lafayette leopards'
     ];
 
     if (schoolKeywords.some(kw => combined.includes(kw))) {
@@ -743,7 +787,11 @@ export default function App() {
 
             {/* Theme Toggle */}
             <button
-              onClick={() => setDarkMode(!darkMode)}
+              onClick={() => {
+                const nextMode = !darkMode;
+                setDarkMode(nextMode);
+                localStorage.setItem('sgp-theme', nextMode ? 'dark' : 'light');
+              }}
               className={`p-1.5 sm:p-2 rounded-xl border transition-all ${
                 darkMode 
                   ? 'bg-slate-900 border-slate-800 text-amber-400 hover:bg-slate-800' 
@@ -798,6 +846,19 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Cold-Start Server Warming Banner */}
+      {isWarmingUp && loading && (
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 mt-3 sm:mt-4 w-full">
+          <div className="p-3 rounded-2xl border bg-amber-500/10 border-amber-500/30 text-amber-300 text-xs sm:text-sm font-semibold flex items-center justify-between shadow-lg">
+            <div className="flex items-center space-x-2">
+              <span className="text-base">⏳</span>
+              <span>Server is warming up (free hosting tier). Data will appear shortly — usually within 30 seconds.</span>
+            </div>
+            <RefreshCw className="w-4 h-4 animate-spin text-amber-400 shrink-0 ml-2" />
+          </div>
+        </div>
+      )}
 
       {/* Toast Notification Banner */}
       {notification && (

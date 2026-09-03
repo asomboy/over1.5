@@ -69,6 +69,24 @@ Soccer Goal Predictor/
 
 ---
 
+## ⚡ Keep-Alive Endpoint & Free-Tier Cold Start Prevention
+
+Render free-tier web services spin down automatically after 15 minutes of inactivity. When a request arrives after spinning down, the server takes ~30-50 seconds to complete a cold start.
+
+### Keeping the Service Warm with UptimeRobot (Free)
+To prevent cold starts and ensure instant API responses:
+1. Create a free account at [UptimeRobot](https://uptimerobot.com).
+2. Click **+ Add New Monitor**.
+3. Choose Monitor Type: **HTTP(s)**.
+4. Set Friendly Name: `Soccer Goal Predictor Health`.
+5. Set URL: `https://soccer-goal-predictor-api.onrender.com/health`.
+6. Set Monitoring Interval: **Every 14 minutes**.
+7. Save the monitor.
+
+The `/health` endpoint is lightweight and responds in < 100ms without touching the database, keeping your instance warm 24/7 without consuming excessive compute resources.
+
+---
+
 ## 🔒 System Standards & Stability Guarantees
 
 1. **Timezone Normalization**: Ingested match dates are saved as naive UTC datetimes in SQLite, and queries compare against naive UTC timestamps for 100% SQLite query accuracy.
@@ -76,3 +94,4 @@ Soccer Goal Predictor/
 3. **High-Performance Pagination**: Table 2 renders using 50-item page slicing, keeping browser DOM render speeds under 5ms.
 4. **Dynamic Prediction Ratings**: Every team receives unique attack and defense strength ratings via `resolve_team_ratings`, ensuring diverse Over 1.5 Goal percentages (60%–95%+).
 5. **Data Ingestion Integrity**: Synthetic mock fixtures are automatically purged during live ingestion to maintain official match schedules.
+

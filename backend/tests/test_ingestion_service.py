@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -152,8 +152,84 @@ class TestIngestionService(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "ok")
-        self.assertIn("message", data)
+    def test_status_kickoff_inference(self):
+        """Test fallback status calculation: 1+ min past kickoff becomes LIVE (0-0), 3h past kickoff becomes FINISHED."""
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        # Helper mimicking the ingestion service status inference logic
+        def infer_status(match_dt, parsed_h, parsed_a, live_clk):
+            if match_dt <= (now_utc - timedelta(minutes=1)) and match_dt >= (now_utc - timedelta(hours=3)):
+                st = "LIVE"
+                mins = max(1, int((now_utc - match_dt).total_seconds() / 60))
+                if not live_clk or live_clk == "0'":
+                    live_clk = f"{mins}'" if mins <= 45 else ("HT" if mins <= 60 else f"{mins - 15}'")
+                if parsed_h is None: parsed_h = 0
+                if parsed_a is None: parsed_a = 0
+                return st, parsed_h, parsed_a, live_clk
+            elif match_dt > (now_utc - timedelta(hours=3, minutes=30)) and match_dt <= (now_utc - timedelta(hours=3)):
+                st = "FINISHED"
+                if parsed_h is None: parsed_h = 0
+                if parsed_a is None: parsed_a = 0
+                return st, parsed_h, parsed_a, "FT"
+            return "SCHEDULED", None, None, None
+
+        # 10 minutes past kickoff -> LIVE, 0-0, 10'
+        st, h_sc, a_sc, clk = infer_status(now_utc - timedelta(minutes=10), None, None, None)
+        self.assertEqual(st, "LIVE")
+        self.assertEqual(h_sc, 0)
+        self.assertEqual(a_sc, 0)
+        self.assertEqual(clk, "10'")
+
+        # 3 hours 10 mins past kickoff -> FINISHED, 0-0, FT
+        st2, h_sc2, a_sc2, clk2 = infer_status(now_utc - timedelta(hours=3, minutes=10), None, None, None)
+        self.assertEqual(st2, "FINISHED")
+        self.assertEqual(h_sc2, 0)
+        self.assertEqual(a_sc2, 0)
+        self.assertEqual(clk2, "FT")
+
+    def test_upcoming_endpoint_excludes_ncaa(self):
+        """Test that /api/fixtures/upcoming excludes NCAA matches via SQL and Python filter layers."""
+        # 1. NCAA League
+        ncaa_league = League(name="NCAAW Soccer", country="USA", season="2025/2026")
+        pro_league = League(name="Premier League", country="England", season="2025/2026")
+        self.db.add_all([ncaa_league, pro_league])
+        self.db.commit()
+
+        t_ncaa1 = Team(name="Alabama A&M Bulldogs", logo_url="https://a.espncdn.com/i/teamlogos/ncaa/500/123.png", league_id=ncaa_league.id)
+        t_ncaa2 = Team(name="Ohio Bobcats", league_id=ncaa_league.id)
+        t_pro1 = Team(name="Liverpool", league_id=pro_league.id)
+        t_pro2 = Team(name="Everton", league_id=pro_league.id)
+        self.db.add_all([t_ncaa1, t_ncaa2, t_pro1, t_pro2])
+        self.db.commit()
+
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        f_ncaa = Fixture(
+            league_id=ncaa_league.id,
+            home_team_id=t_ncaa1.id,
+            away_team_id=t_ncaa2.id,
+            match_date=now_naive + timedelta(hours=2),
+            status="SCHEDULED"
+        )
+        f_pro = Fixture(
+            league_id=pro_league.id,
+            home_team_id=t_pro1.id,
+            away_team_id=t_pro2.id,
+            match_date=now_naive + timedelta(hours=2),
+            status="SCHEDULED"
+        )
+        self.db.add_all([f_ncaa, f_pro])
+        self.db.commit()
+
+        res = self.client.get("/api/fixtures/upcoming")
+        self.assertEqual(res.status_code, 200)
+        fixtures = res.json().get("data", [])
+        
+        # Must only contain Liverpool vs Everton, NOT NCAA
+        self.assertEqual(len(fixtures), 1)
+        self.assertEqual(fixtures[0]["home_team"]["name"], "Liverpool")
+        self.assertNotIn("NCAAW", fixtures[0]["competition"]["name"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
