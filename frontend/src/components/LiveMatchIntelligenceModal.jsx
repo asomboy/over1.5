@@ -22,7 +22,7 @@ import {
   FileText
 } from 'lucide-react';
 
-export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose, apiRequest, darkMode }) {
+export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, isOpen, onClose, apiRequest, darkMode }) {
   const [liveData, setLiveData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'shots' | 'timeline' | 'model'
@@ -30,6 +30,71 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
   const activeFixtureIdRef = useRef(fixtureId);
   const requestIdRef = useRef(0);
   const abortControllerRef = useRef(null);
+
+  // Helper to construct baseline canonical structure from known fixture data
+  const buildInitialDataFromFixture = (fix, fid) => {
+    if (!fix) return null;
+    const hTeam = fix.home_team || { name: 'Home Team' };
+    const aTeam = fix.away_team || { name: 'Away Team' };
+    const pred = fix.prediction || null;
+    return {
+      fixture: {
+        id: fid || fix.id,
+        external_id: fix.external_id,
+        home_team: {
+          id: hTeam.id,
+          name: hTeam.name || 'Home Team',
+          logo_url: hTeam.logo_url || null
+        },
+        away_team: {
+          id: aTeam.id,
+          name: aTeam.name || 'Away Team',
+          logo_url: aTeam.logo_url || null
+        },
+        competition: fix.league?.name || 'League Match',
+        country: fix.league?.country || null,
+        match_date: fix.match_date
+      },
+      live_state: {
+        minute: fix.live_clock ? parseInt(fix.live_clock, 10) || null : null,
+        display_clock: fix.live_clock || (fix.status === 'LIVE' ? "LIVE" : (fix.status === 'FINISHED' || fix.status === 'FT' ? 'FT' : 'PRE')),
+        period: fix.status === 'FINISHED' || fix.status === 'FT' ? 'FT' : (fix.status === 'LIVE' ? '1H' : 'PRE'),
+        status: fix.status || 'SCHEDULED',
+        score: {
+          home: fix.home_score != null ? fix.home_score : null,
+          away: fix.away_score != null ? fix.away_score : null
+        }
+      },
+      statistics: {},
+      events: [],
+      narrative: [],
+      data_quality: {
+        score: 55,
+        overall_confidence: 55,
+        label: 'connecting',
+        coverage: 'PARTIAL',
+        data_status: 'CONNECTING'
+      },
+      predictions: {
+        goals: pred ? {
+          predicted_home_score: pred.predicted_home_score,
+          predicted_away_score: pred.predicted_away_score,
+          over_1_5_probability: pred.over_1_5_probability,
+          over_2_5_probability: pred.over_2_5_probability,
+          btts_probability: pred.btts_probability,
+          most_likely_score: pred.most_likely_score
+        } : null,
+        corners: null,
+        cards: null,
+        diagnostics: null
+      },
+      signals: [],
+      best_signal: { label: 'CONNECTING', note: 'Radar feed synchronizing' },
+      retrieved_at: new Date().toISOString(),
+      status: fix.status || 'SCHEDULED',
+      is_completed: fix.status === 'FINISHED' || fix.status === 'FT'
+    };
+  };
 
   // Keep ref synchronized
   useEffect(() => {
@@ -45,13 +110,14 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
     return () => clearInterval(ticker);
   }, [isOpen]);
 
-  // Fixture change & initial fetch: abort any in-flight request, clear previous state immediately
+  // Fixture change & initial fetch: abort any in-flight request, set baseline immediately
   useEffect(() => {
     if (isOpen && fixtureId) {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      setLiveData(null);
+      const initial = buildInitialDataFromFixture(initialFixture, fixtureId);
+      setLiveData(initial);
       setActiveTab('overview');
       fetchLiveMatchData(false, fixtureId);
     } else {
@@ -87,7 +153,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
 
   const fetchLiveMatchData = async (silent = false, targetId = fixtureId) => {
     if (!targetId) return;
-    if (!silent) setLoading(true);
+    if (!silent && !liveData) setLoading(true);
 
     const thisRequestId = ++requestIdRef.current;
     const controller = new AbortController();
@@ -98,9 +164,6 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
       const res = await apiRequest('get', `/api/fixtures/${targetId}/live`, null, { signal: controller.signal });
       
       // Strict Cross-Fixture Race Condition Verification:
-      // 1. Current open fixture in ref must strictly match targetId
-      // 2. Request sequence must be the latest request initiated
-      // 3. Response payload fixture.id must strictly equal targetId
       if (
         activeFixtureIdRef.current !== targetId ||
         requestIdRef.current !== thisRequestId ||
@@ -109,14 +172,15 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
         return; // Discard late / stale / cross-fixture response
       }
 
-      if (res.data) {
+      if (res.data && typeof res.data === 'object' && res.data.fixture) {
         setLiveData(res.data);
+        return;
       }
     } catch (err) {
       if (err?.name === 'CanceledError' || err?.name === 'AbortError') {
         return; // Request was aborted due to fixture switch or modal close
       }
-      // Fallback to live-intelligence endpoint if canonical live not ready
+      // Tier 2 Fallback: live-intelligence endpoint
       try {
         const fbRes = await apiRequest('get', `/api/fixtures/${targetId}/live-intelligence`, null, { signal: controller.signal });
         if (
@@ -126,13 +190,14 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
         ) {
           return;
         }
-        if (fbRes.data) {
+        if (fbRes.data && typeof fbRes.data === 'object' && (fbRes.data.match_state || fbRes.data.fixture_id)) {
           // Normalize to canonical shape
-          setLiveData({
+          setLiveData(prev => ({
             fixture: {
               id: targetId,
-              home_team: { name: 'Home' },
-              away_team: { name: 'Away' }
+              home_team: prev?.fixture?.home_team || { name: 'Home' },
+              away_team: prev?.fixture?.away_team || { name: 'Away' },
+              competition: prev?.fixture?.competition || 'League Match'
             },
             live_state: {
               minute: fbRes.data.match_state?.minute ?? null,
@@ -147,7 +212,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
             statistics: fbRes.data.observed || {},
             events: fbRes.data.events || [],
             narrative: fbRes.data.narrative || [],
-            data_quality: fbRes.data.confidence || {},
+            data_quality: fbRes.data.confidence || { score: 50, live_data_quality: 50 },
             predictions: {
               goals: fbRes.data.live_goals,
               corners: fbRes.data.live_corners,
@@ -156,14 +221,61 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
             },
             signals: fbRes.data.live_signals || [],
             best_signal: fbRes.data.best_live_signal,
-            retrieved_at: fbRes.data.retrieved_at,
+            retrieved_at: fbRes.data.retrieved_at || new Date().toISOString(),
             status: fbRes.data.status || 'SCHEDULED',
             is_completed: fbRes.data.is_completed || false
-          });
+          }));
+          return;
         }
       } catch (fbErr) {
-        if (fbErr?.name !== 'CanceledError' && fbErr?.name !== 'AbortError') {
-          console.error('Error fetching live match data:', fbErr);
+        if (fbErr?.name === 'CanceledError' || fbErr?.name === 'AbortError') return;
+        // Tier 3 Fallback: query fixture details to populate metadata & predictions
+        try {
+          const dtRes = await apiRequest('get', `/api/fixtures/${targetId}/details`, null, { signal: controller.signal });
+          if (
+            activeFixtureIdRef.current === targetId &&
+            requestIdRef.current === thisRequestId &&
+            dtRes.data &&
+            typeof dtRes.data === 'object'
+          ) {
+            const dt = dtRes.data;
+            setLiveData(prev => {
+              const base = prev || buildInitialDataFromFixture(initialFixture, targetId) || {};
+              const hName = dt.home_team?.name || base.fixture?.home_team?.name || 'Home Team';
+              const aName = dt.away_team?.name || base.fixture?.away_team?.name || 'Away Team';
+              return {
+                ...base,
+                fixture: {
+                  ...base.fixture,
+                  id: targetId,
+                  home_team: { ...(base.fixture?.home_team || {}), name: hName },
+                  away_team: { ...(base.fixture?.away_team || {}), name: aName },
+                  competition: dt.league_name || base.fixture?.competition || 'League Match'
+                },
+                live_state: base.live_state || {
+                  minute: null,
+                  display_clock: 'LIVE',
+                  period: '1H',
+                  status: 'LIVE',
+                  score: { home: null, away: null }
+                },
+                data_quality: {
+                  score: 50,
+                  overall_confidence: 50,
+                  label: 'standby',
+                  coverage: 'PARTIAL',
+                  data_status: 'CONNECTING'
+                },
+                predictions: {
+                  ...(base.predictions || {}),
+                  goals: dt.prediction || base.predictions?.goals
+                },
+                retrieved_at: new Date().toISOString()
+              };
+            });
+          }
+        } catch (dtErr) {
+          // Handled gracefully
         }
       }
     } finally {

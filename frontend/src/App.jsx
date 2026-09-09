@@ -67,7 +67,6 @@ const apiRequest = async (method, path, data = null, options = {}) => {
     ? [
         `${API_BASE_URL}${path}`,
         `https://soccer-goal-predictor-api.onrender.com${path}`,
-        path,
       ]
     : [
         path,
@@ -91,13 +90,20 @@ const apiRequest = async (method, path, data = null, options = {}) => {
         res = await axios.post(url, data, { timeout: timeoutMs, ...options });
       }
       // Ensure valid JSON API payload object (rejects HTML fallback strings from static server rewrites)
-      if (res && res.data && typeof res.data === 'object' && res.data.status === 'ok') {
-        return res;
-      } else if (res && res.data && typeof res.data === 'object') {
-        return res;
+      if (res && res.data) {
+        if (typeof res.data === 'string' && (res.data.trim().startsWith('<!') || res.data.includes('<html'))) {
+          lastErr = new Error(`Endpoint ${path} returned HTML instead of JSON`);
+          continue;
+        }
+        if (typeof res.data === 'object') {
+          return res;
+        }
       }
     } catch (err) {
       lastErr = err;
+      if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.name === 'AbortError') {
+        throw err;
+      }
     }
   }
   throw lastErr || new Error('Unable to connect to FastAPI backend server');
@@ -2607,6 +2613,7 @@ export default function App() {
       {/* Live Match Intelligence & Dynamic In-Play Predictions Modal */}
       <LiveMatchIntelligenceModal
         fixtureId={activeLiveFixtureId}
+        initialFixture={fixtures.find(f => f.id === activeLiveFixtureId) || finishedFixtures.find(f => f.id === activeLiveFixtureId)}
         isOpen={showLiveModal}
         onClose={() => {
           setShowLiveModal(false);
