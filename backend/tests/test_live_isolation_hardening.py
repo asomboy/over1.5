@@ -183,7 +183,7 @@ class TestLiveIsolationHardening:
         with explicit STALE / VERY_STALE data status, and signal engine returns NO_SIGNAL.
         """
         # Put verified snapshot into DB
-        old_time = (datetime.now(timezone.utc) - timedelta(seconds=200)).replace(tzinfo=None)
+        old_time = (datetime.now(timezone.utc) - timedelta(seconds=350)).replace(tzinfo=None)
         live_state = LiveMatchState(
             fixture_id=101,
             minute=44,

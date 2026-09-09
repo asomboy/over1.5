@@ -113,17 +113,34 @@ class ProviderHealthService:
 
         return results
 
+    FRESH_THRESHOLD_SEC = 60
+    DELAYED_THRESHOLD_SEC = 180
+    STALE_THRESHOLD_SEC = 300
+
     @classmethod
-    def evaluate_live_feed_freshness(cls, last_updated_time: Optional[datetime]) -> Dict[str, Any]:
+    def evaluate_live_feed_freshness(
+        cls,
+        last_updated_time: Optional[datetime],
+        fresh_sec: Optional[int] = None,
+        delayed_sec: Optional[int] = None,
+        stale_sec: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Assesses live match feed freshness based on seconds since last update.
-        FRESH (< 60s), DELAYED (60-180s), STALE (> 180s), UNAVAILABLE.
+        FRESH (< 60s), DELAYED (60-180s), STALE (180-300s), VERY_STALE (> 300s), UNAVAILABLE.
+        Thresholds are configurable.
         """
+        th_fresh = fresh_sec or cls.FRESH_THRESHOLD_SEC
+        th_delayed = delayed_sec or cls.DELAYED_THRESHOLD_SEC
+        th_stale = stale_sec or cls.STALE_THRESHOLD_SEC
+
         if not last_updated_time:
             return {
                 "freshness_state": "UNAVAILABLE",
+                "freshness_status": "UNAVAILABLE",
                 "age_seconds": None,
-                "confidence_penalty": 0.30
+                "confidence_penalty": 0.35,
+                "retrieved_at": None
             }
 
         now_utc = datetime.now(timezone.utc)
@@ -131,21 +148,24 @@ class ProviderHealthService:
         ts = last_updated_time.replace(tzinfo=timezone.utc) if last_updated_time.tzinfo is None else last_updated_time
         age = max(0, int((now_utc - ts).total_seconds()))
 
-        if age < 60:
-            return {
-                "freshness_state": "FRESH",
-                "age_seconds": age,
-                "confidence_penalty": 0.0
-            }
-        elif age <= 180:
-            return {
-                "freshness_state": "DELAYED",
-                "age_seconds": age,
-                "confidence_penalty": 0.10
-            }
+        if age < th_fresh:
+            state = "FRESH"
+            penalty = 0.0
+        elif age <= th_delayed:
+            state = "DELAYED"
+            penalty = 0.10
+        elif age <= th_stale:
+            state = "STALE"
+            penalty = 0.25
         else:
-            return {
-                "freshness_state": "STALE",
-                "age_seconds": age,
-                "confidence_penalty": 0.25
-            }
+            state = "VERY_STALE"
+            penalty = 0.40
+
+        return {
+            "freshness_state": state,
+            "freshness_status": state,
+            "age_seconds": age,
+            "confidence_penalty": penalty,
+            "retrieved_at": ts.isoformat()
+        }
+

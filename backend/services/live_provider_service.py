@@ -3,6 +3,8 @@ import sys
 import logging
 import hashlib
 import httpx
+import time
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple, cast
 from sqlalchemy.orm import Session
@@ -12,13 +14,17 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team
+    from models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
     from services.data_reconciliation_service import DataReconciliationService
     from services.observability_service import ObservabilityService
+    from services.provider_reconciliation_service import ProviderReconciliationService
+    from services.circuit_breaker_service import CircuitBreakerService
 except ImportError:
-    from ..models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team
+    from ..models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
     from .data_reconciliation_service import DataReconciliationService
     from .observability_service import ObservabilityService
+    from .provider_reconciliation_service import ProviderReconciliationService
+    from .circuit_breaker_service import CircuitBreakerService
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +230,11 @@ class LiveProviderAdapterService:
                 "data_status": "UNAVAILABLE"
             }
 
+        circuit = CircuitBreakerService.get_circuit("ESPN")
+        if not circuit.can_execute():
+            logger.warning(f"Circuit Breaker for ESPN is OPEN. Serving last verified snapshot for fixture {fixture_id}.")
+            return cls._handle_provider_failure(db, fixture, provider_event_id, error_msg="Provider circuit breaker is OPEN (high failure rate). Serving last verified local snapshot.")
+
         url = f"{cls.ESPN_BASE_URL}/all/summary?event={provider_event_id}"
         payload = None
 
@@ -232,14 +243,22 @@ class LiveProviderAdapterService:
             client = httpx.Client(timeout=8.0)
             should_close_client = True
 
+        start_time = time.time()
         try:
             resp = client.get(url)
+            latency_ms = (time.time() - start_time) * 1000.0
             if resp.status_code == 200:
                 payload = resp.json()
+                circuit.record_success(latency_ms=latency_ms)
             else:
                 logger.warning(f"ESPN summary endpoint returned status {resp.status_code} for event {provider_event_id}")
+                circuit.record_http_error(resp.status_code)
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout connecting to ESPN live summary for fixture {fixture_id}")
+            circuit.record_timeout()
         except Exception as ex:
             logger.warning(f"Error connecting to ESPN live summary for fixture {fixture_id}: {ex}")
+            circuit.record_failure()
         finally:
             if should_close_client and client:
                 client.close()
@@ -247,19 +266,29 @@ class LiveProviderAdapterService:
         if not payload:
             return cls._handle_provider_failure(db, fixture, provider_event_id)
 
-        # 1. Validate Fixture Identity
-        is_valid, validation_err = cls.validate_fixture_identity(fixture, payload)
-        if not is_valid:
-            logger.error(f"Fixture {fixture_id} identity mismatch: {validation_err}")
+        # 1. Deterministic Provider Reconciliation & Verification
+        reconcile_res = ProviderReconciliationService.reconcile(
+            fixture=fixture,
+            provider_data=payload,
+            provider_name="ESPN",
+            db=db,
+            persist_mapping=True
+        )
+        if not reconcile_res.get("verified", False):
+            circuit.record_identity_mismatch()
+            val_err = reconcile_res.get("reason", "Provider identity verification failed.")
+            logger.error(f"Fixture {fixture_id} identity mismatch: {val_err}")
             ObservabilityService.log_event(
                 "fixture_identity_mismatch", category="data_integrity", severity="WARNING",
-                details={"fixture_id": fixture_id, "provider_event_id": provider_event_id, "reason": validation_err}
+                details={"fixture_id": fixture_id, "provider_event_id": provider_event_id, "reason": val_err, "diagnostic": reconcile_res}
             )
             return {
                 "status": "REJECTED_IDENTITY_MISMATCH",
-                "error": validation_err,
+                "error": val_err,
                 "fixture_id": fixture_id,
-                "data_status": "UNAVAILABLE"
+                "data_status": "UNAVAILABLE",
+                "identity_status": reconcile_res.get("status"),
+                "reconciliation": reconcile_res
             }
 
         # 2. Extract Header, Competitions, and Match Clock
@@ -436,6 +465,45 @@ class LiveProviderAdapterService:
             stats_row.home_red_cards = int(reds_h) if reds_h is not None else None
             stats_row.away_red_cards = int(reds_a) if reds_a is not None else None
 
+        # 7. Immutable Live Snapshot Versioning & Hashing
+        raw_hash_str = f"{fixture_id}_{provider_event_id}_{clock_min}_{h_score}_{a_score}_{shots_h}_{shots_a}_{sot_h}_{sot_a}_{corn_h}_{corn_a}_{yellows_h}_{yellows_a}_{reds_h}_{reds_a}_{fouls_h}_{fouls_a}_{poss_h}_{poss_a}_{period_label}_{len(events_timeline)}"
+        snapshot_hash = hashlib.sha256(raw_hash_str.encode("utf-8")).hexdigest()
+
+        latest_snap = db.query(LiveObservedSnapshot).filter(
+            LiveObservedSnapshot.fixture_id == fixture_id
+        ).order_by(LiveObservedSnapshot.snapshot_version.desc()).first()
+
+        if latest_snap and latest_snap.snapshot_hash == snapshot_hash:
+            snapshot_version = latest_snap.snapshot_version
+        else:
+            snapshot_version = (latest_snap.snapshot_version + 1) if latest_snap else 1
+            observed_snap = LiveObservedSnapshot(
+                fixture_id=fixture_id,
+                provider_name="ESPN",
+                provider_event_id=str(provider_event_id),
+                snapshot_version=snapshot_version,
+                observed_at=now_utc.replace(tzinfo=None),
+                retrieved_at=now_utc.replace(tzinfo=None),
+                match_state=period_label,
+                minute=clock_min or 0,
+                home_score=h_score,
+                away_score=a_score,
+                statistics_json=json.dumps({
+                    "shots": [shots_h, shots_a],
+                    "shots_on_target": [sot_h, sot_a],
+                    "corners": [corn_h, corn_a],
+                    "possession": [poss_h, poss_a],
+                    "fouls": [fouls_h, fouls_a],
+                    "yellow_cards": [yellows_h, yellows_a],
+                    "red_cards": [reds_h, reds_a]
+                }),
+                events_json=json.dumps(events_timeline),
+                data_quality="EXCELLENT" if has_stats_core else ("PARTIAL" if stat_coverage == "PARTIAL" else "MINIMAL"),
+                freshness="FRESH",
+                snapshot_hash=snapshot_hash
+            )
+            db.add(observed_snap)
+
         db.commit()
 
         # Build normalized response
@@ -498,6 +566,12 @@ class LiveProviderAdapterService:
             },
             "events": events_timeline,
             "retrieved_at": now_utc.isoformat(),
+            "age_seconds": 0,
+            "freshness": "FRESH",
+            "freshness_status": "FRESH",
+            "snapshot_version": snapshot_version,
+            "snapshot_hash": snapshot_hash,
+            "identity_status": "IDENTITY_VALID",
             "data_status": data_status,
             "data_quality_score": dq_score,
             "statistical_coverage": stat_coverage
@@ -505,18 +579,30 @@ class LiveProviderAdapterService:
 
     @classmethod
     def _handle_provider_failure(
-        cls, db: Session, fixture: Fixture, provider_event_id: str
+        cls, db: Session, fixture: Fixture, provider_event_id: str, error_msg: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Gracefully handles provider unavailability without fabricating or resetting values.
         Retains the last verified state and assigns explicit STALE data status.
+        Never resets home_score or away_score to 0 or minute to 0!
         """
         live_state = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture.id).first()
+        latest_snap = db.query(LiveObservedSnapshot).filter(
+            LiveObservedSnapshot.fixture_id == fixture.id
+        ).order_by(LiveObservedSnapshot.snapshot_version.desc()).first()
+
         now_utc = datetime.now(timezone.utc)
 
         if live_state and live_state.last_updated:
             age_sec = (now_utc.replace(tzinfo=None) - live_state.last_updated).total_seconds()
-            data_status = "STALE" if age_sec <= STALE_THRESHOLD_SEC else "VERY_STALE"
+            if age_sec < FRESH_THRESHOLD_SEC:
+                data_status = "FRESH"
+            elif age_sec <= STALE_THRESHOLD_SEC:
+                data_status = "DELAYED"
+            elif age_sec <= 300:
+                data_status = "STALE"
+            else:
+                data_status = "VERY_STALE"
             retrieved_at = live_state.last_updated.isoformat() + "Z"
             
             return {
@@ -544,10 +630,16 @@ class LiveProviderAdapterService:
                 },
                 "events": [],
                 "retrieved_at": retrieved_at,
+                "age_seconds": max(0, int(age_sec)),
+                "freshness": data_status,
+                "freshness_status": data_status,
+                "snapshot_version": latest_snap.snapshot_version if latest_snap else 1,
+                "snapshot_hash": latest_snap.snapshot_hash if latest_snap else "cached",
+                "identity_status": "IDENTITY_VALID",
                 "data_status": data_status,
                 "data_quality_score": 50,
                 "statistical_coverage": "PARTIAL",
-                "error": "Live provider request failed. Serving last verified local snapshot."
+                "error": error_msg or "Live provider request failed. Serving last verified local snapshot."
             }
 
         return {
@@ -572,8 +664,14 @@ class LiveProviderAdapterService:
             },
             "events": [],
             "retrieved_at": now_utc.isoformat(),
+            "age_seconds": None,
+            "freshness": "UNAVAILABLE",
+            "freshness_status": "UNAVAILABLE",
+            "snapshot_version": 0,
+            "snapshot_hash": "none",
+            "identity_status": "UNAVAILABLE",
             "data_status": "UNAVAILABLE",
             "data_quality_score": 0,
             "statistical_coverage": "UNAVAILABLE",
-            "error": "No verified live snapshot received from provider."
+            "error": error_msg or "No verified live snapshot received from provider."
         }

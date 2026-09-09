@@ -86,6 +86,8 @@ class Fixture(Base):
     evaluations = relationship("ModelEvaluation", back_populates="fixture", cascade="all, delete-orphan")
     feature_snapshots = relationship("FeatureSnapshot", back_populates="fixture", cascade="all, delete-orphan")
     enrichment_status = relationship("HistoricalEnrichmentStatus", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
+    provider_mappings = relationship("FixtureProviderMapping", back_populates="fixture", cascade="all, delete-orphan")
+    observed_snapshots = relationship("LiveObservedSnapshot", back_populates="fixture", cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):
@@ -901,6 +903,59 @@ class PredictionDecisionSnapshot(Base):
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FixtureProviderMapping(Base):
+    __tablename__ = "fixture_provider_mappings"
+    __table_args__ = (
+        UniqueConstraint('provider_name', 'provider_event_id', name='uq_provider_event'),
+        {'extend_existing': True}
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    provider_name: Mapped[str] = mapped_column(String, nullable=False, index=True)  # e.g., "ESPN"
+    provider_event_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    provider_home_team_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    provider_away_team_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    provider_competition_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    provider_kickoff: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    mapping_status: Mapped[str] = mapped_column(String, default="MAPPED", index=True)  # MAPPED, VERIFIED, REJECTED, SUSPENDED
+    first_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    validation_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="provider_mappings")
+
+
+class LiveObservedSnapshot(Base):
+    __tablename__ = "live_observed_snapshots"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
+    provider_name: Mapped[str] = mapped_column(String, nullable=False, default="ESPN", index=True)
+    provider_event_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, index=True)
+    observed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    match_state: Mapped[str] = mapped_column(String, default="SCHEDULED", index=True)
+    minute: Mapped[int] = mapped_column(Integer, default=0)
+    home_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    statistics_json: Mapped[str] = mapped_column(Text, default="{}")
+    events_json: Mapped[str] = mapped_column(Text, default="[]")
+    data_quality: Mapped[str] = mapped_column(String, default="AVAILABLE")  # AVAILABLE, PARTIAL, UNAVAILABLE, STALE
+    freshness: Mapped[str] = mapped_column(String, default="FRESH")  # FRESH, DELAYED, STALE, VERY_STALE, UNAVAILABLE
+    snapshot_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # Relationships
+    fixture = relationship("Fixture", back_populates="observed_snapshots")
+
 
 
 

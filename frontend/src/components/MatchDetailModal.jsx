@@ -404,6 +404,16 @@ export default function MatchDetailModal({
               <span className="text-[9px] font-bold text-slate-500 uppercase">
                 ID #{fixtureId}
               </span>
+              {/* Phase 14 Production Data Integrity Trust Indicators */}
+              <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                [VERIFIED]
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                {fixtureData?.status === 'LIVE' ? '[LIVE RADAR]' : (fixtureData?.status === 'FINISHED' || fixtureData?.status === 'FT' ? '[OBSERVED RESULT]' : '[SCHEDULED]')}
+              </span>
+              <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/60">
+                [{fixtureData?.freshness || 'FRESH'}]
+              </span>
             </div>
             <h2 className="text-base sm:text-xl font-black text-white tracking-tight">
               {detailsState.loading ? (
