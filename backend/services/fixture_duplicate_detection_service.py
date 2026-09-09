@@ -209,13 +209,16 @@ class FixtureDuplicateDetectionService:
     def find_duplicate_candidates_for_fixture(
         cls,
         db: Session,
-        fixture: Fixture,
+        fixture: Union[Fixture, int],
         window_hours: float = 36.0
     ) -> List[Dict[str, Any]]:
         """
         Scans active database fixtures to find duplicate candidates for a specific fixture.
         Does not merge or delete records.
         """
+        if isinstance(fixture, int):
+            fixture = db.query(Fixture).filter(Fixture.id == fixture).first()
+
         if not fixture or not fixture.match_date:
             return []
 

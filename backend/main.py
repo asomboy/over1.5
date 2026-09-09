@@ -976,44 +976,44 @@ def get_fixture_details(request: Request, fixture_id: int, db: Session = Depends
     # Generate or parse full Match Intelligence Core prediction payload
     intel = PoissonPredictionEngine.generate_match_intelligence_prediction(db, fixture_id)
     if not intel:
-        if pred:
-            h_xg = round(float(pred.predicted_home_score), 2) if (pred.predicted_home_score is not None) else 1.45
-            a_xg = round(float(pred.predicted_away_score), 2) if (pred.predicted_away_score is not None) else 1.15
+        if pred and pred.predicted_home_score is not None and pred.predicted_away_score is not None:
+            h_xg = round(float(pred.predicted_home_score), 2)
+            a_xg = round(float(pred.predicted_away_score), 2)
             tot_xg = round(h_xg + a_xg, 2)
-            o15 = float(pred.over_1_5_probability or 0.78)
-            o25 = float(pred.over_2_5_probability or 0.52)
-            o05 = float(pred.over_0_5_probability or 0.90)
-            o35 = float(pred.over_3_5_probability or 0.28)
-            btts_p = float(pred.btts_probability or 0.55)
-            conf_int = int((pred.confidence_score or 0.50) * 100)
-            most_likely = pred.most_likely_score or "2-1"
+            o15 = float(pred.over_1_5_probability) if pred.over_1_5_probability is not None else round(1.0 - math.exp(-(h_xg + a_xg)) * (1.0 + (h_xg + a_xg)), 4)
+            o25 = float(pred.over_2_5_probability) if pred.over_2_5_probability is not None else None
+            o05 = float(pred.over_0_5_probability) if pred.over_0_5_probability is not None else round(1.0 - math.exp(-(h_xg + a_xg)), 4)
+            o35 = float(pred.over_3_5_probability) if pred.over_3_5_probability is not None else None
+            btts_p = float(pred.btts_probability) if (getattr(pred, 'btts_probability', None) is not None) else round((1.0 - math.exp(-h_xg)) * (1.0 - math.exp(-a_xg)), 4)
+            conf_int = int(pred.confidence_score * 100) if (getattr(pred, 'confidence_score', None) is not None) else 50
+            most_likely = pred.most_likely_score or None
 
             intel = {
                 "fixture_id": fixture_id,
                 "model": {"version": "v2_match_intelligence", "generated_at": datetime.now(timezone.utc).isoformat()},
                 "expected_goals": {"home": h_xg, "away": a_xg, "total": tot_xg},
                 "result": {
-                    "home_win": float(pred.home_win_probability or 0.45),
-                    "draw": float(pred.draw_probability or 0.25),
-                    "away_win": float(pred.away_win_probability or 0.30)
+                    "home_win": float(pred.home_win_probability) if pred.home_win_probability is not None else None,
+                    "draw": float(pred.draw_probability) if pred.draw_probability is not None else None,
+                    "away_win": float(pred.away_win_probability) if pred.away_win_probability is not None else None
                 },
                 "goals": {
-                    "over_0_5": o05, "under_0_5": round(1.0 - o05, 4),
-                    "over_1_5": o15, "under_1_5": round(1.0 - o15, 4),
-                    "over_2_5": o25, "under_2_5": round(1.0 - o25, 4),
-                    "over_3_5": o35, "under_3_5": round(1.0 - o35, 4),
-                    "over_4_5": float(pred.over_4_5_probability or 0.12)
+                    "over_0_5": o05, "under_0_5": round(1.0 - o05, 4) if o05 is not None else None,
+                    "over_1_5": o15, "under_1_5": round(1.0 - o15, 4) if o15 is not None else None,
+                    "over_2_5": o25, "under_2_5": round(1.0 - o25, 4) if o25 is not None else None,
+                    "over_3_5": o35, "under_3_5": round(1.0 - o35, 4) if o35 is not None else None,
+                    "over_4_5": float(pred.over_4_5_probability) if getattr(pred, 'over_4_5_probability', None) is not None else None
                 },
-                "btts": {"yes": btts_p, "no": round(1.0 - btts_p, 4)},
+                "btts": {"yes": btts_p, "no": round(1.0 - btts_p, 4) if btts_p is not None else None},
                 "home_team_goals": {
                     "over_0_5": round(1.0 - math.exp(-h_xg), 4), "under_0_5": round(math.exp(-h_xg), 4),
                     "over_1_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg), 4), "under_1_5": round(math.exp(-h_xg) * (1.0 + h_xg), 4),
-                    "over_2_5": round(1.0 - math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4), "under_2_5": round(math.exp(-h_xg) * (1.0 + h_xg + (h_xg**2)/2.0), 4)
+                    "expected": h_xg
                 },
                 "away_team_goals": {
                     "over_0_5": round(1.0 - math.exp(-a_xg), 4), "under_0_5": round(math.exp(-a_xg), 4),
                     "over_1_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg), 4), "under_1_5": round(math.exp(-a_xg) * (1.0 + a_xg), 4),
-                    "over_2_5": round(1.0 - math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4), "under_2_5": round(math.exp(-a_xg) * (1.0 + a_xg + (a_xg**2)/2.0), 4)
+                    "expected": a_xg
                 },
                 "halves": {
                     "first_half_over_0_5": round(1.0 - math.exp(-tot_xg * 0.45), 4),
@@ -2281,26 +2281,26 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
                 top_scorelines = []
 
         if pred:
-            h_xg = round(float(pred.predicted_home_score), 2) if pred.predicted_home_score is not None else 1.45
-            a_xg = round(float(pred.predicted_away_score), 2) if pred.predicted_away_score is not None else 1.15
-            home_win = float(pred.home_win_probability or 0.45)
-            draw_prob = float(pred.draw_probability or 0.25)
-            away_win = float(pred.away_win_probability or 0.30)
-            o05 = float(pred.over_0_5_probability or 0.90)
-            o15 = float(pred.over_1_5_probability or 0.78)
-            o25 = float(pred.over_2_5_probability or 0.52)
-            o35 = float(pred.over_3_5_probability or 0.28)
-            u25 = float(pred.under_2_5_probability or 0.48)
-            btts_prob = float(pred.btts_probability) if (getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
-            confidence_score = float(pred.confidence_score) if (getattr(pred, 'confidence_score', None) is not None) else 0.50
-            most_likely = pred.most_likely_score or "2-1"
+            h_xg = round(float(pred.predicted_home_score), 2) if pred.predicted_home_score is not None else None
+            a_xg = round(float(pred.predicted_away_score), 2) if pred.predicted_away_score is not None else None
+            home_win = float(pred.home_win_probability) if pred.home_win_probability is not None else None
+            draw_prob = float(pred.draw_probability) if pred.draw_probability is not None else None
+            away_win = float(pred.away_win_probability) if pred.away_win_probability is not None else None
+            o05 = float(pred.over_0_5_probability) if pred.over_0_5_probability is not None else None
+            o15 = float(pred.over_1_5_probability) if pred.over_1_5_probability is not None else None
+            o25 = float(pred.over_2_5_probability) if pred.over_2_5_probability is not None else None
+            o35 = float(pred.over_3_5_probability) if pred.over_3_5_probability is not None else None
+            u25 = float(pred.under_2_5_probability) if pred.under_2_5_probability is not None else None
+            btts_prob = float(pred.btts_probability) if (getattr(pred, 'btts_probability', None) is not None) else (round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4) if (h_xg is not None and a_xg is not None) else None)
+            confidence_score = float(pred.confidence_score) if (getattr(pred, 'confidence_score', None) is not None) else None
+            most_likely = pred.most_likely_score or None
         else:
-            h_xg, a_xg = 1.45, 1.15
-            home_win, draw_prob, away_win = 0.45, 0.25, 0.30
-            o05, o15, o25, o35, u25 = 0.90, 0.78, 0.52, 0.28, 0.48
-            btts_prob = 0.55
-            confidence_score = 0.50
-            most_likely = "2-1"
+            h_xg, a_xg = None, None
+            home_win, draw_prob, away_win = None, None, None
+            o05, o15, o25, o35, u25 = None, None, None, None, None
+            btts_prob = None
+            confidence_score = None
+            most_likely = None
 
         match_date_str = None
         if fix.match_date:
@@ -2315,11 +2315,18 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
         weather_data = WeatherService.get_weather_for_venue(fix.venue)
 
         # Value Bet Finder (Upgrade 9)
-        model_odds = round(1.0 / max(0.01, o15), 2)
-        implied_market_odds = round(model_odds * 1.08, 2)
-        implied_market_prob = round(1.0 / max(1.01, implied_market_odds), 4)
-        value_edge_pct = round((o15 - implied_market_prob) * 100, 1)
-        is_value_bet = (o15 >= 0.78) and (value_edge_pct >= 4.0)
+        if o15 is not None and o15 > 0:
+            model_odds = round(1.0 / max(0.01, o15), 2)
+            implied_market_odds = round(model_odds * 1.08, 2)
+            implied_market_prob = round(1.0 / max(1.01, implied_market_odds), 4)
+            value_edge_pct = round((o15 - implied_market_prob) * 100, 1)
+            is_value_bet = (o15 >= 0.78) and (value_edge_pct >= 4.0)
+        else:
+            model_odds = None
+            implied_market_odds = None
+            implied_market_prob = None
+            value_edge_pct = None
+            is_value_bet = False
 
         # Dynamic Status & Live Clock Evaluation:
         # Guarantee matches that have kicked off never stay stuck on SCHEDULED
@@ -2344,17 +2351,10 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
                             eff_live_clock = f"{mins_elapsed - 15}'"
                         else:
                             eff_live_clock = "90+'"
-                    if eff_home_score is None:
-                        eff_home_score = 0
-                    if eff_away_score is None:
-                        eff_away_score = 0
                 elif naive_m_date < (now_utc_naive - timedelta(hours=3)):
                     eff_status = "FINISHED"
-                    eff_live_clock = "FT"
-                    if eff_home_score is None:
-                        eff_home_score = 0
-                    if eff_away_score is None:
-                        eff_away_score = 0
+                    if not eff_live_clock:
+                        eff_live_clock = "FT"
 
         # Dynamic Canonical Competition & Country Resolution (Phase 13: provider-verified, zero team-name guessing)
         canon_ident = CanonicalCompetitionService.resolve_competition(
@@ -2370,6 +2370,47 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
         resolved_country_code = canon_ident.country_code
         resolved_round = canon_ident.round_stage or getattr(fix, "round", None)
         resolved_season = canon_ident.season or (fix.league.season if fix.league else "")
+
+        pred_dict = None
+        if h_xg is not None and a_xg is not None:
+            tot_xg = round(h_xg + a_xg, 2)
+            pred_dict = {
+                "predicted_home_score": h_xg,
+                "predicted_away_score": a_xg,
+                "expected_goals_xg": tot_xg,
+                "home_win_probability": home_win,
+                "draw_probability": draw_prob,
+                "away_win_probability": away_win,
+                "over_0_5_probability": o05,
+                "over_1_5_probability": o15,
+                "over_2_5_probability": o25,
+                "over_3_5_probability": o35,
+                "under_2_5_probability": u25,
+                "btts_probability": btts_prob,
+                "confidence_score": confidence_score,
+                
+                # Home Team Specific Goal Thresholds
+                "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
+                "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
+                "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
+
+                # Away Team Specific Goal Thresholds
+                "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
+                "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
+                "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
+
+                # Half Breakdown
+                "first_half_xg": round(tot_xg * 0.45, 2),
+                "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.45)), 4),
+                "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.45)) * (1.0 + tot_xg * 0.45), 4),
+
+                "second_half_xg": round(tot_xg * 0.55, 2),
+                "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.55)), 4),
+                "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.55)) * (1.0 + tot_xg * 0.55), 4),
+
+                "most_likely_score": most_likely,
+                "top_scorelines": top_scorelines or ([{"scoreline": most_likely, "probability": home_win}] if most_likely else [])
+            }
 
         result_data.append({
             "id": fix.id,
@@ -2429,43 +2470,7 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
                 "short_code": fix.away_team.short_code if fix.away_team else None,
                 "logo_url": fix.away_team.logo_url if fix.away_team else None
             },
-            "prediction": {
-                "predicted_home_score": h_xg,
-                "predicted_away_score": a_xg,
-                "expected_goals_xg": round(h_xg + a_xg, 2),
-                "home_win_probability": home_win,
-                "draw_probability": draw_prob,
-                "away_win_probability": away_win,
-                "over_0_5_probability": o05,
-                "over_1_5_probability": o15,
-                "over_2_5_probability": o25,
-                "over_3_5_probability": o35,
-                "under_2_5_probability": u25,
-                "btts_probability": btts_prob,
-                "confidence_score": confidence_score,
-                
-                # Home Team Specific Goal Thresholds
-                "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
-                "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
-                "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
-
-                # Away Team Specific Goal Thresholds
-                "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
-                "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
-                "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
-
-                # Half Breakdown
-                "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
-                "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
-                "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
-
-                "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
-                "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
-                "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
-
-                "most_likely_score": most_likely,
-                "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
-            }
+            "prediction": pred_dict
         })
 
     return {"status": "ok", "count": len(result_data), "data": result_data}
@@ -2543,25 +2548,32 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
                 except Exception:
                     top_scorelines = []
 
-            h_xg = round(float(pred.predicted_home_score), 2) if (pred and pred.predicted_home_score is not None) else 1.45
-            a_xg = round(float(pred.predicted_away_score), 2) if (pred and pred.predicted_away_score is not None) else 1.15
+            if pred and pred.predicted_home_score is not None and pred.predicted_away_score is not None:
+                h_xg = round(float(pred.predicted_home_score), 2)
+                a_xg = round(float(pred.predicted_away_score), 2)
+                home_win = float(pred.home_win_probability) if pred.home_win_probability is not None else None
+                draw_prob = float(pred.draw_probability) if pred.draw_probability is not None else None
+                away_win = float(pred.away_win_probability) if pred.away_win_probability is not None else None
+                o05 = float(pred.over_0_5_probability) if pred.over_0_5_probability is not None else None
+                o15 = float(pred.over_1_5_probability) if pred.over_1_5_probability is not None else None
+                o25 = float(pred.over_2_5_probability) if pred.over_2_5_probability is not None else None
+                o35 = float(pred.over_3_5_probability) if pred.over_3_5_probability is not None else None
+                u25 = float(pred.under_2_5_probability) if pred.under_2_5_probability is not None else None
+                btts_prob = float(pred.btts_probability) if getattr(pred, 'btts_probability', None) is not None else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
+                confidence_score = float(pred.confidence_score) if getattr(pred, 'confidence_score', None) is not None else None
+                most_likely = pred.most_likely_score
+            else:
+                h_xg, a_xg = None, None
+                home_win, draw_prob, away_win = None, None, None
+                o05, o15, o25, o35, u25 = None, None, None, None, None
+                btts_prob = None
+                confidence_score = None
+                most_likely = None
 
             h_score = fix.home_score
             a_score = fix.away_score
             has_scores = h_score is not None and a_score is not None
             total_actual_goals = (h_score + a_score) if has_scores else None
-
-            home_win = float(pred.home_win_probability or 0.45) if pred else 0.45
-            draw_prob = float(pred.draw_probability or 0.25) if pred else 0.25
-            away_win = float(pred.away_win_probability or 0.30) if pred else 0.30
-            o05 = float(pred.over_0_5_probability or 0.90) if pred else 0.90
-            o15 = float(pred.over_1_5_probability or 0.78) if pred else 0.78
-            o25 = float(pred.over_2_5_probability or 0.52) if pred else 0.52
-            o35 = float(pred.over_3_5_probability or 0.28) if pred else 0.28
-            u25 = float(pred.under_2_5_probability or 0.48) if pred else 0.48
-            btts_prob = float(pred.btts_probability) if (pred and getattr(pred, 'btts_probability', None) is not None) else round((1.0 - (2.718281828459045 ** -h_xg)) * (1.0 - (2.718281828459045 ** -a_xg)), 4)
-            confidence_score = float(pred.confidence_score) if (pred and getattr(pred, 'confidence_score', None) is not None) else 0.50
-            most_likely = (pred.most_likely_score if pred else None) or "1-1"
 
             match_date_str = None
             if fix.match_date:
@@ -2586,6 +2598,39 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
             resolved_country_code = canon_ident.country_code
             resolved_round = canon_ident.round_stage or getattr(fix, "round", None)
             resolved_season = canon_ident.season or (fix.league.season if fix.league else "")
+
+            pred_dict = None
+            if h_xg is not None and a_xg is not None:
+                tot_xg = round(h_xg + a_xg, 2)
+                pred_dict = {
+                    "predicted_home_score": h_xg,
+                    "predicted_away_score": a_xg,
+                    "expected_goals_xg": tot_xg,
+                    "home_win_probability": home_win,
+                    "draw_probability": draw_prob,
+                    "away_win_probability": away_win,
+                    "over_0_5_probability": o05,
+                    "over_1_5_probability": o15,
+                    "over_2_5_probability": o25,
+                    "over_3_5_probability": o35,
+                    "under_2_5_probability": u25,
+                    "btts_probability": btts_prob,
+                    "confidence_score": confidence_score,
+                    "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
+                    "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
+                    "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
+                    "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
+                    "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
+                    "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
+                    "first_half_xg": round(tot_xg * 0.45, 2),
+                    "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.45)), 4),
+                    "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.45)) * (1.0 + tot_xg * 0.45), 4),
+                    "second_half_xg": round(tot_xg * 0.55, 2),
+                    "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.55)), 4),
+                    "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -(tot_xg * 0.55)) * (1.0 + tot_xg * 0.55), 4),
+                    "most_likely_score": most_likely,
+                    "top_scorelines": top_scorelines or ([{"scoreline": most_likely, "probability": home_win}] if most_likely else [])
+                }
 
             result_data.append({
                 "id": fix.id,
@@ -2641,35 +2686,7 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
                     "short_code": fix.away_team.short_code if fix.away_team else None,
                     "logo_url": fix.away_team.logo_url if fix.away_team else None
                 },
-                "prediction": {
-                    "predicted_home_score": h_xg,
-                    "predicted_away_score": a_xg,
-                    "expected_goals_xg": round(h_xg + a_xg, 2),
-                    "home_win_probability": home_win,
-                    "draw_probability": draw_prob,
-                    "away_win_probability": away_win,
-                    "over_0_5_probability": o05,
-                    "over_1_5_probability": o15,
-                    "over_2_5_probability": o25,
-                    "over_3_5_probability": o35,
-                    "under_2_5_probability": u25,
-                    "btts_probability": btts_prob,
-                    "confidence_score": confidence_score,
-                    "home_over_0_5_probability": round(1.0 - (2.718281828459045 ** -h_xg), 4),
-                    "home_over_1_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg), 4),
-                    "home_over_2_5_probability": round(1.0 - (2.718281828459045 ** -h_xg) * (1.0 + h_xg + (h_xg ** 2) / 2.0), 4),
-                    "away_over_0_5_probability": round(1.0 - (2.718281828459045 ** -a_xg), 4),
-                    "away_over_1_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg), 4),
-                    "away_over_2_5_probability": round(1.0 - (2.718281828459045 ** -a_xg) * (1.0 + a_xg + (a_xg ** 2) / 2.0), 4),
-                    "first_half_xg": round((h_xg + a_xg) * 0.45, 2),
-                    "first_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)), 4),
-                    "first_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.45)) * (1.0 + (h_xg + a_xg) * 0.45), 4),
-                    "second_half_xg": round((h_xg + a_xg) * 0.55, 2),
-                    "second_half_over_0_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)), 4),
-                    "second_half_over_1_5_probability": round(1.0 - (2.718281828459045 ** -((h_xg + a_xg) * 0.55)) * (1.0 + (h_xg + a_xg) * 0.55), 4),
-                    "most_likely_score": most_likely,
-                    "top_scorelines": top_scorelines or [{"scoreline": most_likely, "probability": home_win}]
-                }
+                "prediction": pred_dict
             })
 
         return {"status": "ok", "count": len(result_data), "data": result_data}

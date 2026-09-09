@@ -249,6 +249,8 @@ class DataIngestionService:
                 fixture.status = status
                 fixture.venue = venue or fixture.venue
                 fixture.match_date = match_date
+                if league_id and fixture.league_id != league_id:
+                    fixture.league_id = league_id
                 if home_score is not None:
                     fixture.home_score = int(home_score)
                 if away_score is not None:

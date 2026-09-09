@@ -27,7 +27,15 @@ class BackupService:
         db_url = settings.DATABASE_URL
         if "sqlite:///" in db_url:
             rel_path = db_url.replace("sqlite:///", "")
-            return os.path.abspath(os.path.join(BACKEND_DIR, "..", rel_path)) if not os.path.isabs(rel_path) else rel_path
+            if os.path.isabs(rel_path):
+                return rel_path
+            backend_candidate = os.path.abspath(os.path.join(BACKEND_DIR, rel_path))
+            if os.path.exists(backend_candidate):
+                return backend_candidate
+            parent_candidate = os.path.abspath(os.path.join(BACKEND_DIR, "..", rel_path))
+            if os.path.exists(parent_candidate):
+                return parent_candidate
+            return backend_candidate
         return os.path.abspath(os.path.join(BACKEND_DIR, "soccer.db"))
 
     @classmethod

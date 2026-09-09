@@ -610,12 +610,47 @@ class LiveSignalEngine:
         corners: LiveCornersPrediction,
         cards: LiveCardsPrediction,
         confidence: LiveConfidence,
-        time_rem_mins: float
+        time_rem_mins: float,
+        fresh_status: str = "FRESH",
+        identity_status: str = "IDENTITY_VALID",
+        fixture_status: str = "LIVE"
     ) -> Tuple[List[LiveSignalItem], BestLiveSignal]:
         """
         Scans all active markets and selects top live opportunities.
+        Guarantees strict safety gating for stale, finished, scheduled, or unverified states.
         """
         candidates: List[LiveSignalItem] = []
+
+        eff_fix_status = str(fixture_status or "").upper()
+        if eff_fix_status in ["FINISHED", "FT", "AET", "PEN"]:
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=0.0,
+                rationale="Match has finished. In-play signals are frozen and closed."
+            )
+
+        if eff_fix_status in ["SCHEDULED", "PRE_EVENT", "PRE"]:
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=time_rem_mins,
+                rationale="Match has not kicked off yet. Live signals are inactive."
+            )
+
+        eff_id_status = str(identity_status or "IDENTITY_VALID").upper()
+        if eff_id_status != "IDENTITY_VALID":
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=time_rem_mins,
+                rationale=f"Live signal suspended: provider identity status is {eff_id_status}."
+            )
+
+        eff_fresh = str(fresh_status or "FRESH").upper()
+        if eff_fresh in ["STALE", "VERY_STALE", "UNAVAILABLE"]:
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=time_rem_mins,
+                rationale=f"Live signal suspended: provider data is {eff_fresh}."
+            )
 
         if time_rem_mins <= 0:
             return [], BestLiveSignal(
@@ -914,9 +949,12 @@ class LiveMatchIntelligenceService:
             score_diag["score_diff"], ref_adj
         )
 
-        # 8. Evaluate Live Signals
+        # 8. Evaluate Live Signals (gated by freshness, identity, and match completion status)
         signals, best_sig = LiveSignalEngine.evaluate_live_signals(
-            live_goals, live_corners, live_cards, live_conf, rem_mins
+            live_goals, live_corners, live_cards, live_conf, rem_mins,
+            fresh_status=fresh_status,
+            identity_status=live_prov.get("identity_status", "IDENTITY_VALID"),
+            fixture_status=live_prov.get("status", fixture.status or "LIVE")
         )
 
         diagnostics = LiveDiagnostics(

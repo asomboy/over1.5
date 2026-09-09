@@ -161,7 +161,7 @@ class ProviderReconciliationService:
         # Support both flattened dictionary and raw ESPN header payloads
         prov_event_id = str(provider_data.get("event_id") or provider_data.get("id") or "").strip()
         header = provider_data.get("header", {})
-        comps = header.get("competitions", [])
+        comps = header.get("competitions") or provider_data.get("competitions", [])
         if comps and not prov_event_id:
             prov_event_id = str(header.get("id") or comps[0].get("id") or "").strip()
 
@@ -342,16 +342,53 @@ class ProviderReconciliationService:
 
         # Check 8: Competition Identity
         prov_comp = provider_data.get("competition") or provider_data.get("league")
+        prov_country = provider_data.get("country")
+        prov_league_slug = provider_data.get("league_slug") or provider_data.get("provider_code")
+
+        if header:
+            league_obj = header.get("league", {})
+            if not prov_comp:
+                prov_comp = league_obj.get("name")
+            if not prov_league_slug:
+                prov_league_slug = league_obj.get("slug")
+
+        if not prov_comp and comps:
+            c0 = comps[0]
+            if isinstance(c0.get("league"), dict):
+                prov_comp = c0.get("league", {}).get("name")
+                if not prov_league_slug:
+                    prov_league_slug = c0.get("league", {}).get("slug")
+            elif isinstance(c0.get("league"), str):
+                prov_comp = c0.get("league")
+            if not prov_comp:
+                prov_comp = c0.get("altGameNote")
+
         db_league_name = fixture.league.name if (fixture and fixture.league) else ""
-        if prov_comp and db_league_name:
-            c_prov = CanonicalCompetitionService.resolve_competition(league_name=str(prov_comp))
-            c_db = CanonicalCompetitionService.resolve_competition(league_name=db_league_name)
-            if c_prov.competition_name != "UNAVAILABLE" and c_db.competition_name != "UNAVAILABLE":
-                # Check for explicit conflict in distinct national leagues (e.g. EPL vs La Liga)
-                if c_prov.competition_name != c_db.competition_name and c_prov.country != "UNAVAILABLE" and c_db.country != "UNAVAILABLE" and c_prov.country != c_db.country:
+        db_country = fixture.league.country if (fixture and fixture.league) else ""
+        c_db = CanonicalCompetitionService.resolve_competition(
+            league_name=db_league_name,
+            provided_country=db_country
+        )
+
+        c_prov = None
+        if prov_comp or prov_league_slug:
+            c_prov = CanonicalCompetitionService.resolve_competition(
+                league_name=str(prov_comp) if prov_comp else None,
+                provider_code=str(prov_league_slug) if prov_league_slug else None,
+                alt_note=comps[0].get("altGameNote") if comps else None
+            )
+            if not prov_country and c_prov.country != "UNAVAILABLE":
+                prov_country = c_prov.country
+
+        if c_prov and c_prov.competition_name != "UNAVAILABLE" and c_db.competition_name != "UNAVAILABLE":
+            # Check for explicit conflict in distinct national competitions (e.g. Italian Serie A vs Brazilian Serie A / EPL vs La Liga)
+            if c_prov.competition_name != c_db.competition_name:
+                prov_is_intl = getattr(c_prov, "is_international", False) or c_prov.country in ["International", "Europe", "South America", "Global", "North America"]
+                db_is_intl = getattr(c_db, "is_international", False) or c_db.country in ["International", "Europe", "South America", "Global", "North America"]
+                if not (prov_is_intl and db_is_intl) and c_prov.country != c_db.country and c_prov.country != "UNAVAILABLE" and c_db.country != "UNAVAILABLE":
                     checks_result["competition"] = {
                         "passed": False,
-                        "detail": f"Competition conflict: DB='{c_db.competition_name}' vs Prov='{c_prov.competition_name}'"
+                        "detail": f"Competition conflict: DB='{c_db.competition_name}' ({c_db.country}) vs Prov='{c_prov.competition_name}' ({c_prov.country})"
                     }
                     res = {
                         "status": ReconciliationStatus.COMPETITION_MISMATCH.value,
@@ -361,7 +398,7 @@ class ProviderReconciliationService:
                         "provider_event_id": prov_event_id,
                         "checks": checks_result,
                         "verified": False,
-                        "reason": f"Competition mismatch: DB league '{c_db.competition_name}' does not match provider '{c_prov.competition_name}'.",
+                        "reason": f"Competition mismatch: DB league '{c_db.competition_name}' ({c_db.country}) does not match provider '{c_prov.competition_name}' ({c_prov.country}).",
                         "timestamp": now_str
                     }
                     cls._record_mapping_result(db, fixture, provider_name, prov_event_id, res, persist=persist_mapping)
@@ -370,10 +407,11 @@ class ProviderReconciliationService:
         checks_result["competition"] = {"passed": True, "detail": "Competition verified or compatible"}
 
         # Check 9: Country Identity
-        prov_country = provider_data.get("country")
-        db_country = fixture.league.country if (fixture and fixture.league) else ""
         if prov_country and db_country and prov_country != "UNAVAILABLE" and db_country != "UNAVAILABLE":
-            if prov_country.strip().lower() != db_country.strip().lower() and prov_country.strip().lower() != "international" and db_country.strip().lower() != "international":
+            prov_c_lower = prov_country.strip().lower()
+            db_c_lower = db_country.strip().lower()
+            non_conflicting_countries = ["international", "europe", "south america", "global", "north america"]
+            if prov_c_lower != db_c_lower and prov_c_lower not in non_conflicting_countries and db_c_lower not in non_conflicting_countries:
                 checks_result["country"] = {
                     "passed": False,
                     "detail": f"Country mismatch: DB='{db_country}' vs Provider='{prov_country}'"

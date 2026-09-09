@@ -578,6 +578,83 @@ class LiveProviderAdapterService:
         }
 
     @classmethod
+    def record_observed_snapshot(
+        cls, db: Session, fixture_id: int, payload: Dict[str, Any]
+    ) -> LiveObservedSnapshot:
+        """
+        Deterministic, immutable snapshot recording.
+        Calculates SHA-256 hash across minute, score, statistics, and events.
+        If hash is identical to latest snapshot, returns existing snapshot without incrementing version.
+        If hash differs, increments snapshot_version monotonically and persists a new snapshot.
+        """
+        now_utc = datetime.now(timezone.utc)
+        provider_event_id = payload.get("provider_event_id") or "ESPN-LIVE"
+        minute = payload.get("minute", 0)
+        period = payload.get("period", "1H")
+        home_score = payload.get("home_score", 0)
+        away_score = payload.get("away_score", 0)
+        stats = payload.get("statistics", {})
+        shots = stats.get("shots", {}) if isinstance(stats, dict) else {}
+        shots_h = shots.get("home") if isinstance(shots, dict) else None
+        shots_a = shots.get("away") if isinstance(shots, dict) else None
+        events = payload.get("events", [])
+
+        raw_hash_str = f"{fixture_id}_{provider_event_id}_{minute}_{home_score}_{away_score}_{shots_h}_{shots_a}_{period}_{len(events)}"
+        snapshot_hash = hashlib.sha256(raw_hash_str.encode("utf-8")).hexdigest()
+
+        latest_snap = db.query(LiveObservedSnapshot).filter(
+            LiveObservedSnapshot.fixture_id == fixture_id
+        ).order_by(LiveObservedSnapshot.snapshot_version.desc()).first()
+
+        if latest_snap and latest_snap.snapshot_hash == snapshot_hash:
+            return latest_snap
+
+        snapshot_version = (latest_snap.snapshot_version + 1) if latest_snap else 1
+        observed_snap = LiveObservedSnapshot(
+            fixture_id=fixture_id,
+            provider_name="ESPN",
+            provider_event_id=str(provider_event_id),
+            snapshot_version=snapshot_version,
+            observed_at=now_utc.replace(tzinfo=None),
+            retrieved_at=now_utc.replace(tzinfo=None),
+            match_state=period,
+            minute=minute,
+            home_score=home_score,
+            away_score=away_score,
+            statistics_json=json.dumps(stats),
+            events_json=json.dumps(events),
+            data_quality="EXCELLENT",
+            freshness="FRESH",
+            snapshot_hash=snapshot_hash
+        )
+        db.add(observed_snap)
+        db.commit()
+        db.refresh(observed_snap)
+        return observed_snap
+
+    @classmethod
+    def calculate_freshness(cls, last_updated: Optional[datetime]) -> Dict[str, Any]:
+        """
+        Calculates standardized freshness category:
+        FRESH < 60s, DELAYED 60-180s, STALE 180-300s, VERY_STALE > 300s, UNAVAILABLE.
+        """
+        if not last_updated:
+            return {"status": "UNAVAILABLE", "age_seconds": None}
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        if isinstance(last_updated, datetime) and last_updated.tzinfo:
+            last_updated = last_updated.astimezone(timezone.utc).replace(tzinfo=None)
+        age_sec = max(0.0, (now_utc - last_updated).total_seconds())
+        if age_sec < FRESH_THRESHOLD_SEC:
+            status = "FRESH"
+        elif age_sec <= STALE_THRESHOLD_SEC:
+            status = "DELAYED"
+        elif age_sec <= 300:
+            status = "STALE"
+        else:
+            status = "VERY_STALE"
+        return {"status": status, "age_seconds": int(age_sec)}
+
+    @classmethod
     def _handle_provider_failure(
         cls, db: Session, fixture: Fixture, provider_event_id: str, error_msg: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -594,15 +671,9 @@ class LiveProviderAdapterService:
         now_utc = datetime.now(timezone.utc)
 
         if live_state and live_state.last_updated:
-            age_sec = (now_utc.replace(tzinfo=None) - live_state.last_updated).total_seconds()
-            if age_sec < FRESH_THRESHOLD_SEC:
-                data_status = "FRESH"
-            elif age_sec <= STALE_THRESHOLD_SEC:
-                data_status = "DELAYED"
-            elif age_sec <= 300:
-                data_status = "STALE"
-            else:
-                data_status = "VERY_STALE"
+            f_info = cls.calculate_freshness(live_state.last_updated)
+            data_status = f_info["status"]
+            age_sec = f_info["age_seconds"] or 0
             retrieved_at = live_state.last_updated.isoformat() + "Z"
             
             return {

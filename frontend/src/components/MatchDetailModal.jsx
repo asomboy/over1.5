@@ -41,8 +41,9 @@ export default function MatchDetailModal({
   
   const [activeTab, setActiveTab] = useState(initialTab || 'decision_intel');
   
-  // Track active request ID to prevent stale asynchronous response leakage across rapid fixture switching
+  // Track active request ID and AbortController to prevent stale asynchronous response leakage across rapid fixture switching
   const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
 
   // Sync initial tab when changed
   useEffect(() => {
@@ -51,9 +52,16 @@ export default function MatchDetailModal({
     }
   }, [initialTab]);
 
-  // Main fetch orchestrator with stale response protection
+  // Main fetch orchestrator with AbortController and monotonic request sequencing
   const fetchAllFixtureData = useCallback(async (targetFixtureId) => {
     if (!targetFixtureId) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const signal = controller.signal;
 
     const currentRequestId = ++requestIdRef.current;
 
@@ -66,8 +74,8 @@ export default function MatchDetailModal({
 
     // 1. Fetch Fixture Details (Canonical Identity & Core Prediction)
     try {
-      const res = await apiRequest('get', `/api/fixtures/${targetFixtureId}/details`);
-      if (currentRequestId !== requestIdRef.current) return;
+      const res = await apiRequest('get', `/api/fixtures/${targetFixtureId}/details`, null, { signal });
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       if (res?.data?.status === 'ok' || res?.data?.id) {
         setDetailsState({ loading: false, error: null, data: res.data });
       } else {
@@ -75,73 +83,88 @@ export default function MatchDetailModal({
         setDetailsState({ loading: false, error: errMsg, data: null });
       }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       const errMsg = err?.response?.data?.message || err?.message || 'Unable to retrieve fixture details';
       setDetailsState({ loading: false, error: errMsg, data: null });
     }
 
     // 2. Fetch Phase 12 Decision Intelligence
     try {
-      const decRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/decision`);
-      if (currentRequestId !== requestIdRef.current) return;
+      const decRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/decision`, null, { signal });
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       if (decRes?.data && !decRes.data.error) {
         setDecisionState({ loading: false, error: null, data: decRes.data });
       } else {
         setDecisionState({ loading: false, error: decRes?.data?.error || 'Decision summary unavailable', data: null });
       }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       setDecisionState({ loading: false, error: err?.message || 'Unable to load decision intelligence', data: null });
     }
 
     // 3. Fetch Phase 9 Unified Match Intelligence
     try {
-      const intelRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-intelligence`);
-      if (currentRequestId !== requestIdRef.current) return;
+      const intelRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-intelligence`, null, { signal });
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       if (intelRes?.data && !intelRes.data.error) {
         setIntelState({ loading: false, error: null, data: intelRes.data });
       } else {
         setIntelState({ loading: false, error: intelRes?.data?.error || 'Match intelligence unavailable', data: null });
       }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       setIntelState({ loading: false, error: err?.message || 'Unable to load match intelligence', data: null });
     }
 
     // 4. Fetch Phase 10 Shots & SoT
     try {
-      const shotsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/shots`);
-      if (currentRequestId !== requestIdRef.current) return;
+      const shotsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/shots`, null, { signal });
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       if (shotsRes?.data && !shotsRes.data.error) {
         setShotsState({ loading: false, error: null, data: shotsRes.data });
       } else {
         setShotsState({ loading: false, error: shotsRes?.data?.error || 'Shots prediction unavailable', data: null });
       }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       setShotsState({ loading: false, error: err?.message || 'Unable to load shots prediction', data: null });
     }
 
     // 5. Fetch Phase 11 Match Statistics
     try {
-      const statsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-statistics`);
-      if (currentRequestId !== requestIdRef.current) return;
+      const statsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-statistics`, null, { signal });
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       if (statsRes?.data && !statsRes.data.error) {
         setStatsState({ loading: false, error: null, data: statsRes.data });
       } else {
         setStatsState({ loading: false, error: statsRes?.data?.error || 'Match statistics unavailable', data: null });
       }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
+      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
       setStatsState({ loading: false, error: err?.message || 'Unable to load match statistics', data: null });
     }
   }, [apiRequest]);
 
-  // Trigger data load when modal opens
+  // Trigger data load when modal opens, clear and abort when it closes
   useEffect(() => {
     if (isOpen && fixtureId) {
       fetchAllFixtureData(fixtureId);
+    } else {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      setDetailsState({ loading: true, error: null, data: null });
+      setDecisionState({ loading: true, error: null, data: null });
+      setIntelState({ loading: true, error: null, data: null });
+      setShotsState({ loading: true, error: null, data: null });
+      setStatsState({ loading: true, error: null, data: null });
     }
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [isOpen, fixtureId, fetchAllFixtureData]);
 
   // Escape key handler
