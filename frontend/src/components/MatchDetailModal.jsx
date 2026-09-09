@@ -185,32 +185,32 @@ export default function MatchDetailModal({
   const rawShotsData = shotsState.data;
   const rawMatchStatsData = statsState.data;
 
-  // Normalized safe extraction for Match Intelligence Core
-  const xgHome = rawIntel?.expected_goals?.home ?? legacyPred?.predicted_home_score ?? 1.45;
-  const xgAway = rawIntel?.expected_goals?.away ?? legacyPred?.predicted_away_score ?? 1.15;
-  const xgTotal = rawIntel?.expected_goals?.total ?? legacyPred?.expected_goals_xg ?? roundNum(xgHome + xgAway, 2);
+  // Normalized safe extraction for Match Intelligence Core (Phase 13: Zero Fabricated Fallbacks)
+  const xgHome = rawIntel?.expected_goals?.home ?? legacyPred?.predicted_home_score ?? null;
+  const xgAway = rawIntel?.expected_goals?.away ?? legacyPred?.predicted_away_score ?? null;
+  const xgTotal = rawIntel?.expected_goals?.total ?? legacyPred?.expected_goals_xg ?? (xgHome != null && xgAway != null ? roundNum(xgHome + xgAway, 2) : null);
 
   const result1X2 = rawIntel?.result || fixtureData?.prediction?.result || (legacyPred?.home_win_probability != null ? {
     home_win: legacyPred.home_win_probability,
     draw: legacyPred.draw_probability,
     away_win: legacyPred.away_win_probability
-  } : (() => {
+  } : (xgHome != null && xgAway != null ? (() => {
     const hw = Math.max(0.15, Math.min(0.80, roundNum(0.44 + (xgHome - xgAway) * 0.20, 2)));
     const dr = Math.max(0.18, Math.min(0.32, roundNum(0.28 - Math.abs(xgHome - xgAway) * 0.07, 2)));
     const aw = roundNum(Math.max(0.10, 1.0 - hw - dr), 2);
     return { home_win: hw, draw: dr, away_win: aw };
-  })());
+  })() : null));
 
   const goalsMarket = rawIntel?.goals || fixtureData?.prediction?.goals || (legacyPred?.over_1_5_probability != null ? {
-    over_0_5: legacyPred.over_0_5_probability ?? 0.92,
-    under_0_5: legacyPred.over_0_5_probability != null ? Math.max(0, 1.0 - legacyPred.over_0_5_probability) : 0.08,
-    over_1_5: legacyPred.over_1_5_probability ?? 0.78,
-    under_1_5: legacyPred.over_1_5_probability != null ? Math.max(0, 1.0 - legacyPred.over_1_5_probability) : 0.22,
-    over_2_5: legacyPred.over_2_5_probability ?? 0.52,
-    under_2_5: legacyPred.under_2_5_probability ?? (legacyPred.over_2_5_probability != null ? Math.max(0, 1.0 - legacyPred.over_2_5_probability) : 0.48),
-    over_3_5: legacyPred.over_3_5_probability ?? 0.28,
-    under_3_5: legacyPred.over_3_5_probability != null ? Math.max(0, 1.0 - legacyPred.over_3_5_probability) : 0.72
-  } : {
+    over_0_5: legacyPred.over_0_5_probability ?? null,
+    under_0_5: legacyPred.over_0_5_probability != null ? roundNum(Math.max(0, 1.0 - legacyPred.over_0_5_probability), 4) : null,
+    over_1_5: legacyPred.over_1_5_probability ?? null,
+    under_1_5: legacyPred.over_1_5_probability != null ? roundNum(Math.max(0, 1.0 - legacyPred.over_1_5_probability), 4) : null,
+    over_2_5: legacyPred.over_2_5_probability ?? null,
+    under_2_5: legacyPred.under_2_5_probability ?? (legacyPred.over_2_5_probability != null ? roundNum(Math.max(0, 1.0 - legacyPred.over_2_5_probability), 4) : null),
+    over_3_5: legacyPred.over_3_5_probability ?? null,
+    under_3_5: legacyPred.over_3_5_probability != null ? roundNum(Math.max(0, 1.0 - legacyPred.over_3_5_probability), 4) : null
+  } : (xgTotal != null ? {
     over_0_5: roundNum(1.0 - Math.exp(-xgTotal), 4),
     under_0_5: roundNum(Math.exp(-xgTotal), 4),
     over_1_5: roundNum(1.0 - Math.exp(-xgTotal) * (1.0 + xgTotal), 4),
@@ -219,194 +219,70 @@ export default function MatchDetailModal({
     under_2_5: roundNum(Math.exp(-xgTotal) * (1.0 + xgTotal + (xgTotal**2)/2.0), 4),
     over_3_5: roundNum(1.0 - Math.exp(-xgTotal) * (1.0 + xgTotal + (xgTotal**2)/2.0 + (xgTotal**3)/6.0), 4),
     under_3_5: roundNum(Math.exp(-xgTotal) * (1.0 + xgTotal + (xgTotal**2)/2.0 + (xgTotal**3)/6.0), 4)
-  });
+  } : null));
 
   const bttsMarket = rawIntel?.btts || fixtureData?.prediction?.btts || (legacyPred?.btts_probability != null ? {
     yes: legacyPred.btts_probability,
-    no: Math.max(0, 1.0 - legacyPred.btts_probability)
-  } : (() => {
+    no: roundNum(Math.max(0, 1.0 - legacyPred.btts_probability), 2)
+  } : (xgHome != null && xgAway != null ? (() => {
     const pHomeScores = 1.0 - Math.exp(-xgHome);
     const pAwayScores = 1.0 - Math.exp(-xgAway);
     const bttsYes = roundNum(Math.min(0.85, Math.max(0.25, pHomeScores * pAwayScores * 1.1)), 2);
     return { yes: bttsYes, no: roundNum(1.0 - bttsYes, 2) };
-  })());
+  })() : null));
 
-  const homeGoals = rawIntel?.home_team_goals || fixtureData?.prediction?.home_team_goals || {
+  const homeGoals = rawIntel?.home_team_goals || fixtureData?.prediction?.home_team_goals || (xgHome != null ? {
     over_0_5: roundNum(1.0 - Math.exp(-xgHome), 4),
     under_0_5: roundNum(Math.exp(-xgHome), 4),
     over_1_5: roundNum(1.0 - Math.exp(-xgHome) * (1.0 + xgHome), 4),
     under_1_5: roundNum(Math.exp(-xgHome) * (1.0 + xgHome), 4),
     over_2_5: roundNum(1.0 - Math.exp(-xgHome) * (1.0 + xgHome + (xgHome**2)/2.0), 4),
     under_2_5: roundNum(Math.exp(-xgHome) * (1.0 + xgHome + (xgHome**2)/2.0), 4)
-  };
+  } : null);
 
-  const awayGoals = rawIntel?.away_team_goals || fixtureData?.prediction?.away_team_goals || {
+  const awayGoals = rawIntel?.away_team_goals || fixtureData?.prediction?.away_team_goals || (xgAway != null ? {
     over_0_5: roundNum(1.0 - Math.exp(-xgAway), 4),
     under_0_5: roundNum(Math.exp(-xgAway), 4),
     over_1_5: roundNum(1.0 - Math.exp(-xgAway) * (1.0 + xgAway), 4),
     under_1_5: roundNum(Math.exp(-xgAway) * (1.0 + xgAway), 4),
     over_2_5: roundNum(1.0 - Math.exp(-xgAway) * (1.0 + xgAway + (xgAway**2)/2.0), 4),
     under_2_5: roundNum(Math.exp(-xgAway) * (1.0 + xgAway + (xgAway**2)/2.0), 4)
-  };
+  } : null);
 
   const halvesMarket = rawIntel?.halves || fixtureData?.prediction?.halves || (legacyPred?.first_half_over_0_5_probability != null ? {
     first_half_over_0_5: legacyPred.first_half_over_0_5_probability,
     first_half_over_1_5: legacyPred.first_half_over_1_5_probability,
     second_half_over_0_5: legacyPred.second_half_over_0_5_probability,
     second_half_over_1_5: legacyPred.second_half_over_1_5_probability
-  } : {
+  } : (xgTotal != null ? {
     first_half_over_0_5: roundNum(1.0 - Math.exp(-xgTotal * 0.45), 4),
     first_half_over_1_5: roundNum(1.0 - Math.exp(-xgTotal * 0.45) * (1.0 + xgTotal * 0.45), 4),
     second_half_over_0_5: roundNum(1.0 - Math.exp(-xgTotal * 0.55), 4),
     second_half_over_1_5: roundNum(1.0 - Math.exp(-xgTotal * 0.55) * (1.0 + xgTotal * 0.55), 4)
-  });
+  } : null));
 
   const exactScores = (rawIntel?.exact_scores && rawIntel.exact_scores.length > 0)
     ? rawIntel.exact_scores
-    : (legacyPred?.top_scorelines && legacyPred.top_scorelines.length > 0 ? legacyPred.top_scorelines : [
-      { score: '1-1', home: 1, away: 1, probability: 0.13 },
-      { score: '2-1', home: 2, away: 1, probability: 0.11 },
-      { score: '2-0', home: 2, away: 0, probability: 0.10 }
-    ]);
+    : (legacyPred?.top_scorelines && legacyPred.top_scorelines.length > 0 ? legacyPred.top_scorelines : []);
 
   const confidence = rawIntel?.confidence ?? (legacyPred?.confidence_score != null ? {
     overall: Math.round(legacyPred.confidence_score * 100),
-    data_quality: 65,
-    model_stability: 68,
+    data_quality: null,
+    model_stability: null,
     sample_quality: 'moderate'
-  } : {
-    overall: 74,
-    data_quality: 65,
-    model_stability: 68,
-    sample_quality: 'moderate'
-  });
-
-  const corners = rawIntel?.markets?.corners || rawIntel?.corners || fixtureData?.corners || fixtureData?.prediction?.corners || {
-    available: true,
-    model: { dispersion: 5.5 },
-    expected: {
-      home: roundNum(4.4 + (xgHome || 1.3) * 0.7, 1),
-      away: roundNum(3.8 + (xgAway || 1.1) * 0.6, 1),
-      total: roundNum(8.2 + (xgTotal || 2.4) * 0.65, 1)
-    },
-    total_markets: {
-      over_7_5: roundNum(Math.min(0.92, Math.max(0.40, 0.72 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      under_7_5: roundNum(1.0 - Math.min(0.92, Math.max(0.40, 0.72 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      over_8_5: roundNum(Math.min(0.88, Math.max(0.30, 0.60 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      under_8_5: roundNum(1.0 - Math.min(0.88, Math.max(0.30, 0.60 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      over_9_5: roundNum(Math.min(0.82, Math.max(0.20, 0.48 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      under_9_5: roundNum(1.0 - Math.min(0.82, Math.max(0.20, 0.48 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      over_10_5: roundNum(Math.min(0.72, Math.max(0.12, 0.36 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      under_10_5: roundNum(1.0 - Math.min(0.72, Math.max(0.12, 0.36 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      over_11_5: roundNum(Math.min(0.60, Math.max(0.08, 0.24 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2),
-      under_11_5: roundNum(1.0 - Math.min(0.60, Math.max(0.08, 0.24 + ((xgTotal || 2.5) - 2.5) * 0.05)), 2)
-    }
-  };
-
-  const cards = rawIntel?.markets?.cards || rawIntel?.cards || fixtureData?.cards || fixtureData?.prediction?.cards || {
-    available: true,
-    model: { dispersion: 4.8 },
-    expected: {
-      home: roundNum(1.8 + (xgHome || 1.3) * 0.25, 1),
-      away: roundNum(2.0 + (xgAway || 1.1) * 0.25, 1),
-      total: roundNum(3.8 + (xgTotal || 2.4) * 0.25, 1)
-    },
-    total_markets: {
-      over_1_5: roundNum(Math.min(0.95, Math.max(0.60, 0.85 + ((xgTotal || 2.5) - 2.5) * 0.03)), 2),
-      under_1_5: roundNum(1.0 - Math.min(0.95, Math.max(0.60, 0.85 + ((xgTotal || 2.5) - 2.5) * 0.03)), 2),
-      over_2_5: roundNum(Math.min(0.88, Math.max(0.40, 0.70 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2),
-      under_2_5: roundNum(1.0 - Math.min(0.88, Math.max(0.40, 0.70 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2),
-      over_3_5: roundNum(Math.min(0.78, Math.max(0.25, 0.52 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2),
-      under_3_5: roundNum(1.0 - Math.min(0.78, Math.max(0.25, 0.52 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2),
-      over_4_5: roundNum(Math.min(0.65, Math.max(0.15, 0.34 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2),
-      under_4_5: roundNum(1.0 - Math.min(0.65, Math.max(0.15, 0.34 + ((xgTotal || 2.5) - 2.5) * 0.04)), 2)
-    }
-  };
-
-  // Robust fallback for Decision Intelligence
-  const decisionData = rawDecisionData || (fixtureData ? {
-    overall_confidence: (confidence?.overall || 75) / 100,
-    production_status: 'PRODUCTION',
-    top_signals: [
-      ...(goalsMarket?.over_1_5 ? [{
-        market: 'Over 1.5 Goals',
-        selection: 'Over',
-        probability: goalsMarket.over_1_5,
-        confidence: 0.85,
-        decision_score: roundNum(goalsMarket.over_1_5 * 0.94, 2),
-        risk_tier: goalsMarket.over_1_5 >= 0.75 ? 'LOW' : 'MEDIUM',
-        signal_status: 'PRODUCTION_SIGNAL',
-        model_version: 'v1_decision_engine',
-        explanation: {
-          primary_factors: [{ message: `Conservative Poisson model supports Over 1.5 probability (${Math.round(goalsMarket.over_1_5 * 100)}%)` }],
-          supporting_factors: [{ message: `Projected total match volume of ${xgTotal || '2.60'} xG satisfies minimum decision criteria` }],
-          caution_factors: []
-        }
-      }] : []),
-      ...(bttsMarket?.yes && bttsMarket.yes >= 0.50 ? [{
-        market: 'Both Teams To Score',
-        selection: 'Yes',
-        probability: bttsMarket.yes,
-        confidence: 0.80,
-        decision_score: roundNum(bttsMarket.yes * 0.88, 2),
-        risk_tier: bttsMarket.yes >= 0.60 ? 'LOW' : 'MEDIUM',
-        signal_status: 'PRODUCTION_SIGNAL',
-        model_version: 'v1_decision_engine',
-        explanation: {
-          primary_factors: [{ message: `Attacking ratings for ${home?.name || 'Home'} (${xgHome} xG) and ${away?.name || 'Away'} (${xgAway} xG) confirm scoring opportunity` }],
-          supporting_factors: [],
-          caution_factors: []
-        }
-      }] : []),
-      ...(result1X2 && (result1X2.home_win >= 0.45 || result1X2.away_win >= 0.45) ? [{
-        market: 'Match Result (1X2)',
-        selection: result1X2.home_win >= result1X2.away_win ? `${home?.name || 'Home'} Win` : `${away?.name || 'Away'} Win`,
-        probability: Math.max(result1X2.home_win || 0, result1X2.away_win || 0),
-        confidence: 0.78,
-        decision_score: roundNum(Math.max(result1X2.home_win || 0, result1X2.away_win || 0) * 0.86, 2),
-        risk_tier: 'MEDIUM',
-        signal_status: 'PRODUCTION_SIGNAL',
-        model_version: 'v1_decision_engine',
-        explanation: {
-          primary_factors: [{ message: `Elo strength and relative rating advantage favors ${result1X2.home_win >= result1X2.away_win ? (home?.name || 'Home') : (away?.name || 'Away')}` }],
-          supporting_factors: [],
-          caution_factors: []
-        }
-      }] : [])
-    ],
-    market_summary: {
-      total_markets_evaluated: 12,
-      production_signals_count: 3,
-      shadow_signals_count: 1,
-      insufficient_data_count: 0
-    },
-    data_quality: {
-      provenance_records_count: 14,
-      has_conflicts: false
-    },
-    all_candidate_signals: [
-      { market: 'Over 1.5 Goals', decision_score: roundNum((goalsMarket?.over_1_5 || 0.78) * 0.94, 2), risk_tier: 'LOW', probability: goalsMarket?.over_1_5 || 0.78, signal_status: 'PRODUCTION_SIGNAL' },
-      { market: 'Both Teams To Score', decision_score: roundNum((bttsMarket?.yes || 0.55) * 0.88, 2), risk_tier: 'MEDIUM', probability: bttsMarket?.yes || 0.55, signal_status: 'PRODUCTION_SIGNAL' },
-      { market: 'Over 2.5 Goals', decision_score: roundNum((goalsMarket?.over_2_5 || 0.52) * 0.85, 2), risk_tier: 'MEDIUM', probability: goalsMarket?.over_2_5 || 0.52, signal_status: 'PRODUCTION_SIGNAL' },
-      { market: 'Over 0.5 Goals', decision_score: roundNum((goalsMarket?.over_0_5 || 0.92) * 0.98, 2), risk_tier: 'LOW', probability: goalsMarket?.over_0_5 || 0.92, signal_status: 'PRODUCTION_SIGNAL' },
-      { market: `Match Result (${home?.name || 'Home'})`, decision_score: roundNum((result1X2?.home_win || 0.45) * 0.82, 2), risk_tier: 'MEDIUM', probability: result1X2?.home_win || 0.45, signal_status: 'PRODUCTION_SIGNAL' }
-    ]
   } : null);
 
-  // Robust fallback for Match Intelligence
-  const intel = rawIntel || (fixtureData ? {
-    unified_confidence: (confidence?.overall || 75) / 100,
-    match_state_classification: ['BALANCED_CONTEST', 'OFFENSIVE_UPSIDE'],
-    cross_market_consistency: {
-      is_consistent: true,
-      consistency_score: 0.94
-    },
-    ranked_signals: [
-      { market: 'Over 1.5 Goals', probability: goalsMarket?.over_1_5 || 0.78, signal_score: 84, label: 'Strong' },
-      { market: 'Both Teams To Score', probability: bttsMarket?.yes || 0.56, signal_score: 72, label: 'Moderate' },
-      { market: 'Over 2.5 Goals', probability: goalsMarket?.over_2_5 || 0.52, signal_score: 68, label: 'Moderate' },
-      { market: 'Over 8.5 Corners', probability: 0.64, signal_score: 65, label: 'Moderate' }
-    ],
+  const corners = rawIntel?.markets?.corners || rawIntel?.corners || fixtureData?.corners || fixtureData?.prediction?.corners || null;
+  const cards = rawIntel?.markets?.cards || rawIntel?.cards || fixtureData?.cards || fixtureData?.prediction?.cards || null;
+
+  // Phase 13 Strict Provenance: Zero synthetic fallbacks for Decision Intelligence & Unified Intelligence
+  const decisionData = rawDecisionData || null;
+
+  const intel = rawIntel || ((goalsMarket || xgTotal != null) ? {
+    unified_confidence: (confidence?.overall != null ? confidence.overall / 100 : null),
+    match_state_classification: [],
+    cross_market_consistency: null,
+    ranked_signals: [],
     expected_goals: {
       home: xgHome,
       away: xgAway,
@@ -424,99 +300,9 @@ export default function MatchDetailModal({
     cards: cards
   } : null);
 
-  // Robust fallback for Shots & SoT
-  const shotsData = (rawShotsData && rawShotsData.status === 'AVAILABLE') ? rawShotsData : (fixtureData ? {
-    status: 'AVAILABLE',
-    model_version: 'v1_shots_nb',
-    shots: {
-      expected_home_shots: roundNum((xgHome || 1.4) * 7.5, 1),
-      expected_away_shots: roundNum((xgAway || 1.1) * 6.8, 1),
-      expected_total_shots: roundNum(((xgHome || 1.4) * 7.5) + ((xgAway || 1.1) * 6.8), 1),
-      probabilities: {
-        over_17_5: roundNum(Math.min(0.95, Math.max(0.35, 0.82 + ((xgTotal || 2.5) - 2.5) * 0.08)), 2),
-        over_19_5: roundNum(Math.min(0.90, Math.max(0.25, 0.72 + ((xgTotal || 2.5) - 2.5) * 0.08)), 2),
-        over_21_5: roundNum(Math.min(0.85, Math.max(0.18, 0.60 + ((xgTotal || 2.5) - 2.5) * 0.08)), 2),
-        over_23_5: roundNum(Math.min(0.75, Math.max(0.12, 0.46 + ((xgTotal || 2.5) - 2.5) * 0.08)), 2),
-        over_25_5: roundNum(Math.min(0.65, Math.max(0.08, 0.32 + ((xgTotal || 2.5) - 2.5) * 0.08)), 2)
-      }
-    },
-    shots_on_target: {
-      expected_home_sot: roundNum((xgHome || 1.4) * 2.8, 1),
-      expected_away_sot: roundNum((xgAway || 1.1) * 2.5, 1),
-      expected_total_sot: roundNum(((xgHome || 1.4) * 2.8) + ((xgAway || 1.1) * 2.5), 1),
-      probabilities: {
-        over_6_5: roundNum(Math.min(0.95, Math.max(0.40, 0.84 + ((xgTotal || 2.5) - 2.5) * 0.07)), 2),
-        over_7_5: roundNum(Math.min(0.90, Math.max(0.30, 0.74 + ((xgTotal || 2.5) - 2.5) * 0.07)), 2),
-        over_8_5: roundNum(Math.min(0.82, Math.max(0.20, 0.58 + ((xgTotal || 2.5) - 2.5) * 0.07)), 2),
-        over_9_5: roundNum(Math.min(0.70, Math.max(0.14, 0.42 + ((xgTotal || 2.5) - 2.5) * 0.07)), 2),
-        over_10_5: roundNum(Math.min(0.58, Math.max(0.08, 0.28 + ((xgTotal || 2.5) - 2.5) * 0.07)), 2)
-      }
-    },
-    diagnostics: {
-      sot_to_shot_ratio: 0.37
-    }
-  } : null);
-
-  // Robust fallback for Match Statistics
-  const matchStatsData = (rawMatchStatsData && rawMatchStatsData.status === 'AVAILABLE') ? rawMatchStatsData : (fixtureData ? {
-    status: 'AVAILABLE',
-    model_version: 'v1_match_stats_nb',
-    possession: (() => {
-      const hDiff = (xgHome || 1.4) - (xgAway || 1.1);
-      const hPoss = roundNum(Math.max(35, Math.min(65, 50.0 + hDiff * 9.0)), 1);
-      const aPoss = roundNum(100.0 - hPoss, 1);
-      return {
-        expected_home_possession: hPoss,
-        expected_away_possession: aPoss,
-        projected_range_home: [roundNum(hPoss - 4.5, 1), roundNum(hPoss + 4.5, 1)],
-        possession_differential: roundNum(hPoss - aPoss, 1)
-      };
-    })(),
-    attacking_pressure: (() => {
-      const hDiff = (xgHome || 1.4) - (xgAway || 1.1);
-      const hPress = roundNum(Math.max(30, Math.min(70, 50.0 + hDiff * 12.0)), 1);
-      const aPress = roundNum(100.0 - hPress, 1);
-      return {
-        home_pressure_index: hPress,
-        away_pressure_index: aPress,
-        dominant_side: hPress >= 54 ? 'HOME_DOMINANT' : aPress >= 54 ? 'AWAY_DOMINANT' : 'BALANCED'
-      };
-    })(),
-    fouls: {
-      expected_home_fouls: 11.6,
-      expected_away_fouls: 12.2,
-      expected_total_fouls: 23.8,
-      probabilities: {
-        over_21_5: 0.74,
-        over_23_5: 0.59,
-        over_25_5: 0.41
-      }
-    },
-    offsides: {
-      expected_home_offsides: 1.8,
-      expected_away_offsides: 1.6,
-      expected_total_offsides: 3.4,
-      probabilities: {
-        over_2_5: 0.64
-      }
-    },
-    saves: {
-      expected_home_saves: 2.7,
-      expected_away_saves: 2.9,
-      expected_total_saves: 5.6,
-      probabilities: {
-        over_4_5: 0.63
-      }
-    },
-    blocked_shots: {
-      expected_home_blocked_shots: 2.2,
-      expected_away_blocked_shots: 2.0,
-      expected_total_blocked_shots: 4.2,
-      probabilities: {
-        over_3_5: 0.58
-      }
-    }
-  } : null);
+  // Phase 13 Strict Data Provenance: Zero synthetic fallbacks for detailed market extensions
+  const shotsData = (rawShotsData && rawShotsData.status === 'AVAILABLE') ? rawShotsData : null;
+  const matchStatsData = (rawMatchStatsData && rawMatchStatsData.status === 'AVAILABLE') ? rawMatchStatsData : null;
 
   // Top-level invalid fixture check
   if (!fixtureId) {
@@ -598,13 +384,21 @@ export default function MatchDetailModal({
         {/* Modal Header */}
         <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-gradient-to-r from-emerald-950/50 via-slate-900 to-cyan-950/50">
           <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30">
-                {competition?.name || fixtureData?.league_name || 'Match Analytics'}
+                {competition?.display_name || competition?.name || fixtureData?.league_name || 'UNAVAILABLE'}
               </span>
-              {competition?.country && competition.country !== 'International' && (
+              <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/50">
+                {competition?.country && competition.country !== 'UNAVAILABLE' ? `${competition.country}${competition.country_code ? ` (${competition.country_code})` : ''}` : 'COUNTRY: UNAVAILABLE'}
+              </span>
+              {competition?.season && (
                 <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/50">
-                  {competition.country}
+                  {competition.season}
+                </span>
+              )}
+              {competition?.round && (
+                <span className="text-[9px] font-bold text-slate-500 uppercase bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/50">
+                  {competition.round}
                 </span>
               )}
               <span className="text-[9px] font-bold text-slate-500 uppercase">
@@ -987,48 +781,78 @@ export default function MatchDetailModal({
                       </span>
                     </div>
 
-                    {/* H2H Metrics Strip */}
+                    {/* H2H Metrics Strip - Strictly Fixture Relative */}
                     {(() => {
                       const h2hList = fixtureData?.h2h_history || [];
                       const totalMatches = h2hList.length;
                       if (totalMatches === 0) return null;
 
-                      let hWins = 0, draws = 0, aWins = 0, totalGoals = 0, over15Count = 0, over25Count = 0;
+                      const summary = fixtureData?.h2h_summary;
+                      let hWins = summary?.home_wins;
+                      let draws = summary?.draws;
+                      let aWins = summary?.away_wins;
+                      let totalGoals = summary ? (summary.home_goals + summary.away_goals) : 0;
+                      let over15Count = 0, over25Count = 0;
+
                       h2hList.forEach((m) => {
                         const tg = m.total_goals ?? (m.home_score != null && m.away_score != null ? m.home_score + m.away_score : null);
                         if (tg != null) {
-                          totalGoals += tg;
                           if (tg >= 2) over15Count++;
                           if (tg >= 3) over25Count++;
                         }
-                        if (m.home_score != null && m.away_score != null) {
-                          if (m.home_score > m.away_score) hWins++;
-                          else if (m.home_score === m.away_score) draws++;
-                          else aWins++;
-                        }
                       });
+
+                      if (hWins == null || aWins == null || draws == null) {
+                        hWins = 0; draws = 0; aWins = 0; totalGoals = 0;
+                        h2hList.forEach((m) => {
+                          const tg = m.total_goals ?? (m.home_score != null && m.away_score != null ? m.home_score + m.away_score : null);
+                          if (tg != null) totalGoals += tg;
+                          if (m.current_fixture_relative) {
+                            if (m.current_fixture_relative.outcome === 'HOME_WIN') hWins++;
+                            else if (m.current_fixture_relative.outcome === 'AWAY_WIN') aWins++;
+                            else draws++;
+                          } else {
+                            const isHome = (m.home_team_name || m.historical_home_team) === home?.name;
+                            const hScore = m.home_score;
+                            const aScore = m.away_score;
+                            if (hScore != null && aScore != null) {
+                              const currHomeGoals = isHome ? hScore : aScore;
+                              const currAwayGoals = isHome ? aScore : hScore;
+                              if (currHomeGoals > currAwayGoals) hWins++;
+                              else if (currHomeGoals < currAwayGoals) aWins++;
+                              else draws++;
+                            }
+                          }
+                        });
+                      }
 
                       const avgGoals = totalMatches > 0 ? (totalGoals / totalMatches).toFixed(1) : '—';
                       const o15Pct = totalMatches > 0 ? Math.round((over15Count / totalMatches) * 100) : 0;
                       const o25Pct = totalMatches > 0 ? Math.round((over25Count / totalMatches) * 100) : 0;
 
                       return (
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800/80 text-center">
-                          <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">H2H Record (W-D-L)</span>
-                            <span className="text-sm font-black text-white">{hWins}-{draws}-{aWins}</span>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span className="font-bold text-emerald-400 uppercase">[OBSERVED FACT] Strictly Relative to {home?.name || 'Home'} vs {away?.name || 'Away'}</span>
+                            <span className="font-mono text-slate-500">Fixture Perspective Verified</span>
                           </div>
-                          <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">Avg H2H Goals</span>
-                            <span className="text-sm font-black text-cyan-400">{avgGoals}</span>
-                          </div>
-                          <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-emerald-400 block uppercase">H2H Over 1.5 Hit</span>
-                            <span className="text-sm font-black text-emerald-400">{o15Pct}%</span>
-                          </div>
-                          <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase">H2H Over 2.5 Hit</span>
-                            <span className="text-sm font-black text-slate-200">{o25Pct}%</span>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800/80 text-center">
+                            <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
+                              <span className="text-[10px] font-bold text-slate-400 block uppercase">{home?.name?.slice(0, 7) || 'Home'} W-D-L</span>
+                              <span className="text-sm font-black text-white">{hWins}-{draws}-{aWins}</span>
+                            </div>
+                            <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
+                              <span className="text-[10px] font-bold text-slate-400 block uppercase">Avg Total Goals</span>
+                              <span className="text-sm font-black text-cyan-400">{avgGoals}</span>
+                            </div>
+                            <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
+                              <span className="text-[10px] font-bold text-emerald-400 block uppercase">Over 1.5 Hit</span>
+                              <span className="text-sm font-black text-emerald-400">{o15Pct}%</span>
+                            </div>
+                            <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
+                              <span className="text-[10px] font-bold text-slate-400 block uppercase">Over 2.5 Hit</span>
+                              <span className="text-sm font-black text-slate-200">{o25Pct}%</span>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1056,22 +880,38 @@ export default function MatchDetailModal({
                                 </span>
                                 <div className="space-y-0.5">
                                   <span className="text-xs font-bold text-slate-100 block">
-                                    {h2h.home_team_name || 'Home'} vs {h2h.away_team_name || 'Away'}
+                                    {h2h.historical_home_team || h2h.home_team_name} vs {h2h.historical_away_team || h2h.away_team_name}
                                   </span>
-                                  {h2h.league_name && (
-                                    <span className="text-[10px] text-slate-500 block">{h2h.league_name}</span>
-                                  )}
+                                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                                    {(h2h.competition || h2h.league_name) && (
+                                      <span>{h2h.competition || h2h.league_name}</span>
+                                    )}
+                                    {h2h.current_fixture_relative && (
+                                      <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
+                                        h2h.current_fixture_relative.outcome === 'HOME_WIN' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                                        h2h.current_fixture_relative.outcome === 'AWAY_WIN' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
+                                        'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                      }`}>
+                                        {h2h.current_fixture_relative.outcome === 'HOME_WIN' ? `${home?.name || 'Home'} Win` :
+                                         h2h.current_fixture_relative.outcome === 'AWAY_WIN' ? `${away?.name || 'Away'} Win` : 'Draw'}
+                                      </span>
+                                    )}
+                                    {h2h.historical_fixture_id && (
+                                      <span className="font-mono text-slate-600">#{h2h.historical_fixture_id}</span>
+                                    )}
+                                    <span className="text-emerald-500 font-bold">[OBSERVED FACT]</span>
+                                  </div>
                                 </div>
                               </div>
 
                               <div className="flex items-center space-x-2">
                                 <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 font-mono font-black text-xs text-white">
-                                  {h2h.score || `${h2h.home_score ?? 0} - ${h2h.away_score ?? 0}`}
+                                  {h2h.score || (h2h.home_score != null && h2h.away_score != null ? `${h2h.home_score}-${h2h.away_score}` : '—')}
                                 </span>
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
                                   isOver15 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700'
                                 }`}>
-                                  {tg} Goals
+                                  {tg !== '—' ? `${tg} Goals` : '—'}
                                 </span>
                               </div>
                             </div>
@@ -1080,7 +920,20 @@ export default function MatchDetailModal({
                       </div>
                     ) : (
                       <div className="space-y-4 py-2">
-                        {/* Team Form Cards when direct H2H is 0 */}
+                        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 text-center space-y-2">
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-black uppercase">
+                            [INSUFFICIENT DATA]
+                          </div>
+                          <div className="flex items-center justify-center gap-2 text-white text-xs font-bold">
+                            <Shield className="w-4 h-4 text-slate-400" />
+                            <span>Zero Direct Prior Encounters in Competition Archive</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                            These clubs have no recorded head-to-head encounters in verified records. The system does not synthesize or estimate fake historical scores.
+                          </p>
+                        </div>
+
+                        {/* Team Form Cards without fabricated values */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
                             <div className="flex items-center justify-between">
@@ -1103,12 +956,12 @@ export default function MatchDetailModal({
                                   </span>
                                 ))
                               ) : (
-                                <span className="text-xs text-slate-500">Recent form: Positive streak</span>
+                                <span className="text-xs text-slate-500">Streak data unavailable</span>
                               )}
                             </div>
                             <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
-                              <span>Goals Scored (L5): <strong className="text-emerald-400">{home?.goals_scored_last_5 ?? 8}</strong></span>
-                              <span>Conceded (L5): <strong className="text-rose-400">{home?.goals_conceded_last_5 ?? 5}</strong></span>
+                              <span>Goals Scored (L5): <strong className="text-emerald-400">{home?.goals_scored_last_5 != null ? home.goals_scored_last_5 : '—'}</strong></span>
+                              <span>Conceded (L5): <strong className="text-rose-400">{home?.goals_conceded_last_5 != null ? home.goals_conceded_last_5 : '—'}</strong></span>
                             </div>
                           </div>
 
@@ -1133,24 +986,14 @@ export default function MatchDetailModal({
                                   </span>
                                 ))
                               ) : (
-                                <span className="text-xs text-slate-500">Recent form: Competitive streak</span>
+                                <span className="text-xs text-slate-500">Streak data unavailable</span>
                               )}
                             </div>
                             <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/60">
-                              <span>Goals Scored (L5): <strong className="text-cyan-400">{away?.goals_scored_last_5 ?? 6}</strong></span>
-                              <span>Conceded (L5): <strong className="text-rose-400">{away?.goals_conceded_last_5 ?? 6}</strong></span>
+                              <span>Goals Scored (L5): <strong className="text-cyan-400">{away?.goals_scored_last_5 != null ? away.goals_scored_last_5 : '—'}</strong></span>
+                              <span>Conceded (L5): <strong className="text-rose-400">{away?.goals_conceded_last_5 != null ? away.goals_conceded_last_5 : '—'}</strong></span>
                             </div>
                           </div>
-                        </div>
-
-                        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 text-center space-y-1.5">
-                          <div className="flex items-center justify-center gap-2 text-slate-400 text-xs font-bold">
-                            <Shield className="w-4 h-4 text-slate-500" />
-                            <span>Zero Direct Prior Encounters in Competition Archive</span>
-                          </div>
-                          <p className="text-[11px] text-slate-400 max-w-md mx-auto">
-                            These teams have not met directly in recent seasons. Model predictions leverage independent Poisson scoring variance, home/away attack strength, and league distribution priors.
-                          </p>
                         </div>
                       </div>
                     )}

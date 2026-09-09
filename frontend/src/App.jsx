@@ -180,10 +180,37 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [loading]);
 
+  // Phase 13 Modal Mutex Enforcement: Only ONE match modal can exist in the DOM at any time
   const openFixtureDetail = (fixtureId, initialTab = 'decision_intel') => {
-    setActiveDetailFixtureId(fixtureId);
-    setDetailInitialTab(initialTab);
-    setShowDetailModal(true);
+    // 1. Force close and unmount Live Modal if open
+    setShowLiveModal(false);
+    setActiveLiveFixtureId(null);
+    // 2. Clear any stale fixture details ID before setting new one
+    setActiveDetailFixtureId(null);
+    setTimeout(() => {
+      setActiveDetailFixtureId(fixtureId);
+      setDetailInitialTab(initialTab);
+      setShowDetailModal(true);
+    }, 0);
+  };
+
+  const openLiveModal = (fixtureId) => {
+    // 1. Force close and unmount Detail Modal if open
+    setShowDetailModal(false);
+    setActiveDetailFixtureId(null);
+    // 2. Clear any stale live fixture ID before setting new one
+    setActiveLiveFixtureId(null);
+    setTimeout(() => {
+      setActiveLiveFixtureId(fixtureId);
+      setShowLiveModal(true);
+    }, 0);
+  };
+
+  const closeAllMatchModals = () => {
+    setShowDetailModal(false);
+    setActiveDetailFixtureId(null);
+    setShowLiveModal(false);
+    setActiveLiveFixtureId(null);
   };
 
   // Accuracy Dashboard & Confidence state
@@ -1695,8 +1722,13 @@ export default function App() {
                                 {fix.away_team?.name}
                               </span>
                             </div>
-                            <span className="text-[10px] text-slate-400 truncate">
-                              {fix.competition?.name || fix.league?.name || 'League'}
+                            <span className="text-[10px] text-slate-400 truncate flex items-center gap-1">
+                              <span>{fix.competition?.display_name || fix.competition?.name || fix.league?.name || 'League'}</span>
+                              {fix.competition?.country && fix.competition.country !== 'UNAVAILABLE' && (
+                                <span className="text-[8px] px-1 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                                  {fix.competition.country}
+                                </span>
+                              )}
                             </span>
                           </div>
                         </div>
@@ -1827,9 +1859,16 @@ export default function App() {
 
                           {/* Competition Name Badge */}
                           <td className="py-3 px-3">
-                            <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
-                              {fix.competition?.name || fix.league?.name || 'League'}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[11px] font-extrabold uppercase text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                                {fix.competition?.display_name || fix.competition?.name || fix.league?.name || 'League'}
+                              </span>
+                              {fix.competition?.country && fix.competition.country !== 'UNAVAILABLE' && (
+                                <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/50">
+                                  {fix.competition.country}
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           {/* Team Matchup & Live Score */}
@@ -2147,8 +2186,14 @@ export default function App() {
                             {fix.away_team?.name}
                           </span>
                         </div>
-                        <span className="text-[10px] text-slate-400 truncate">
-                          {fix.league?.name || 'League'} &bull; {formatDateGMT1(fix.match_date)}
+                        <span className="text-[10px] text-slate-400 truncate flex items-center gap-1">
+                          <span>{fix.competition?.display_name || fix.competition?.name || fix.league?.name || 'League'}</span>
+                          {fix.competition?.country && fix.competition.country !== 'UNAVAILABLE' && (
+                            <span className="text-[8px] px-1 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                              {fix.competition.country}
+                            </span>
+                          )}
+                          <span>&bull; {formatDateGMT1(fix.match_date)}</span>
                         </span>
                       </div>
 
@@ -2269,9 +2314,9 @@ export default function App() {
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
-                              {fix.competition?.name || fix.league?.name || 'League'}
+                              {fix.competition?.display_name || fix.competition?.name || fix.league?.name || 'League'}
                             </span>
-                            {(fix.competition?.country || fix.league?.country) && (fix.competition?.country || fix.league?.country) !== 'International' && (
+                            {(fix.competition?.country || fix.league?.country) && (fix.competition?.country || fix.league?.country) !== 'UNAVAILABLE' && (
                               <span className="text-[9px] font-bold text-slate-400 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/50">
                                 {fix.competition?.country || fix.league?.country}
                               </span>
@@ -2593,35 +2638,41 @@ export default function App() {
         darkMode={darkMode}
       />
 
-      {/* Deep Match Detail & H2H Modal */}
-      <MatchDetailModal
-        fixtureId={activeDetailFixtureId}
-        isOpen={showDetailModal}
-        initialTab={detailInitialTab}
-        onClose={() => {
-          setShowDetailModal(false);
-          setActiveDetailFixtureId(null);
-        }}
-        onOpenLiveModal={(id) => {
-          setActiveLiveFixtureId(id);
-          setShowLiveModal(true);
-        }}
-        apiRequest={apiRequest}
-        darkMode={darkMode}
-      />
+      {/* Deep Match Detail & H2H Modal - Strictly Mutex Isolated */}
+      {showDetailModal && !showLiveModal && activeDetailFixtureId && (
+        <MatchDetailModal
+          fixtureId={activeDetailFixtureId}
+          isOpen={true}
+          initialTab={detailInitialTab}
+          onClose={() => {
+            setShowDetailModal(false);
+            setActiveDetailFixtureId(null);
+          }}
+          onOpenLiveModal={(id) => {
+            openLiveModal(id);
+          }}
+          apiRequest={apiRequest}
+          darkMode={darkMode}
+        />
+      )}
 
-      {/* Live Match Intelligence & Dynamic In-Play Predictions Modal */}
-      <LiveMatchIntelligenceModal
-        fixtureId={activeLiveFixtureId}
-        initialFixture={fixtures.find(f => f.id === activeLiveFixtureId) || finishedFixtures.find(f => f.id === activeLiveFixtureId)}
-        isOpen={showLiveModal}
-        onClose={() => {
-          setShowLiveModal(false);
-          setActiveLiveFixtureId(null);
-        }}
-        apiRequest={apiRequest}
-        darkMode={darkMode}
-      />
+      {/* Live Match Intelligence & Dynamic In-Play Predictions Modal - Strictly Mutex Isolated */}
+      {showLiveModal && !showDetailModal && activeLiveFixtureId && (
+        <LiveMatchIntelligenceModal
+          fixtureId={activeLiveFixtureId}
+          initialFixture={fixtures.find(f => f.id === activeLiveFixtureId) || finishedFixtures.find(f => f.id === activeLiveFixtureId)}
+          isOpen={true}
+          onClose={() => {
+            setShowLiveModal(false);
+            setActiveLiveFixtureId(null);
+          }}
+          onOpenDetailModal={(id, tab = 'overview') => {
+            openFixtureDetail(id, tab);
+          }}
+          apiRequest={apiRequest}
+          darkMode={darkMode}
+        />
+      )}
 
       {/* Model Intelligence Evaluation & Calibration Dashboard */}
       <ModelIntelligenceDashboard

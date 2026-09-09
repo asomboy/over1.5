@@ -11,6 +11,12 @@ from models import Fixture
 logger = logging.getLogger(__name__)
 
 
+try:
+    from services.canonical_competition_service import CanonicalCompetitionService
+except ImportError:
+    from .canonical_competition_service import CanonicalCompetitionService
+
+
 class IdentityDiagnostic(str, Enum):
     IDENTITY_VALID = "IDENTITY_VALID"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
@@ -32,6 +38,10 @@ class CanonicalFixtureIdentity:
     competition: str
     country: str
     kickoff: Optional[datetime]
+    country_code: Optional[str] = None
+    competition_display_name: Optional[str] = None
+    season: Optional[str] = None
+    round_stage: Optional[str] = None
 
 
 @dataclass
@@ -92,8 +102,21 @@ class FixtureIdentityService:
         """
         home_name = fixture.home_team.name if fixture.home_team else ""
         away_name = fixture.away_team.name if fixture.away_team else ""
-        comp_name = fixture.league.name if fixture.league else ""
-        country_name = fixture.league.country if (fixture.league and fixture.league.country) else "International"
+
+        canon_comp = CanonicalCompetitionService.resolve_competition(
+            league_name=fixture.league.name if fixture.league else None,
+            season_slug=getattr(fixture.league, "season", None) if fixture.league else None,
+            provided_country=fixture.league.country if fixture.league else None,
+            provided_season=getattr(fixture.league, "season", None) if fixture.league else None,
+            provided_round=getattr(fixture, "round", None)
+        ) if fixture.league else None
+
+        country_name = canon_comp.country if canon_comp else (fixture.league.country if (fixture.league and fixture.league.country) else "UNAVAILABLE")
+        country_code = canon_comp.country_code if canon_comp else "—"
+        comp_name = canon_comp.competition_name if canon_comp else (fixture.league.name if fixture.league else "UNAVAILABLE")
+        comp_display = canon_comp.competition_display_name if canon_comp else comp_name
+        season = canon_comp.season if (canon_comp and canon_comp.season) else getattr(fixture.league, "season", None)
+        round_stage = canon_comp.round_stage if (canon_comp and canon_comp.round_stage) else getattr(fixture, "round", None)
 
         return CanonicalFixtureIdentity(
             fixture_id=fixture.id,
@@ -102,7 +125,11 @@ class FixtureIdentityService:
             away_team=away_name,
             competition=comp_name,
             country=country_name,
-            kickoff=fixture.match_date
+            kickoff=fixture.match_date,
+            country_code=country_code,
+            competition_display_name=comp_display,
+            season=season,
+            round_stage=round_stage
         )
 
     @classmethod

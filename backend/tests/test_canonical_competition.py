@@ -96,15 +96,15 @@ class TestCanonicalCompetition(unittest.TestCase):
             self.assertEqual(code, exp_code, f"Failed for {name}: got {code}, expected {exp_code}")
 
     def test_unmapped_fallback_zero_fabrication(self):
-        """Ensure unmapped or ambiguous competitions fall back cleanly without fabricating fake countries."""
+        """Ensure unmapped or ambiguous competitions fall back cleanly to UNAVAILABLE without fabricating fake countries."""
         country, code = CanonicalCompetitionService.get_country_for_league_name("Some Random Unregistered Tournament 2026")
-        self.assertEqual(country, "International")
-        self.assertEqual(code, "INT")
+        self.assertEqual(country, "UNAVAILABLE")
+        self.assertEqual(code, "—")
 
         # None / empty handling
         country_none, code_none = CanonicalCompetitionService.get_country_for_league_name(None)
-        self.assertEqual(country_none, "International")
-        self.assertEqual(code_none, "INT")
+        self.assertEqual(country_none, "UNAVAILABLE")
+        self.assertEqual(code_none, "—")
 
     def test_ingestion_service_canonical_alignment(self):
         """Test that ingestion correctly preserves and aligns canonical competition identities."""
@@ -231,17 +231,18 @@ class TestCanonicalCompetition(unittest.TestCase):
             away_team_name="Ohio Bobcats"
         ))
 
-    def test_venezuelan_club_signature_overrides_colombian_alt_note(self):
-        """Test that Venezuelan Liga FUTVE clubs are correctly identified even if ESPN mislabels altGameNote as Colombian Primera A."""
+    def test_team_names_never_override_provider_competition_metadata(self):
+        """Test that provider metadata (e.g. Colombian Primera A) is never overridden by club names (Phase 13 mandate)."""
         ident = CanonicalCompetitionService.resolve_competition(
             provider_code="all",
             alt_note="Colombian Primera A",
             home_team_name="Anzoátegui FC",
             away_team_name="Monagas SC"
         )
-        self.assertEqual(ident.competition_name, "Liga FUTVE")
-        self.assertEqual(ident.country_name, "Venezuela")
-        self.assertEqual(ident.country_code, "VE")
+        self.assertEqual(ident.competition_name, "Colombian Primera A")
+        self.assertEqual(ident.competition_display_name, "Primera A")
+        self.assertEqual(ident.country, "Colombia")
+        self.assertEqual(ident.country_code, "CO")
 
     def test_purge_ncaa_team_logo_url(self):
         """Test that fixtures with NCAA logo URLs are purged even if league/team names are unfamiliar."""
