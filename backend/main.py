@@ -1116,6 +1116,17 @@ def get_cards_performance_dashboard(request: Request, db: Session = Depends(get_
     return CardsBacktestService.run_chronological_backtest(db, min_samples=100)
 
 
+@app.get("/api/fixtures/{fixture_id}/live")
+@limiter.limit("60/minute")
+def get_canonical_fixture_live(request: Request, fixture_id: int, db: Session = Depends(get_db)):
+    """Returns canonical normalized real-time match data, observed statistics, event timeline and live predictions."""
+    from services.live_service import LiveMatchIntelligenceService
+    canonical = LiveMatchIntelligenceService.get_canonical_live_match(db, fixture_id)
+    if not canonical:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+    return canonical
+
+
 @app.get("/api/fixtures/{fixture_id}/live-intelligence")
 @limiter.limit("60/minute")
 def get_fixture_live_intelligence(request: Request, fixture_id: int, db: Session = Depends(get_db)):

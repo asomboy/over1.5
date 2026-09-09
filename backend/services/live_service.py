@@ -24,11 +24,13 @@ try:
     )
     from services.corners_service import CornersPredictionEngine
     from services.cards_service import CardsPredictionEngine, RefereeIntelligenceService
+    from services.live_provider_service import LiveProviderAdapterService
+    from services.live_narrative_service import LiveNarrativeEngine
     from schemas.live_schema import (
         LiveMatchStateSchema, LiveGoalsPrediction, LiveCornersPrediction,
         LiveCardsPrediction, LiveSignalItem, BestLiveSignal, LiveConfidence,
         LiveDiagnostics, LiveIntelligenceResponse, LiveFixtureSummary,
-        LiveMarketProbability
+        LiveMarketProbability, CanonicalLiveMatchResponse
     )
 except ImportError:
     from ..models import (
@@ -42,11 +44,13 @@ except ImportError:
     )
     from .corners_service import CornersPredictionEngine
     from .cards_service import CardsPredictionEngine, RefereeIntelligenceService
+    from .live_provider_service import LiveProviderAdapterService
+    from .live_narrative_service import LiveNarrativeEngine
     from ..schemas.live_schema import (
         LiveMatchStateSchema, LiveGoalsPrediction, LiveCornersPrediction,
         LiveCardsPrediction, LiveSignalItem, BestLiveSignal, LiveConfidence,
         LiveDiagnostics, LiveIntelligenceResponse, LiveFixtureSummary,
-        LiveMarketProbability
+        LiveMarketProbability, CanonicalLiveMatchResponse
     )
 
 logger = logging.getLogger(__name__)
@@ -747,19 +751,39 @@ class LiveMatchIntelligenceService:
         if not fixture:
             return None
 
-        # Fetch or initialize LiveMatchState
+        # 0. Fetch real verified live state from provider adapter
+        live_prov = LiveProviderAdapterService.fetch_live_summary(db, fixture_id)
+
+        # Look up previous snapshot for factual change detection
+        prev_snap = (
+            db.query(LivePredictionSnapshot)
+            .filter(LivePredictionSnapshot.fixture_id == fixture_id)
+            .order_by(LivePredictionSnapshot.id.desc())
+            .first()
+        )
+        prev_state = None
+        if prev_snap:
+            try:
+                prev_state = {
+                    "minute": prev_snap.match_minute,
+                    "score": {"home": prev_snap.home_score, "away": prev_snap.away_score},
+                    "statistics": {}
+                }
+            except Exception:
+                pass
+
+        # Fetch latest LiveMatchState record
         live_state_obj = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture_id).first()
         if not live_state_obj:
-            # Fallback to fixture values
             live_state_obj = LiveMatchState(
                 fixture_id=fixture_id,
-                minute=0,
+                minute=live_prov.get("minute", 0),
                 added_time=0,
-                period="1H",
-                status=fixture.status or "LIVE",
-                home_score=fixture.home_score or 0,
-                away_score=fixture.away_score or 0,
-                data_source="fallback",
+                period=live_prov.get("period", "1H"),
+                status=live_prov.get("status", fixture.status or "LIVE"),
+                home_score=live_prov.get("score", {}).get("home", fixture.home_score or 0),
+                away_score=live_prov.get("score", {}).get("away", fixture.away_score or 0),
+                data_source="espn_live_summary",
                 data_quality="verified"
             )
 
@@ -786,8 +810,15 @@ class LiveMatchIntelligenceService:
             home_red_cards=live_state_obj.home_red_cards,
             away_red_cards=live_state_obj.away_red_cards,
             last_updated=live_state_obj.last_updated.isoformat() if live_state_obj.last_updated else None,
-            data_source=live_state_obj.data_source or "live_feed",
+            data_source=live_state_obj.data_source or "espn_live_summary",
             data_quality=live_state_obj.data_quality or "verified"
+        )
+
+        # Generate factual narrative items from verified observed differences
+        home_name = fixture.home_team.name if fixture.home_team else "Home"
+        away_name = fixture.away_team.name if fixture.away_team else "Away"
+        narrative_items = LiveNarrativeEngine.generate_narrative(
+            fixture_id, home_name, away_name, live_prov, prev_state
         )
 
         # 1. Fetch pre-match priors
@@ -825,21 +856,28 @@ class LiveMatchIntelligenceService:
             state_schema.home_red_cards or 0, state_schema.away_red_cards or 0, rem_mins
         )
 
-        # 6. Data quality & confidence
-        has_stats = (state_schema.home_shots is not None and state_schema.home_corners is not None)
-        live_dq = 80 if has_stats else 45
+        # 6. Real Data quality & Honest confidence (no static 50% fallbacks)
+        live_dq = live_prov.get("data_quality_score", 65)
+        stat_coverage = live_prov.get("statistical_coverage", "PARTIAL")
+        cov_score = 90 if stat_coverage == "FULL" else (60 if stat_coverage == "PARTIAL" else 35)
+
         pre_conf = 72
         prior_w, live_w = LiveModelFusionEngine.calculate_fusion_weights(state_schema.minute, live_dq)
 
         time_sens = int(round(_clamp(rem_mins / 90.0 * 100, 10, 95)))
-        overall_conf = int(round((0.40 * pre_conf) + (0.35 * live_dq) + (0.25 * (100 - abs(50 - time_sens)))))
-        conf_label = "strong" if overall_conf >= 75 else ("good" if overall_conf >= 65 else ("moderate" if overall_conf >= 50 else "low"))
+        fresh_status = live_prov.get("data_status", "FRESH")
+        freshness_mult = 1.0 if fresh_status == "FRESH" else (0.8 if fresh_status == "STALE" else (0.5 if fresh_status == "VERY_STALE" else 0.25))
+
+        raw_conf = (0.35 * pre_conf) + (0.35 * live_dq) + (0.30 * (100 - abs(50 - time_sens)))
+        overall_conf = int(round(_clamp(raw_conf * freshness_mult, 15, 95)))
+
+        conf_label = "strong" if overall_conf >= 75 else ("good" if overall_conf >= 65 else ("moderate" if overall_conf >= 50 else ("low" if overall_conf >= 30 else "insufficient")))
 
         live_conf = LiveConfidence(
             overall_confidence=overall_conf,
             pre_match_confidence=pre_conf,
             live_data_quality=live_dq,
-            statistical_coverage=85 if has_stats else 40,
+            statistical_coverage=cov_score,
             model_stability=75,
             time_sensitivity=time_sens,
             label=conf_label
@@ -886,7 +924,15 @@ class LiveMatchIntelligenceService:
         res_payload = {
             "fixture_id": fixture_id,
             "model_version": LIVE_MODEL_VERSION,
+            "status": live_prov.get("status", fixture.status or "LIVE"),
+            "is_completed": live_prov.get("is_completed", False),
+            "display_clock": live_prov.get("display_clock", f"{state_schema.minute}'"),
             "match_state": _dump(state_schema),
+            "observed": live_prov.get("statistics", {}),
+            "events": live_prov.get("events", []),
+            "narrative": narrative_items,
+            "data_status": live_prov.get("data_status", "FRESH"),
+            "retrieved_at": live_prov.get("retrieved_at"),
             "live_goals": _dump(live_goals),
             "live_corners": _dump(live_corners),
             "live_cards": _dump(live_cards),
@@ -903,6 +949,81 @@ class LiveMatchIntelligenceService:
             logger.debug(f"Live snapshot persistence error: {snap_ex}")
 
         return res_payload
+
+    @classmethod
+    def get_canonical_live_match(
+        cls, db: Session, fixture_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Generates canonical normalized live match payload compliant with Section 6 & 28.
+        """
+        fixture = db.query(Fixture).filter(Fixture.id == fixture_id).first()
+        if not fixture:
+            return None
+
+        intel = cls.get_live_intelligence(db, fixture_id)
+        if not intel:
+            return None
+
+        st = intel["match_state"]
+        conf = intel["confidence"]
+        diag = intel["diagnostics"]
+
+        return {
+            "fixture": {
+                "id": fixture.id,
+                "external_id": fixture.external_id,
+                "home_team": {
+                    "id": fixture.home_team.id if fixture.home_team else None,
+                    "name": fixture.home_team.name if fixture.home_team else "Home",
+                    "logo_url": fixture.home_team.logo_url if fixture.home_team else None
+                },
+                "away_team": {
+                    "id": fixture.away_team.id if fixture.away_team else None,
+                    "name": fixture.away_team.name if fixture.away_team else "Away",
+                    "logo_url": fixture.away_team.logo_url if fixture.away_team else None
+                },
+                "competition": fixture.league.name if fixture.league else "League Match",
+                "country": fixture.league.country if fixture.league else None,
+                "match_date": fixture.match_date.isoformat() + "Z" if fixture.match_date else None
+            },
+            "live_state": {
+                "minute": st.get("minute", 0),
+                "display_clock": intel.get("display_clock", f"{st.get('minute', 0)}'"),
+                "period": st.get("period", "1H"),
+                "status": intel.get("status", "LIVE"),
+                "score": {
+                    "home": st.get("home_score", 0),
+                    "away": st.get("away_score", 0)
+                }
+            },
+            "statistics": intel.get("observed", {}),
+            "events": intel.get("events", []),
+            "narrative": intel.get("narrative", []),
+            "data_quality": {
+                "score": conf.get("live_data_quality", 50),
+                "overall_confidence": conf.get("overall_confidence", 50),
+                "label": conf.get("label", "moderate"),
+                "coverage": "FULL" if conf.get("statistical_coverage", 0) >= 80 else "PARTIAL",
+                "data_status": intel.get("data_status", "FRESH")
+            },
+            "provider": {
+                "name": "ESPN",
+                "fixture_id": fixture.external_id,
+                "retrieved_at": intel.get("retrieved_at")
+            },
+            "predictions": {
+                "goals": intel.get("live_goals"),
+                "corners": intel.get("live_corners"),
+                "cards": intel.get("live_cards"),
+                "diagnostics": diag
+            },
+            "signals": intel.get("live_signals", []),
+            "best_signal": intel.get("best_live_signal"),
+            "retrieved_at": intel.get("retrieved_at") or datetime.now(timezone.utc).isoformat(),
+            "status": intel.get("status", "LIVE")
+        }
+
 
 
 class LivePredictionSnapshotService:

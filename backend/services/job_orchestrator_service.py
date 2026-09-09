@@ -221,9 +221,17 @@ class JobOrchestratorService:
 
     @classmethod
     def _run_live_match_poll(cls, db: Session) -> Dict[str, Any]:
-        """Discovers active live matches and tracks freshness."""
-        live_matches = db.query(Fixture).filter(Fixture.status == "LIVE").all()
-        return {"processed": len(live_matches), "created": 0, "updated": len(live_matches), "skipped": 0}
+        """Discovers active live matches and refreshes verified observed state from live provider."""
+        from services.live_provider_service import LiveProviderAdapterService
+        live_matches = db.query(Fixture).filter(Fixture.status.in_(["LIVE", "HT", "1H", "2H", "ET"])).all()
+        updated_count = 0
+        for fix in live_matches:
+            try:
+                LiveProviderAdapterService.fetch_live_summary(db, fix.id)
+                updated_count += 1
+            except Exception as ex:
+                logger.debug(f"Live poll failed for fixture {fix.id}: {ex}")
+        return {"processed": len(live_matches), "created": 0, "updated": updated_count, "skipped": len(live_matches) - updated_count}
 
     @classmethod
     def _run_post_match_verification(cls, db: Session) -> Dict[str, Any]:

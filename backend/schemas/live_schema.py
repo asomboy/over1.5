@@ -125,6 +125,11 @@ class LiveIntelligenceResponse(BaseModel):
     best_live_signal: BestLiveSignal
     confidence: LiveConfidence
     diagnostics: LiveDiagnostics
+    events: Optional[List[Dict[str, Any]]] = None
+    narrative: Optional[List[Dict[str, Any]]] = None
+    data_status: Optional[str] = "FRESH"
+    retrieved_at: Optional[str] = None
+    observed: Optional[Dict[str, Any]] = None
 
 
 class LiveFixtureSummary(BaseModel):
@@ -140,3 +145,17 @@ class LiveFixtureSummary(BaseModel):
     confidence: int
     data_quality: int
     last_update: Optional[str] = None
+
+
+class CanonicalLiveMatchResponse(BaseModel):
+    fixture: Dict[str, Any]
+    live_state: Dict[str, Any]
+    statistics: Dict[str, Any]
+    events: List[Dict[str, Any]]
+    narrative: List[Dict[str, Any]]
+    data_quality: Dict[str, Any]
+    provider: Dict[str, Any]
+    predictions: Dict[str, Any]
+    signals: List[Dict[str, Any]]
+    retrieved_at: str
+    status: str

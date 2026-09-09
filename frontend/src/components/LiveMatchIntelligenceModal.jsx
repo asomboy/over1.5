@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Activity,
@@ -13,41 +13,117 @@ import {
   TrendingUp,
   CheckCircle2,
   Layers,
-  ChevronRight
+  ChevronRight,
+  Crosshair,
+  BarChart3,
+  Calendar,
+  Sparkles,
+  Radio,
+  FileText
 } from 'lucide-react';
 
 export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose, apiRequest, darkMode }) {
   const [liveData, setLiveData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'model'
-  const [lastRefreshed, setLastRefreshed] = useState(new Date());
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'shots' | 'timeline' | 'model'
+  const [tickerTime, setTickerTime] = useState(Date.now());
+  const activeFixtureIdRef = useRef(fixtureId);
 
+  // Keep ref synchronized
+  useEffect(() => {
+    activeFixtureIdRef.current = fixtureId;
+  }, [fixtureId]);
+
+  // Clock tick every 2 seconds for exact freshness calculation
+  useEffect(() => {
+    if (!isOpen) return;
+    const ticker = setInterval(() => {
+      setTickerTime(Date.now());
+    }, 2000);
+    return () => clearInterval(ticker);
+  }, [isOpen]);
+
+  // Fixture change & initial fetch
   useEffect(() => {
     if (isOpen && fixtureId) {
-      fetchLiveIntelligence();
+      setLiveData(null);
       setActiveTab('overview');
+      fetchLiveMatchData(false, fixtureId);
+    } else {
+      setLiveData(null);
     }
   }, [isOpen, fixtureId]);
 
-  // Periodic live refresh every 15 seconds when modal is open
+  // Single controlled polling loop every 30 seconds
   useEffect(() => {
     if (!isOpen || !fixtureId) return;
-    const interval = setInterval(() => {
-      fetchLiveIntelligence(true);
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [isOpen, fixtureId]);
 
-  const fetchLiveIntelligence = async (silent = false) => {
+    const interval = setInterval(() => {
+      // Don't poll if match already finished
+      if (liveData?.is_completed || liveData?.status === 'FINISHED') return;
+      fetchLiveMatchData(true, fixtureId);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [isOpen, fixtureId, liveData?.is_completed, liveData?.status]);
+
+  const fetchLiveMatchData = async (silent = false, targetId = fixtureId) => {
+    if (!targetId) return;
     if (!silent) setLoading(true);
+
     try {
-      const res = await apiRequest('get', `/api/fixtures/${fixtureId}/live-intelligence`);
+      // Fetch canonical live match endpoint
+      const res = await apiRequest('get', `/api/fixtures/${targetId}/live`);
+      // Cross-fixture race condition check: reject response if fixture changed or modal closed
+      if (activeFixtureIdRef.current !== targetId) {
+        return;
+      }
       if (res.data) {
         setLiveData(res.data);
-        setLastRefreshed(new Date());
       }
     } catch (err) {
-      console.error('Error fetching live intelligence:', err);
+      // Fallback to live-intelligence endpoint if canonical live not ready
+      try {
+        const fbRes = await apiRequest('get', `/api/fixtures/${targetId}/live-intelligence`);
+        if (activeFixtureIdRef.current !== targetId) return;
+        if (fbRes.data) {
+          // Normalize to canonical shape
+          setLiveData({
+            fixture: {
+              id: targetId,
+              home_team: { name: 'Home' },
+              away_team: { name: 'Away' }
+            },
+            live_state: {
+              minute: fbRes.data.match_state?.minute || 0,
+              display_clock: fbRes.data.display_clock || `${fbRes.data.match_state?.minute || 0}'`,
+              period: fbRes.data.match_state?.period || '1H',
+              status: fbRes.data.status || 'LIVE',
+              score: {
+                home: fbRes.data.match_state?.home_score || 0,
+                away: fbRes.data.match_state?.away_score || 0
+              }
+            },
+            statistics: fbRes.data.observed || {},
+            events: fbRes.data.events || [],
+            narrative: fbRes.data.narrative || [],
+            data_quality: fbRes.data.confidence || {},
+            predictions: {
+              goals: fbRes.data.live_goals,
+              corners: fbRes.data.live_corners,
+              cards: fbRes.data.live_cards,
+              diagnostics: fbRes.data.diagnostics
+            },
+            signals: fbRes.data.live_signals || [],
+            best_signal: fbRes.data.best_live_signal,
+            retrieved_at: fbRes.data.retrieved_at,
+            status: fbRes.data.status || 'LIVE',
+            is_completed: fbRes.data.is_completed || false
+          });
+        }
+      } catch (fbErr) {
+        console.error('Error fetching live match data:', fbErr);
+      }
     } finally {
       if (!silent) setLoading(false);
     }
@@ -55,14 +131,49 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
 
   if (!isOpen) return null;
 
-  const st = liveData?.match_state || {};
-  const goals = liveData?.live_goals || {};
-  const corners = liveData?.live_corners || {};
-  const cards = liveData?.live_cards || {};
-  const signals = liveData?.live_signals || [];
-  const bestSignal = liveData?.best_live_signal || { label: 'NO_SIGNAL' };
-  const conf = liveData?.confidence || { overall_confidence: 50, live_data_quality: 50, label: 'moderate' };
-  const diag = liveData?.diagnostics || {};
+  // Extracted Canonical Fixture Identity
+  const fixture = liveData?.fixture || {};
+  const homeTeam = fixture.home_team || { name: 'Home Team' };
+  const awayTeam = fixture.away_team || { name: 'Away Team' };
+  const compName = fixture.competition || 'League Match';
+  const country = fixture.country;
+
+  const liveState = liveData?.live_state || {};
+  const stats = liveData?.statistics || {};
+  const events = liveData?.events || [];
+  const narrative = liveData?.narrative || [];
+  const predictions = liveData?.predictions || {};
+  const goals = predictions.goals || {};
+  const corners = predictions.corners || {};
+  const cards = predictions.cards || {};
+  const diag = predictions.diagnostics || {};
+  const signals = liveData?.signals || [];
+  const bestSignal = liveData?.best_signal || { label: 'NO_SIGNAL' };
+  const dataQuality = liveData?.data_quality || {};
+
+  // Freshness Calculation
+  const retrievedAtMs = liveData?.retrieved_at ? new Date(liveData.retrieved_at).getTime() : 0;
+  const ageSec = retrievedAtMs > 0 ? Math.max(0, Math.round((tickerTime - retrievedAtMs) / 1000)) : 999;
+  
+  let freshnessState = 'FRESH';
+  let freshnessColor = 'text-emerald-400 bg-emerald-500/15 border-emerald-500/40';
+  let freshnessLabel = `LIVE / FRESH (${ageSec}s ago)`;
+
+  if (!liveData?.retrieved_at || liveData?.data_status === 'UNAVAILABLE') {
+    freshnessState = 'UNAVAILABLE';
+    freshnessColor = 'text-slate-400 bg-slate-800/40 border-slate-700';
+    freshnessLabel = 'LIVE DATA UNAVAILABLE';
+  } else if (ageSec > 180 || liveData?.data_status === 'VERY_STALE') {
+    freshnessState = 'VERY_STALE';
+    freshnessColor = 'text-rose-400 bg-rose-500/15 border-rose-500/40';
+    freshnessLabel = `FEED STALE (Last: ${Math.round(ageSec / 60)}m ago)`;
+  } else if (ageSec > 60 || liveData?.data_status === 'STALE') {
+    freshnessState = 'STALE';
+    freshnessColor = 'text-amber-400 bg-amber-500/15 border-amber-500/40';
+    freshnessLabel = `FEED DELAYED (${ageSec}s ago)`;
+  }
+
+  const isCompleted = liveData?.is_completed || liveState.status === 'FINISHED' || liveState.period === 'FT';
 
   const getSignalBadgeColor = (label) => {
     switch (label) {
@@ -73,87 +184,118 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
     }
   };
 
-  const getConfidenceBadgeColor = (label) => {
-    switch (label) {
-      case 'strong': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
-      case 'good': return 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40';
-      case 'moderate': return 'bg-amber-500/20 text-amber-400 border-amber-500/40';
-      default: return 'bg-rose-500/20 text-rose-400 border-rose-500/40';
-    }
-  };
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
-      <div className={`w-full max-w-2xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] transition-colors ${
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
+      <div className={`w-full max-w-3xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[94vh] transition-colors ${
         darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         
-        {/* LIVE HEADER */}
-        <div className="p-4 sm:p-5 border-b border-slate-800 bg-gradient-to-r from-rose-950/70 via-slate-900 to-amber-950/70 flex items-center justify-between">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-rose-400 px-2.5 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/40">
-                <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping inline-block" />
-                LIVE {st.minute ? `${st.minute}'` : 'IN-PLAY'}
-              </span>
-              <span className="text-[10px] font-bold text-slate-400 uppercase">
-                {st.period || '1H'}
-              </span>
-              <span className="text-[10px] text-slate-400 font-medium">
-                • Updated {Math.max(0, Math.round((new Date() - lastRefreshed) / 1000))}s ago
-              </span>
-            </div>
+        {/* ========================================================================= */}
+        {/* LIVE HEADER: FIXTURE IDENTITY & REAL MATCH CLOCK */}
+        {/* ========================================================================= */}
+        <div className="p-4 sm:p-5 border-b border-slate-800 bg-gradient-to-r from-slate-950 via-slate-900 to-rose-950/50">
+          <div className="flex items-start justify-between gap-3">
             
-            {/* Live Scoreline Display */}
-            <div className="flex items-center gap-3 pt-0.5">
-              <span className="text-xl sm:text-2xl font-black text-white tracking-tight">
-                {st.home_score ?? 0} — {st.away_score ?? 0}
-              </span>
-              <div className="flex items-center gap-1.5 text-xs text-slate-300 font-bold">
-                <span>Rem: ~{diag.effective_remaining_minutes ? Math.round(diag.effective_remaining_minutes) : 45}m</span>
+            {/* Competition & Live Clock Badges */}
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/60">
+                  {country ? `${country} • ` : ''}{compName}
+                </span>
+
+                {isCompleted ? (
+                  <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-slate-300 px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    FULL TIME (FT)
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-rose-400 px-2.5 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/40">
+                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping inline-block" />
+                    LIVE {liveState.display_clock || `${liveState.minute || 0}'`}
+                  </span>
+                )}
+
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${freshnessColor}`}>
+                  {freshnessLabel}
+                </span>
+              </div>
+
+              {/* Match Teams & Real Scoreline */}
+              <div className="flex items-center gap-3 pt-1">
+                <div className="flex items-center gap-2">
+                  {homeTeam.logo_url && (
+                    <img src={homeTeam.logo_url} alt="" className="w-6 h-6 object-contain rounded-full bg-slate-800 p-0.5" />
+                  )}
+                  <span className="text-base sm:text-lg font-black text-white">{homeTeam.name}</span>
+                </div>
+
+                <div className="px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-lg sm:text-2xl font-black text-emerald-400 tracking-tight font-mono">
+                  {liveState.score?.home ?? 0} — {liveState.score?.away ?? 0}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-base sm:text-lg font-black text-white">{awayTeam.name}</span>
+                  {awayTeam.logo_url && (
+                    <img src={awayTeam.logo_url} alt="" className="w-6 h-6 object-contain rounded-full bg-slate-800 p-0.5" />
+                  )}
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => fetchLiveIntelligence()}
-              className="p-2 rounded-2xl bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-              title="Refresh live calculation"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
-            </button>
-            <button
-              onClick={onClose}
-              className="p-2 rounded-2xl bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            {/* Actions: Refresh & Close */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => fetchLiveMatchData(false, fixtureId)}
+                className="p-2 rounded-2xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                title="Refresh live provider feed"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 rounded-2xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Live Confidence & Data Quality Bar */}
-        <div className="px-4 py-2 bg-slate-950/60 border-b border-slate-800/80 flex items-center justify-between text-xs">
+        {/* ========================================================================= */}
+        {/* OBSERVED VS MODEL-DERIVED LEGEND & FRESHNESS BAR */}
+        {/* ========================================================================= */}
+        <div className="px-4 py-2 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between text-xs flex-wrap gap-2">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">Live Confidence:</span>
-            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase border ${getConfidenceBadgeColor(conf.label)}`}>
-              {conf.label} ({conf.overall_confidence}%)
+            <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 flex items-center gap-1">
+              <CheckCircle2 className="w-2.5 h-2.5" />
+              OBSERVED FACT
+            </span>
+            <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+              <Sparkles className="w-2.5 h-2.5" />
+              MODEL-DERIVED
             </span>
           </div>
-          <div className="flex items-center gap-2 text-[10px] text-slate-400">
-            <span>Live Data Quality: <strong className="text-white">{conf.live_data_quality}%</strong></span>
+
+          <div className="flex items-center gap-3 text-[10px] text-slate-400 font-medium">
+            <span>Coverage: <strong className="text-white">{dataQuality.coverage || 'PARTIAL'}</strong></span>
+            <span>•</span>
+            <span>Data Quality: <strong className="text-white">{dataQuality.score || dataQuality.live_data_quality || 50}%</strong></span>
             <span>•</span>
             <span>Prior/Live: <strong className="text-cyan-400">{Math.round((diag.prior_weight || 0.7) * 100)}% / {Math.round((diag.live_weight || 0.3) * 100)}%</strong></span>
           </div>
         </div>
 
+        {/* ========================================================================= */}
         {/* NAVIGATION TABS */}
-        <div className="p-2 border-b border-slate-800 bg-slate-950/70 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
+        {/* ========================================================================= */}
+        <div className="p-2 border-b border-slate-800 bg-slate-950/90 flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
           {[
             { id: 'overview', label: 'LIVE OVERVIEW' },
             { id: 'goals', label: 'LIVE GOALS' },
             { id: 'corners', label: 'LIVE CORNERS' },
             { id: 'cards', label: 'LIVE CARDS' },
+            { id: 'shots', label: 'SHOTS & SOT' },
+            { id: 'timeline', label: `EVENTS (${events.length})` },
             { id: 'model', label: 'MODEL & DIAGNOSTICS' }
           ].map((tab) => (
             <button
@@ -161,7 +303,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
               onClick={() => setActiveTab(tab.id)}
               className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
                 activeTab === tab.id
-                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20 scale-[1.02]'
+                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/25 scale-[1.02]'
                   : 'bg-slate-800/40 text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
             >
@@ -170,24 +312,95 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
           ))}
         </div>
 
+        {/* ========================================================================= */}
         {/* MODAL BODY */}
+        {/* ========================================================================= */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
           {loading && !liveData ? (
-            <div className="py-16 text-center space-y-3">
+            <div className="py-20 text-center space-y-3">
               <RefreshCw className="w-8 h-8 text-rose-400 animate-spin mx-auto" />
-              <p className="text-xs font-semibold text-slate-400">Synthesizing live dynamic probabilities...</p>
+              <p className="text-xs font-semibold text-slate-400">Streaming verified live match data from provider feed...</p>
             </div>
           ) : (
             <>
               {/* TAB 1: LIVE OVERVIEW */}
               {activeTab === 'overview' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* BEST LIVE SIGNAL HERO CARD */}
+                  
+                  {/* FACTUAL LIVE NARRATIVE FEED */}
+                  {narrative.length > 0 && (
+                    <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between pb-1 border-b border-slate-800/60">
+                        <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-cyan-400">
+                          <Radio className="w-3.5 h-3.5 animate-pulse" />
+                          <span>Verified In-Play Narrative</span>
+                        </div>
+                        <span className="text-[9px] text-slate-500 font-bold">FACTUAL UPDATES</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {narrative.slice(0, 4).map((item, idx) => (
+                          <div key={item.id || idx} className="flex items-start gap-2 text-xs">
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-slate-800 text-slate-300">
+                              {item.minute ? `${item.minute}'` : 'LIVE'}
+                            </span>
+                            <span className="text-slate-200 font-medium">{item.statement}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* OBSERVED IN-PLAY BOXSCORE COMPARISON */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        OBSERVED MATCH STATISTICS
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-bold">
+                        {homeTeam.name} vs {awayTeam.name}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5 text-xs">
+                      {[
+                        { label: 'Total Shots', h: stats.shots?.home, a: stats.shots?.away },
+                        { label: 'Shots on Target', h: stats.shots_on_target?.home, a: stats.shots_on_target?.away },
+                        { label: 'Corner Kicks', h: stats.corners?.home, a: stats.corners?.away },
+                        { label: 'Possession %', h: stats.possession?.home != null ? `${Math.round(stats.possession.home)}%` : null, a: stats.possession?.away != null ? `${Math.round(stats.possession.away)}%` : null, rawH: stats.possession?.home, rawA: stats.possession?.away },
+                        { label: 'Fouls Committed', h: stats.fouls?.home, a: stats.fouls?.away },
+                        { label: 'Goalkeeper Saves', h: stats.saves?.home, a: stats.saves?.away },
+                        { label: 'Yellow Cards', h: stats.cards?.home_yellow, a: stats.cards?.away_yellow },
+                        { label: 'Red Cards', h: stats.cards?.home_red, a: stats.cards?.away_red }
+                      ].map((item, idx) => {
+                        const hVal = item.h ?? '—';
+                        const aVal = item.a ?? '—';
+                        const isPoss = item.label === 'Possession %' && item.rawH != null;
+                        const hPercent = isPoss ? item.rawH : (item.h && item.a ? (item.h / (item.h + item.a)) * 100 : 50);
+
+                        return (
+                          <div key={idx} className="space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-white font-mono">{hVal}</span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{item.label}</span>
+                              <span className="font-bold text-white font-mono">{aVal}</span>
+                            </div>
+                            <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden flex">
+                              <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${hPercent}%` }} />
+                              <div className="bg-rose-500 h-full transition-all duration-500" style={{ width: `${100 - hPercent}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* BEST LIVE SIGNAL HERO CARD (MODEL-DERIVED) */}
                   <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-rose-950/40 border border-rose-500/40 space-y-3 shadow-xl">
                     <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
                       <div className="flex items-center gap-2">
                         <Zap className="w-4 h-4 text-amber-400" />
-                        <span className="text-xs font-black uppercase tracking-wider text-white">Best Live Opportunity</span>
+                        <span className="text-xs font-black uppercase tracking-wider text-white">Live Opportunity (Model-Derived)</span>
                       </div>
                       <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${getSignalBadgeColor(bestSignal.label)}`}>
                         {bestSignal.label} SIGNAL
@@ -205,7 +418,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                           </div>
                           <div className="text-right">
                             <span className="text-2xl font-black text-emerald-400 block">{Math.round(bestSignal.probability * 100)}%</span>
-                            <span className="text-[10px] text-slate-400 font-bold block">Model Conviction</span>
+                            <span className="text-[10px] text-slate-400 font-bold block">Live Model Conviction</span>
                           </div>
                         </div>
 
@@ -216,7 +429,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                           </div>
                           <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                             <span className="text-[10px] text-slate-400 font-bold block">Time Window</span>
-                            <span className="text-sm font-black text-cyan-400">~{Math.round(bestSignal.time_remaining_minutes)} mins</span>
+                            <span className="text-sm font-black text-cyan-400">~{Math.round(bestSignal.time_remaining_minutes || 0)} mins</span>
                           </div>
                           <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                             <span className="text-[10px] text-slate-400 font-bold block">Market Cat</span>
@@ -233,49 +446,55 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                       </div>
                     )}
                   </div>
-
-                  {/* ACTIVE LIVE OPPORTUNITIES LIST */}
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Active Live Opportunities ({signals.length})
-                    </span>
-
-                    {signals.length > 0 ? (
-                      <div className="space-y-2">
-                        {signals.map((sig, idx) => (
-                          <div key={idx} className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
-                            <div className="space-y-0.5">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-black text-white">{sig.market}</span>
-                                <span className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase border ${getSignalBadgeColor(sig.signal_strength)}`}>
-                                  {sig.signal_strength}
-                                </span>
-                              </div>
-                              <span className="text-[10px] text-slate-400 block">{sig.rationale}</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-base font-black text-emerald-400 block">{Math.round(sig.probability * 100)}%</span>
-                              <span className="text-[9px] text-slate-500 font-bold block">Conf {sig.confidence_score}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500 py-2 text-center">No secondary markets meet live confidence thresholds.</p>
-                    )}
-                  </div>
                 </div>
               )}
 
               {/* TAB 2: LIVE GOALS */}
               {activeTab === 'goals' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* Remaining xG Banner */}
+                  {/* OBSERVED GOAL STATE */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Expected Goals (Remaining vs Pre-Match)</span>
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        OBSERVED SCORELINE
+                      </span>
+                      <span className="text-xs font-black text-emerald-400 font-mono">
+                        {homeTeam.name} {liveState.score?.home ?? 0} — {liveState.score?.away ?? 0} {awayTeam.name}
+                      </span>
+                    </div>
+
+                    {/* Goal Events Timeline */}
+                    <div className="space-y-1.5">
+                      {events.filter(e => e.type === 'GOAL').length > 0 ? (
+                        events.filter(e => e.type === 'GOAL').map((g, idx) => (
+                          <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-base">⚽</span>
+                              <span className="font-bold text-white">{g.player || 'Goal'}</span>
+                              <span className="text-slate-400 text-[10px]">({g.team})</span>
+                              {g.assist_or_sub && <span className="text-slate-500 text-[9px]">Assist: {g.assist_or_sub}</span>}
+                            </div>
+                            <span className="font-mono font-bold text-emerald-400">{g.display_clock}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-slate-500 py-1 text-center">No goals recorded in this match yet.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* MODEL-DERIVED REMAINING XG */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        MODEL-DERIVED EXPECTED GOALS (REMAINING)
+                      </span>
+                    </div>
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Home Remaining</span>
+                        <span className="text-[10px] text-slate-400 block font-bold">{homeTeam.name} Rem</span>
                         <span className="text-lg font-black text-white">{goals.remaining_xg?.home?.toFixed(2) ?? '0.00'}</span>
                         <span className="text-[9px] text-slate-500 block">Pre: {goals.pre_match_xg?.home?.toFixed(2) ?? '0.00'}</span>
                       </div>
@@ -285,14 +504,14 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                         <span className="text-[9px] text-rose-500/80 block">Pre: {goals.pre_match_xg?.total?.toFixed(2) ?? '0.00'}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Away Remaining</span>
+                        <span className="text-[10px] text-slate-400 block font-bold">{awayTeam.name} Rem</span>
                         <span className="text-lg font-black text-white">{goals.remaining_xg?.away?.toFixed(2) ?? '0.00'}</span>
                         <span className="text-[9px] text-slate-500 block">Pre: {goals.pre_match_xg?.away?.toFixed(2) ?? '0.00'}</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Dynamic Goal Lines (with Resolved Indicators) */}
+                  {/* DYNAMIC GOAL PROBABILITIES */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Match Goal Lines (Live Status)</span>
                     <div className="space-y-2">
@@ -320,58 +539,39 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                       ))}
                     </div>
                   </div>
-
-                  {/* Next Goal Probabilities */}
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2.5">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Next Goal Distribution</span>
-                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                      <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Home Next</span>
-                        <span className="text-base font-black text-emerald-400">{Math.round((goals.next_goal?.home || 0) * 100)}%</span>
-                      </div>
-                      <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">No More Goals</span>
-                        <span className="text-base font-black text-amber-400">{Math.round((goals.next_goal?.no_more_goals || 0) * 100)}%</span>
-                      </div>
-                      <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Away Next</span>
-                        <span className="text-base font-black text-cyan-400">{Math.round((goals.next_goal?.away || 0) * 100)}%</span>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               )}
 
               {/* TAB 3: LIVE CORNERS */}
               {activeTab === 'corners' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* Current & Remaining Corners */}
+                  {/* OBSERVED CORNERS STATE */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                      <div className="flex items-center gap-2">
-                        <Flag className="w-4 h-4 text-emerald-400" />
-                        <span className="text-xs font-black uppercase tracking-wider text-white">Live Corners State</span>
-                      </div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        OBSERVED CORNERS
+                      </span>
                       <span className="text-xs font-black text-emerald-400">
-                        Current Total: {corners.current_corners?.total ?? 0}
+                        Total Observed: {(stats.corners?.home ?? 0) + (stats.corners?.away ?? 0)}
                       </span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-center text-xs">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Current Corners (H/A)</span>
-                        <span className="text-base font-black text-white">{corners.current_corners?.home ?? 0} — {corners.current_corners?.away ?? 0}</span>
+                        <span className="text-[10px] text-slate-400 block font-bold">Observed (H / A)</span>
+                        <span className="text-base font-black text-white font-mono">{stats.corners?.home ?? '—'} — {stats.corners?.away ?? '—'}</span>
                       </div>
-                      <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
-                        <span className="text-[10px] text-emerald-400 block font-bold">Expected Remaining</span>
-                        <span className="text-base font-black text-emerald-400">+{corners.remaining_expected_corners?.total?.toFixed(1) ?? '0.0'}</span>
+                      <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/30">
+                        <span className="text-[10px] text-purple-300 block font-bold">Model Expected Remaining</span>
+                        <span className="text-base font-black text-purple-300">+{corners.remaining_expected_corners?.total?.toFixed(1) ?? '0.0'}</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Corner Lines */}
+                  {/* MODEL CORNER PROBABILITIES */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Full Match Corner Lines</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Full Match Corner Lines (Model-Derived)</span>
                     {[
                       { label: 'Over 7.5 Corners', obj: corners.over_7_5 },
                       { label: 'Over 8.5 Corners', obj: corners.over_8_5 },
@@ -400,33 +600,51 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
               {/* TAB 4: LIVE CARDS */}
               {activeTab === 'cards' && (
                 <div className="space-y-4 animate-fadeIn">
-                  {/* Current Disciplinary State */}
+                  {/* OBSERVED CARDS STATE */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                      <div className="flex items-center gap-2">
-                        <Square className="w-4 h-4 text-amber-400 fill-amber-400/20" />
-                        <span className="text-xs font-black uppercase tracking-wider text-white">Live Cards State</span>
-                      </div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        OBSERVED DISCIPLINARY ACTIONS
+                      </span>
                       <span className="text-xs font-black text-amber-400">
-                        Current: {cards.current_cards?.total_cards ?? 0} Cards ({cards.current_cards?.home_red + cards.current_cards?.away_red > 0 ? `${cards.current_cards?.home_red + cards.current_cards?.away_red} Red` : '0 Red'})
+                        Yellows: {(stats.cards?.home_yellow ?? 0) + (stats.cards?.away_yellow ?? 0)} | Reds: {(stats.cards?.home_red ?? 0) + (stats.cards?.away_red ?? 0)}
                       </span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-center text-xs">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Yellows (H/A)</span>
-                        <span className="text-base font-black text-white">{cards.current_cards?.home_yellow ?? 0} — {cards.current_cards?.away_yellow ?? 0}</span>
+                        <span className="text-[10px] text-slate-400 block font-bold">Observed Yellows (H/A)</span>
+                        <span className="text-base font-black text-white">{stats.cards?.home_yellow ?? '0'} — {stats.cards?.away_yellow ?? '0'}</span>
                       </div>
-                      <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30">
-                        <span className="text-[10px] text-amber-400 block font-bold">Exp Remaining</span>
-                        <span className="text-base font-black text-amber-400">+{cards.remaining_expected_cards?.total?.toFixed(1) ?? '0.0'}</span>
+                      <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/30">
+                        <span className="text-[10px] text-rose-400 block font-bold">Observed Reds (H/A)</span>
+                        <span className="text-base font-black text-rose-400">{stats.cards?.home_red ?? '0'} — {stats.cards?.away_red ?? '0'}</span>
                       </div>
+                    </div>
+
+                    {/* Card Events */}
+                    <div className="space-y-1.5 pt-1">
+                      {events.filter(e => e.type === 'YELLOW_CARD' || e.type === 'RED_CARD').length > 0 ? (
+                        events.filter(e => e.type === 'YELLOW_CARD' || e.type === 'RED_CARD').map((c, idx) => (
+                          <div key={idx} className="p-2 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span>{c.type === 'RED_CARD' ? '🟥' : '🟨'}</span>
+                              <span className="font-bold text-white">{c.player || 'Player'}</span>
+                              <span className="text-slate-400 text-[10px]">({c.team})</span>
+                            </div>
+                            <span className="font-mono font-bold text-slate-400">{c.display_clock}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-slate-500 py-1 text-center">No cards recorded in this match yet.</p>
+                      )}
                     </div>
                   </div>
 
-                  {/* Card Markets */}
+                  {/* MODEL-DERIVED CARDS PROJECTIONS */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Remaining Card Probability</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Remaining Card Markets (Model-Derived)</span>
                     {[
                       { label: 'At Least 1 More Card', obj: cards.at_least_1_more_card },
                       { label: 'Over Current + 1.5 Cards', obj: cards.over_current_plus_1_5 },
@@ -443,7 +661,89 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                 </div>
               )}
 
-              {/* TAB 5: MODEL DIAGNOSTICS */}
+              {/* TAB 5: SHOTS & SOT (PHASE 10 INTEGRATION) */}
+              {activeTab === 'shots' && (
+                <div className="space-y-4 animate-fadeIn">
+                  {/* OBSERVED SHOTS CARD */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        OBSERVED SHOT TOTALS
+                      </span>
+                      <span className="text-xs font-black text-emerald-400">
+                        Total Shots: {(stats.shots?.home ?? 0) + (stats.shots?.away ?? 0)}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                        <span className="text-[10px] text-slate-400 block font-bold">Total Shots (H / A)</span>
+                        <span className="text-xl font-black text-white font-mono">{stats.shots?.home ?? '—'} — {stats.shots?.away ?? '—'}</span>
+                      </div>
+                      <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/30">
+                        <span className="text-[10px] text-cyan-300 block font-bold">Shots on Target (H / A)</span>
+                        <span className="text-xl font-black text-cyan-400 font-mono">{stats.shots_on_target?.home ?? '—'} — {stats.shots_on_target?.away ?? '—'}</span>
+                      </div>
+                    </div>
+
+                    {/* Shooting Accuracy breakdown */}
+                    {stats.shots?.home && stats.shots_on_target?.home && (
+                      <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs flex justify-between text-slate-400">
+                        <span>{homeTeam.name} Accuracy: <strong className="text-white">{Math.round((stats.shots_on_target.home / stats.shots.home) * 100)}%</strong></span>
+                        {stats.shots?.away && stats.shots_on_target?.away && (
+                          <span>{awayTeam.name} Accuracy: <strong className="text-white">{Math.round((stats.shots_on_target.away / stats.shots.away) * 100)}%</strong></span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 6: EVENT TIMELINE */}
+              {activeTab === 'timeline' && (
+                <div className="space-y-4 animate-fadeIn">
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5 border-b border-slate-800 pb-2">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      CHRONOLOGICAL EVENT TIMELINE ({events.length})
+                    </span>
+
+                    {events.length > 0 ? (
+                      <div className="space-y-2">
+                        {events.map((ev, idx) => (
+                          <div key={ev.id || idx} className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-3">
+                              <span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-slate-800 text-cyan-400 border border-slate-700">
+                                {ev.display_clock || `${ev.minute}'`}
+                              </span>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm">
+                                    {ev.type === 'GOAL' ? '⚽' : (ev.type === 'RED_CARD' ? '🟥' : (ev.type === 'YELLOW_CARD' ? '🟨' : '🔄'))}
+                                  </span>
+                                  <span className="font-bold text-white">{ev.player || ev.type}</span>
+                                  <span className="text-[10px] text-slate-400">({ev.team})</span>
+                                </div>
+                                {ev.assist_or_sub && (
+                                  <span className="text-[10px] text-slate-500 block pl-6">
+                                    {ev.type === 'SUBSTITUTION' ? `Replaced: ${ev.assist_or_sub}` : `Assist: ${ev.assist_or_sub}`}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase">{ev.type}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 py-6 text-center">No match events (goals, cards, substitutions) recorded yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 7: MODEL DIAGNOSTICS */}
               {activeTab === 'model' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
