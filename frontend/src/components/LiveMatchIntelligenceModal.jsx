@@ -28,6 +28,8 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'shots' | 'timeline' | 'model'
   const [tickerTime, setTickerTime] = useState(Date.now());
   const activeFixtureIdRef = useRef(fixtureId);
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
 
   // Keep ref synchronized
   useEffect(() => {
@@ -43,49 +45,87 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
     return () => clearInterval(ticker);
   }, [isOpen]);
 
-  // Fixture change & initial fetch
+  // Fixture change & initial fetch: abort any in-flight request, clear previous state immediately
   useEffect(() => {
     if (isOpen && fixtureId) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       setLiveData(null);
       setActiveTab('overview');
       fetchLiveMatchData(false, fixtureId);
     } else {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       setLiveData(null);
     }
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [isOpen, fixtureId]);
 
   // Single controlled polling loop every 30 seconds
   useEffect(() => {
     if (!isOpen || !fixtureId) return;
 
+    // Do not poll if match already finished
+    if (liveData?.is_completed || liveData?.status === 'FINISHED' || liveData?.live_state?.status === 'FINISHED') {
+      return;
+    }
+
     const interval = setInterval(() => {
-      // Don't poll if match already finished
-      if (liveData?.is_completed || liveData?.status === 'FINISHED') return;
+      if (liveData?.is_completed || liveData?.status === 'FINISHED' || liveData?.live_state?.status === 'FINISHED') return;
       fetchLiveMatchData(true, fixtureId);
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [isOpen, fixtureId, liveData?.is_completed, liveData?.status]);
+  }, [isOpen, fixtureId, liveData?.is_completed, liveData?.status, liveData?.live_state?.status]);
 
   const fetchLiveMatchData = async (silent = false, targetId = fixtureId) => {
     if (!targetId) return;
     if (!silent) setLoading(true);
 
+    const thisRequestId = ++requestIdRef.current;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
-      // Fetch canonical live match endpoint
-      const res = await apiRequest('get', `/api/fixtures/${targetId}/live`);
-      // Cross-fixture race condition check: reject response if fixture changed or modal closed
-      if (activeFixtureIdRef.current !== targetId) {
-        return;
+      // Fetch canonical live match endpoint with abort signal
+      const res = await apiRequest('get', `/api/fixtures/${targetId}/live`, null, { signal: controller.signal });
+      
+      // Strict Cross-Fixture Race Condition Verification:
+      // 1. Current open fixture in ref must strictly match targetId
+      // 2. Request sequence must be the latest request initiated
+      // 3. Response payload fixture.id must strictly equal targetId
+      if (
+        activeFixtureIdRef.current !== targetId ||
+        requestIdRef.current !== thisRequestId ||
+        (res.data?.fixture?.id && res.data.fixture.id !== targetId)
+      ) {
+        return; // Discard late / stale / cross-fixture response
       }
+
       if (res.data) {
         setLiveData(res.data);
       }
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') {
+        return; // Request was aborted due to fixture switch or modal close
+      }
       // Fallback to live-intelligence endpoint if canonical live not ready
       try {
-        const fbRes = await apiRequest('get', `/api/fixtures/${targetId}/live-intelligence`);
-        if (activeFixtureIdRef.current !== targetId) return;
+        const fbRes = await apiRequest('get', `/api/fixtures/${targetId}/live-intelligence`, null, { signal: controller.signal });
+        if (
+          activeFixtureIdRef.current !== targetId ||
+          requestIdRef.current !== thisRequestId ||
+          (fbRes.data?.fixture_id && fbRes.data.fixture_id !== targetId)
+        ) {
+          return;
+        }
         if (fbRes.data) {
           // Normalize to canonical shape
           setLiveData({
@@ -95,13 +135,13 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
               away_team: { name: 'Away' }
             },
             live_state: {
-              minute: fbRes.data.match_state?.minute || 0,
-              display_clock: fbRes.data.display_clock || `${fbRes.data.match_state?.minute || 0}'`,
-              period: fbRes.data.match_state?.period || '1H',
-              status: fbRes.data.status || 'LIVE',
+              minute: fbRes.data.match_state?.minute ?? null,
+              display_clock: fbRes.data.display_clock || (fbRes.data.match_state?.minute != null ? `${fbRes.data.match_state.minute}'` : '—'),
+              period: fbRes.data.match_state?.period || 'PRE',
+              status: fbRes.data.status || 'SCHEDULED',
               score: {
-                home: fbRes.data.match_state?.home_score || 0,
-                away: fbRes.data.match_state?.away_score || 0
+                home: fbRes.data.match_state?.home_score ?? null,
+                away: fbRes.data.match_state?.away_score ?? null
               }
             },
             statistics: fbRes.data.observed || {},
@@ -117,15 +157,19 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
             signals: fbRes.data.live_signals || [],
             best_signal: fbRes.data.best_live_signal,
             retrieved_at: fbRes.data.retrieved_at,
-            status: fbRes.data.status || 'LIVE',
+            status: fbRes.data.status || 'SCHEDULED',
             is_completed: fbRes.data.is_completed || false
           });
         }
       } catch (fbErr) {
-        console.error('Error fetching live match data:', fbErr);
+        if (fbErr?.name !== 'CanceledError' && fbErr?.name !== 'AbortError') {
+          console.error('Error fetching live match data:', fbErr);
+        }
       }
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && requestIdRef.current === thisRequestId) {
+        setLoading(false);
+      }
     }
   };
 
@@ -211,7 +255,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                 ) : (
                   <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-rose-400 px-2.5 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/40">
                     <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping inline-block" />
-                    LIVE {liveState.display_clock || `${liveState.minute || 0}'`}
+                    LIVE {liveState.display_clock || (liveState.minute != null ? `${liveState.minute}'` : 'PRE')}
                   </span>
                 )}
 
@@ -230,7 +274,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                 </div>
 
                 <div className="px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-lg sm:text-2xl font-black text-emerald-400 tracking-tight font-mono">
-                  {liveState.score?.home ?? 0} — {liveState.score?.away ?? 0}
+                  {liveState.score?.home != null ? liveState.score.home : '—'} — {liveState.score?.away != null ? liveState.score.away : '—'}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -373,10 +417,14 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                         { label: 'Yellow Cards', h: stats.cards?.home_yellow, a: stats.cards?.away_yellow },
                         { label: 'Red Cards', h: stats.cards?.home_red, a: stats.cards?.away_red }
                       ].map((item, idx) => {
-                        const hVal = item.h ?? '—';
-                        const aVal = item.a ?? '—';
+                        const hVal = item.h != null ? item.h : '—';
+                        const aVal = item.a != null ? item.a : '—';
                         const isPoss = item.label === 'Possession %' && item.rawH != null;
-                        const hPercent = isPoss ? item.rawH : (item.h && item.a ? (item.h / (item.h + item.a)) * 100 : 50);
+                        const hasData = (item.h != null && item.a != null) || item.rawH != null;
+                        const sumVal = (Number(item.h) || 0) + (Number(item.a) || 0);
+                        const hPercent = isPoss
+                          ? item.rawH
+                          : (hasData && sumVal > 0 ? (Number(item.h) / sumVal) * 100 : 50);
 
                         return (
                           <div key={idx} className="space-y-1">
@@ -386,8 +434,14 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                               <span className="font-bold text-white font-mono">{aVal}</span>
                             </div>
                             <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden flex">
-                              <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${hPercent}%` }} />
-                              <div className="bg-rose-500 h-full transition-all duration-500" style={{ width: `${100 - hPercent}%` }} />
+                              {hasData ? (
+                                <>
+                                  <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${hPercent}%` }} />
+                                  <div className="bg-rose-500 h-full transition-all duration-500" style={{ width: `${100 - hPercent}%` }} />
+                                </>
+                              ) : (
+                                <div className="bg-slate-700/40 h-full w-full" title="Statistic not reported by provider" />
+                              )}
                             </div>
                           </div>
                         );
@@ -457,10 +511,10 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        OBSERVED SCORELINE
+                        [OBSERVED FACT] SCORELINE & EVENTS
                       </span>
                       <span className="text-xs font-black text-emerald-400 font-mono">
-                        {homeTeam.name} {liveState.score?.home ?? 0} — {liveState.score?.away ?? 0} {awayTeam.name}
+                        {homeTeam.name} {liveState.score?.home != null ? liveState.score.home : '—'} — {liveState.score?.away != null ? liveState.score.away : '—'} {awayTeam.name}
                       </span>
                     </div>
 
@@ -489,7 +543,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
                         <Sparkles className="w-3.5 h-3.5" />
-                        MODEL-DERIVED EXPECTED GOALS (REMAINING)
+                        [MODEL-DERIVED] EXPECTED GOALS (REMAINING)
                       </span>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center">
@@ -513,7 +567,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
 
                   {/* DYNAMIC GOAL PROBABILITIES */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Match Goal Lines (Live Status)</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">[MODEL-DERIVED] Match Goal Lines</span>
                     <div className="space-y-2">
                       {[
                         { label: 'At Least 1 More Goal', obj: goals.at_least_1_more_goal },
@@ -550,20 +604,20 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        OBSERVED CORNERS
+                        [OBSERVED FACT] CORNER KICKS
                       </span>
                       <span className="text-xs font-black text-emerald-400">
-                        Total Observed: {(stats.corners?.home ?? 0) + (stats.corners?.away ?? 0)}
+                        Total Observed: {stats.corners?.home != null && stats.corners?.away != null ? stats.corners.home + stats.corners.away : '—'}
                       </span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-center text-xs">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                        <span className="text-[10px] text-slate-400 block font-bold">Observed (H / A)</span>
+                        <span className="text-[10px] text-slate-400 block font-bold">Observed Corners (H / A)</span>
                         <span className="text-base font-black text-white font-mono">{stats.corners?.home ?? '—'} — {stats.corners?.away ?? '—'}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/30">
-                        <span className="text-[10px] text-purple-300 block font-bold">Model Expected Remaining</span>
+                        <span className="text-[10px] text-purple-300 block font-bold">[MODEL-DERIVED] Expected Rem</span>
                         <span className="text-base font-black text-purple-300">+{corners.remaining_expected_corners?.total?.toFixed(1) ?? '0.0'}</span>
                       </div>
                     </div>
@@ -571,7 +625,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
 
                   {/* MODEL CORNER PROBABILITIES */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Full Match Corner Lines (Model-Derived)</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">[MODEL-DERIVED] Corner Lines</span>
                     {[
                       { label: 'Over 7.5 Corners', obj: corners.over_7_5 },
                       { label: 'Over 8.5 Corners', obj: corners.over_8_5 },
@@ -605,21 +659,21 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        OBSERVED DISCIPLINARY ACTIONS
+                        [OBSERVED FACT] DISCIPLINARY ACTIONS
                       </span>
                       <span className="text-xs font-black text-amber-400">
-                        Yellows: {(stats.cards?.home_yellow ?? 0) + (stats.cards?.away_yellow ?? 0)} | Reds: {(stats.cards?.home_red ?? 0) + (stats.cards?.away_red ?? 0)}
+                        Yellows: {stats.cards?.home_yellow != null && stats.cards?.away_yellow != null ? stats.cards.home_yellow + stats.cards.away_yellow : '—'} | Reds: {stats.cards?.home_red != null && stats.cards?.away_red != null ? stats.cards.home_red + stats.cards.away_red : '—'}
                       </span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 text-center text-xs">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
                         <span className="text-[10px] text-slate-400 block font-bold">Observed Yellows (H/A)</span>
-                        <span className="text-base font-black text-white">{stats.cards?.home_yellow ?? '0'} — {stats.cards?.away_yellow ?? '0'}</span>
+                        <span className="text-base font-black text-white">{stats.cards?.home_yellow ?? '—'} — {stats.cards?.away_yellow ?? '—'}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/30">
                         <span className="text-[10px] text-rose-400 block font-bold">Observed Reds (H/A)</span>
-                        <span className="text-base font-black text-rose-400">{stats.cards?.home_red ?? '0'} — {stats.cards?.away_red ?? '0'}</span>
+                        <span className="text-base font-black text-rose-400">{stats.cards?.home_red ?? '—'} — {stats.cards?.away_red ?? '—'}</span>
                       </div>
                     </div>
 
@@ -644,7 +698,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
 
                   {/* MODEL-DERIVED CARDS PROJECTIONS */}
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Remaining Card Markets (Model-Derived)</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">[MODEL-DERIVED] Card Markets</span>
                     {[
                       { label: 'At Least 1 More Card', obj: cards.at_least_1_more_card },
                       { label: 'Over Current + 1.5 Cards', obj: cards.over_current_plus_1_5 },
@@ -661,7 +715,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                 </div>
               )}
 
-              {/* TAB 5: SHOTS & SOT (PHASE 10 INTEGRATION) */}
+              {/* TAB 5: SHOTS & SOT */}
               {activeTab === 'shots' && (
                 <div className="space-y-4 animate-fadeIn">
                   {/* OBSERVED SHOTS CARD */}
@@ -669,10 +723,10 @@ export default function LiveMatchIntelligenceModal({ fixtureId, isOpen, onClose,
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        OBSERVED SHOT TOTALS
+                        [OBSERVED FACT] SHOT TOTALS
                       </span>
                       <span className="text-xs font-black text-emerald-400">
-                        Total Shots: {(stats.shots?.home ?? 0) + (stats.shots?.away ?? 0)}
+                        Total Shots: {stats.shots?.home != null && stats.shots?.away != null ? stats.shots.home + stats.shots.away : '—'}
                       </span>
                     </div>
 

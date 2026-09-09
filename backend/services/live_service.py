@@ -617,11 +617,25 @@ class LiveSignalEngine:
         """
         candidates: List[LiveSignalItem] = []
 
+        if time_rem_mins <= 0:
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=0.0,
+                rationale="Match has concluded. In-play market opportunities are closed."
+            )
+
         if time_rem_mins < cls.MIN_MINUTES_REMAINING:
             return [], BestLiveSignal(
                 market=None, category=None, probability=0.0, signal_score=0,
                 label="NO_SIGNAL", time_remaining_minutes=time_rem_mins,
                 rationale="Insufficient match time remaining for live entry."
+            )
+
+        if confidence.label == "insufficient" or confidence.overall_confidence < cls.MIN_CONF_MODERATE:
+            return [], BestLiveSignal(
+                market=None, category=None, probability=0.0, signal_score=0,
+                label="NO_SIGNAL", time_remaining_minutes=time_rem_mins,
+                rationale="Live data confidence is insufficient for safe market evaluation."
             )
 
         # 1. Evaluate Goals

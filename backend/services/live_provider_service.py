@@ -55,14 +55,40 @@ class LiveProviderAdapterService:
     ) -> Tuple[bool, Optional[str]]:
         """
         Validates that the returned payload belongs to the requested internal fixture.
-        Checks team names and kickoff window. Rejects mismatched fixtures to prevent cross-contamination.
+        Checks team names (with accent normalization) and kickoff window (<= 36h).
+        Rejects mismatched fixtures to prevent cross-contamination.
         """
+        import unicodedata
+        import re
+
         header = summary_payload.get("header", {})
         comps = header.get("competitions", [])
         if not comps:
             return False, "No competitions found in provider header."
 
         comp = comps[0]
+
+        # 0. Provider Event ID Validation
+        prov_event_id = header.get("id") or comp.get("id")
+        expected_event_id = cls.extract_provider_event_id(fixture)
+        if prov_event_id and expected_event_id:
+            clean_prov = str(prov_event_id).replace("ESPN-", "").strip()
+            clean_exp = str(expected_event_id).replace("ESPN-", "").strip()
+            if clean_prov != clean_exp:
+                return False, f"Event ID mismatch: DB='{clean_exp}' vs Prov='{clean_prov}'"
+
+        # 1. Kickoff Window Validation (prevent cross-season event ID confusion)
+        prov_date_str = comp.get("date")
+        if prov_date_str and fixture.match_date:
+            try:
+                prov_dt = datetime.fromisoformat(prov_date_str.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+                diff_hours = abs((prov_dt - fixture.match_date).total_seconds()) / 3600.0
+                if diff_hours > 36.0:
+                    return False, f"Kickoff window mismatch: DB={fixture.match_date} vs Prov={prov_dt} (diff={diff_hours:.1f}h > 36h)"
+            except Exception as dt_ex:
+                logger.debug(f"Date comparison skip in live validation: {dt_ex}")
+
+        # 2. Team Name Normalization & Comparison
         competitors = comp.get("competitors", [])
         if len(competitors) < 2:
             return False, "Less than 2 competitors in provider header."
@@ -70,23 +96,32 @@ class LiveProviderAdapterService:
         prov_home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
         prov_away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
 
-        prov_home_name = (prov_home.get("team", {}).get("name") or "").lower().strip()
-        prov_away_name = (prov_away.get("team", {}).get("name") or "").lower().strip()
+        def _clean_team_name(name: str) -> str:
+            if not name:
+                return ""
+            # Strip accents
+            n = unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
+            # Strip common soccer suffixes / prefixes
+            n = re.sub(r'\b(fc|cf|sc|cd|afc|fk|vfb|ac|club|de|united|city)\b', '', n)
+            # Remove non-alphanumeric chars
+            n = re.sub(r'[^a-z0-9]', '', n)
+            return n.strip()
 
-        db_home_name = (fixture.home_team.name if fixture.home_team else "").lower().strip()
-        db_away_name = (fixture.away_team.name if fixture.away_team else "").lower().strip()
+        p_h_clean = _clean_team_name(prov_home.get("team", {}).get("name") or "")
+        p_a_clean = _clean_team_name(prov_away.get("team", {}).get("name") or "")
+        db_h_clean = _clean_team_name(fixture.home_team.name if fixture.home_team else "")
+        db_a_clean = _clean_team_name(fixture.away_team.name if fixture.away_team else "")
 
         def _names_match(a: str, b: str) -> bool:
             if not a or not b:
-                return True # lenient if name missing
-            # Direct match or substring match
-            return a in b or b in a or any(part in b for part in a.split() if len(part) > 3)
+                return True
+            return a in b or b in a or (len(a) >= 4 and len(b) >= 4 and (a[:4] == b[:4]))
 
-        if db_home_name and not _names_match(db_home_name, prov_home_name):
-            return False, f"Home team mismatch: DB='{db_home_name}' vs Prov='{prov_home_name}'"
+        if db_h_clean and not _names_match(db_h_clean, p_h_clean):
+            return False, f"Home team mismatch: DB='{fixture.home_team.name if fixture.home_team else ''}' vs Prov='{prov_home.get('team', {}).get('name')}'"
 
-        if db_away_name and not _names_match(db_away_name, prov_away_name):
-            return False, f"Away team mismatch: DB='{db_away_name}' vs Prov='{prov_away_name}'"
+        if db_a_clean and not _names_match(db_a_clean, p_a_clean):
+            return False, f"Away team mismatch: DB='{fixture.away_team.name if fixture.away_team else ''}' vs Prov='{prov_away.get('team', {}).get('name')}'"
 
         return True, None
 
@@ -266,20 +301,27 @@ class LiveProviderAdapterService:
             except Exception:
                 clock_min = 0
 
+        if state_type == "pre":
+            clock_min = None
+            display_clock = "PRE"
+
         # Competitors Score
         competitors = comp.get("competitors", [])
         h_comp = next((c for c in competitors if c.get("homeAway") == "home"), (competitors[0] if len(competitors) > 0 else {}))
         a_comp = next((c for c in competitors if c.get("homeAway") == "away"), (competitors[1] if len(competitors) > 1 else {}))
 
-        try:
-            h_score = int(h_comp.get("score", 0)) if h_comp.get("score") is not None else 0
-        except Exception:
-            h_score = 0
+        h_score_raw = h_comp.get("score")
+        a_score_raw = a_comp.get("score")
 
         try:
-            a_score = int(a_comp.get("score", 0)) if a_comp.get("score") is not None else 0
+            h_score = int(h_score_raw) if h_score_raw is not None else (0 if state_type in ("in", "post") else None)
         except Exception:
-            a_score = 0
+            h_score = 0 if state_type in ("in", "post") else None
+
+        try:
+            a_score = int(a_score_raw) if a_score_raw is not None else (0 if state_type in ("in", "post") else None)
+        except Exception:
+            a_score = 0 if state_type in ("in", "post") else None
 
         # 3. Extract Observed Boxscore Statistics (NULL if not returned)
         box = payload.get("boxscore", {})
@@ -344,11 +386,13 @@ class LiveProviderAdapterService:
             live_state = LiveMatchState(fixture_id=fixture_id)
             db.add(live_state)
 
-        live_state.minute = clock_min
+        live_state.minute = clock_min if clock_min is not None else 0
         live_state.period = period_label
         live_state.status = "FINISHED" if is_completed else ("LIVE" if state_type == "in" else "SCHEDULED")
-        live_state.home_score = h_score
-        live_state.away_score = a_score
+        if h_score is not None:
+            live_state.home_score = h_score
+        if a_score is not None:
+            live_state.away_score = a_score
         live_state.home_corners = int(corn_h) if corn_h is not None else None
         live_state.away_corners = int(corn_a) if corn_a is not None else None
         live_state.home_shots = int(shots_h) if shots_h is not None else None
@@ -396,7 +440,7 @@ class LiveProviderAdapterService:
 
         # Build normalized response
         return {
-            "status": "LIVE" if not is_completed else "FINISHED",
+            "status": "FINISHED" if is_completed else ("LIVE" if state_type == "in" else "SCHEDULED"),
             "is_completed": is_completed,
             "fixture_id": fixture_id,
             "provider_fixture_id": provider_event_id,
@@ -513,9 +557,9 @@ class LiveProviderAdapterService:
             "provider_fixture_id": provider_event_id,
             "provider": "ESPN",
             "period": "PRE",
-            "minute": 0,
-            "display_clock": "0'",
-            "score": {"home": 0, "away": 0},
+            "minute": None,
+            "display_clock": "—",
+            "score": {"home": None, "away": None},
             "statistics": {
                 "shots": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                 "shots_on_target": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
@@ -529,7 +573,7 @@ class LiveProviderAdapterService:
             "events": [],
             "retrieved_at": now_utc.isoformat(),
             "data_status": "UNAVAILABLE",
-            "data_quality_score": 20,
+            "data_quality_score": 0,
             "statistical_coverage": "UNAVAILABLE",
             "error": "No verified live snapshot received from provider."
         }

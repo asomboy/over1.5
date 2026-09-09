@@ -79,7 +79,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_goal_h_{curr_min}_{diff}",
                     "minute": curr_min,
                     "category": "SCORE",
-                    "statement": f"GOAL! {home_team} scores to make it {curr_h_score}–{curr_a_score}.",
+                    "statement": f"[OBSERVED FACT] GOAL! {home_team} scores to make it {curr_h_score}–{curr_a_score}.",
                     "field": "score.home",
                     "observed_value": curr_h_score,
                     "retrieved_at": retrieved_at
@@ -90,7 +90,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_goal_a_{curr_min}_{diff}",
                     "minute": curr_min,
                     "category": "SCORE",
-                    "statement": f"GOAL! {away_team} scores to make it {curr_h_score}–{curr_a_score}.",
+                    "statement": f"[OBSERVED FACT] GOAL! {away_team} scores to make it {curr_h_score}–{curr_a_score}.",
                     "field": "score.away",
                     "observed_value": curr_a_score,
                     "retrieved_at": retrieved_at
@@ -107,7 +107,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_shots_h_{curr_min}",
                     "minute": curr_min,
                     "category": "ATTACK",
-                    "statement": f"{home_team} has recorded {s_diff} shot{'s' if s_diff > 1 else ''} in the latest verified interval.",
+                    "statement": f"[OBSERVED FACT] {home_team} has recorded {s_diff} shot{'s' if s_diff > 1 else ''} in the latest verified interval (Total: {h_shots}).",
                     "field": "statistics.shots.home",
                     "observed_value": h_shots,
                     "retrieved_at": retrieved_at
@@ -118,7 +118,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_shots_a_{curr_min}",
                     "minute": curr_min,
                     "category": "ATTACK",
-                    "statement": f"{away_team} has recorded {s_diff} shot{'s' if s_diff > 1 else ''} in the latest verified interval.",
+                    "statement": f"[OBSERVED FACT] {away_team} has recorded {s_diff} shot{'s' if s_diff > 1 else ''} in the latest verified interval (Total: {a_shots}).",
                     "field": "statistics.shots.away",
                     "observed_value": a_shots,
                     "retrieved_at": retrieved_at
@@ -133,7 +133,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_corn_h_{curr_min}",
                     "minute": curr_min,
                     "category": "ATTACK",
-                    "statement": f"{home_team} was awarded {c_diff} new corner{'s' if c_diff > 1 else ''}.",
+                    "statement": f"[OBSERVED FACT] {home_team} was awarded {c_diff} new corner{'s' if c_diff > 1 else ''} (Total: {h_corn}).",
                     "field": "statistics.corners.home",
                     "observed_value": h_corn,
                     "retrieved_at": retrieved_at
@@ -144,7 +144,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_corn_a_{curr_min}",
                     "minute": curr_min,
                     "category": "ATTACK",
-                    "statement": f"{away_team} was awarded {c_diff} new corner{'s' if c_diff > 1 else ''}.",
+                    "statement": f"[OBSERVED FACT] {away_team} was awarded {c_diff} new corner{'s' if c_diff > 1 else ''} (Total: {a_corn}).",
                     "field": "statistics.corners.away",
                     "observed_value": a_corn,
                     "retrieved_at": retrieved_at
@@ -158,7 +158,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_red_h_{curr_min}",
                     "minute": curr_min,
                     "category": "DISCIPLINE",
-                    "statement": f"RED CARD! {home_team} is reduced to {11 - int(h_red)} players.",
+                    "statement": f"[OBSERVED FACT] RED CARD! {home_team} is reduced to {11 - int(h_red)} players.",
                     "field": "statistics.cards.home_red",
                     "observed_value": h_red,
                     "retrieved_at": retrieved_at
@@ -168,7 +168,7 @@ class LiveNarrativeEngine:
                     "id": f"narr_red_a_{curr_min}",
                     "minute": curr_min,
                     "category": "DISCIPLINE",
-                    "statement": f"RED CARD! {away_team} is reduced to {11 - int(a_red)} players.",
+                    "statement": f"[OBSERVED FACT] RED CARD! {away_team} is reduced to {11 - int(a_red)} players.",
                     "field": "statistics.cards.away_red",
                     "observed_value": a_red,
                     "retrieved_at": retrieved_at
