@@ -113,11 +113,22 @@ class ShotsFeatureService:
                 if stats.away_shots_on_target is not None: sot_for.append(stats.away_shots_on_target)
                 if stats.home_shots_on_target is not None: sot_against.append(stats.home_shots_on_target)
 
-        # Baseline priors
-        base_shots_for = DEFAULT_LEAGUE_SHOTS_HOME if is_home else DEFAULT_LEAGUE_SHOTS_AWAY
-        base_shots_against = DEFAULT_LEAGUE_SHOTS_AWAY if is_home else DEFAULT_LEAGUE_SHOTS_HOME
-        base_sot_for = DEFAULT_LEAGUE_SOT_HOME if is_home else DEFAULT_LEAGUE_SOT_AWAY
-        base_sot_against = DEFAULT_LEAGUE_SOT_AWAY if is_home else DEFAULT_LEAGUE_SOT_HOME
+        # Baseline priors scaled dynamically with team attack / defense strength
+        team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
+        att_str, def_str = 1.0, 1.0
+        if team:
+            try:
+                from services.prediction_service import PoissonPredictionEngine
+                h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
+                att_str = h_att if is_home else a_att
+                def_str = h_def if is_home else a_def
+            except Exception:
+                pass
+
+        base_shots_for = round((DEFAULT_LEAGUE_SHOTS_HOME if is_home else DEFAULT_LEAGUE_SHOTS_AWAY) * att_str, 2)
+        base_shots_against = round((DEFAULT_LEAGUE_SHOTS_AWAY if is_home else DEFAULT_LEAGUE_SHOTS_HOME) * def_str, 2)
+        base_sot_for = round((DEFAULT_LEAGUE_SOT_HOME if is_home else DEFAULT_LEAGUE_SOT_AWAY) * att_str, 2)
+        base_sot_against = round((DEFAULT_LEAGUE_SOT_AWAY if is_home else DEFAULT_LEAGUE_SOT_HOME) * def_str, 2)
 
         # Bayesian shrinkage: w = min(1.0, N / 8.0)
         n_shots = len(shots_for)

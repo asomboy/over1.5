@@ -410,8 +410,19 @@ class CornersPredictionEngine:
         - sample variance
         - true sample size and eligible match count
         """
-        fallback_for = FALLBACK_LEAGUE_HOME_CORNERS if is_home else FALLBACK_LEAGUE_AWAY_CORNERS
-        fallback_against = FALLBACK_LEAGUE_AWAY_CORNERS if is_home else FALLBACK_LEAGUE_HOME_CORNERS
+        team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
+        att_str, def_str = 1.0, 1.0
+        if team:
+            try:
+                from services.prediction_service import PoissonPredictionEngine
+                h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
+                att_str = h_att if is_home else a_att
+                def_str = h_def if is_home else a_def
+            except Exception:
+                pass
+
+        fallback_for = round((FALLBACK_LEAGUE_HOME_CORNERS if is_home else FALLBACK_LEAGUE_AWAY_CORNERS) * att_str, 2)
+        fallback_against = round((FALLBACK_LEAGUE_AWAY_CORNERS if is_home else FALLBACK_LEAGUE_HOME_CORNERS) * def_str, 2)
 
         try:
             naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
@@ -776,32 +787,7 @@ class CornersPredictionEngine:
         a_sample = cov_info["away_sample_size"]
         l_sample = cov_info["league_sample_size"]
 
-        # Check if enough minimum data exists (at least 1 match with corner data)
-        if h_sample == 0 and a_sample == 0 and l_sample == 0:
-            return {
-                "available": False,
-                "reason": "Insufficient verified corner history for a reliable prediction.",
-                "expected": None,
-                "total_markets": None,
-                "home_team": None,
-                "away_team": None,
-                "confidence": {
-                    "overall": 20,
-                    "data_quality": 20,
-                    "sample_strength": 20,
-                    "model_stability": 20,
-                    "label": "insufficient"
-                },
-                "model": {
-                    "version": CORNER_MODEL_VERSION,
-                    "dispersion": DEFAULT_FALLBACK_DISPERSION,
-                    "dispersion_source": "fallback",
-                    "baseline_source": "fallback"
-                },
-                "diagnostics": {
-                    **cov_info
-                }
-            }
+        is_low_sample = (h_sample == 0 and a_sample == 0 and l_sample == 0)
 
         # Calculate expected corners
         xg_h, xg_a, xg_tot, diag = cls.calculate_expected_corners(

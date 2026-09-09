@@ -129,6 +129,13 @@ class UnifiedMatchIntelligenceService:
                 "attacking_pressure": match_stats_data.get("attacking_pressure", {}),
                 "live": live_data
             },
+            "corners": corners_data,
+            "cards": cards_data,
+            "expected_goals": {
+                "home": goals_data.get("home_xg", 1.45),
+                "away": goals_data.get("away_xg", 1.15),
+                "total": goals_data.get("total_xg", 2.60)
+            },
             "team_profiles": team_profiles,
             "data_provenance_summary": {
                 "has_verified_referee": bool(cards_data.get("referee_name")),
@@ -150,28 +157,94 @@ class UnifiedMatchIntelligenceService:
         try:
             pred = PoissonPredictionEngine.predict_fixture(db, fixture.id)
             if pred:
+                # Handle both SQLAlchemy Prediction model instance and dictionary
+                h_xg = getattr(pred, "predicted_home_score", None) if hasattr(pred, "predicted_home_score") else pred.get("home_xg")
+                a_xg = getattr(pred, "predicted_away_score", None) if hasattr(pred, "predicted_away_score") else pred.get("away_xg")
+                tot_xg = getattr(pred, "expected_goals_xg", None) if hasattr(pred, "expected_goals_xg") else pred.get("total_xg")
+                o05 = getattr(pred, "over_0_5_probability", None) if hasattr(pred, "over_0_5_probability") else pred.get("over_0_5_prob")
+                o15 = getattr(pred, "over_1_5_probability", None) if hasattr(pred, "over_1_5_probability") else pred.get("over_1_5_prob")
+                o25 = getattr(pred, "over_2_5_probability", None) if hasattr(pred, "over_2_5_probability") else pred.get("over_2_5_prob")
+                o35 = getattr(pred, "over_3_5_probability", None) if hasattr(pred, "over_3_5_probability") else pred.get("over_3_5_prob")
+                btts = getattr(pred, "btts_probability", None) if hasattr(pred, "btts_probability") else pred.get("btts_prob")
+                h_win = getattr(pred, "home_win_probability", None) if hasattr(pred, "home_win_probability") else pred.get("home_win_prob")
+                draw = getattr(pred, "draw_probability", None) if hasattr(pred, "draw_probability") else pred.get("draw_prob")
+                a_win = getattr(pred, "away_win_probability", None) if hasattr(pred, "away_win_probability") else pred.get("away_win_prob")
+                conf = getattr(pred, "confidence_score", None) if hasattr(pred, "confidence_score") else pred.get("confidence")
+
+                # Parse raw intelligence if available for additional fidelity
+                if hasattr(pred, "raw_intelligence_json") and pred.raw_intelligence_json:
+                    try:
+                        raw = json.loads(pred.raw_intelligence_json)
+                        if "goals" in raw:
+                            o05 = o05 if o05 is not None else raw["goals"].get("over_0_5")
+                            o15 = o15 if o15 is not None else raw["goals"].get("over_1_5")
+                            o25 = o25 if o25 is not None else raw["goals"].get("over_2_5")
+                            o35 = o35 if o35 is not None else raw["goals"].get("over_3_5")
+                        if "btts" in raw:
+                            btts = btts if btts is not None else raw["btts"].get("yes")
+                        if "result" in raw:
+                            h_win = h_win if h_win is not None else raw["result"].get("home_win")
+                            draw = draw if draw is not None else raw["result"].get("draw")
+                            a_win = a_win if a_win is not None else raw["result"].get("away_win")
+                        if "confidence" in raw and isinstance(raw["confidence"], dict):
+                            conf = conf if conf is not None else (raw["confidence"].get("overall", 75) / 100.0)
+                    except Exception:
+                        pass
+
+                conf_int = int(round(conf * 100)) if (conf is not None and conf <= 1.0) else int(conf or 75)
+                h_xg_val = round(float(h_xg if h_xg is not None else 1.45), 2)
+                a_xg_val = round(float(a_xg if a_xg is not None else 1.15), 2)
+                tot_xg_val = round(float(tot_xg if tot_xg is not None else (h_xg_val + a_xg_val)), 2)
+
                 return {
                     "status": "AVAILABLE",
                     "model_version": "dixon_coles_v2",
-                    "home_xg": pred.get("home_xg", 1.45),
-                    "away_xg": pred.get("away_xg", 1.15),
-                    "total_xg": round(pred.get("home_xg", 1.45) + pred.get("away_xg", 1.15), 2),
+                    "home_xg": h_xg_val,
+                    "away_xg": a_xg_val,
+                    "total_xg": tot_xg_val,
                     "probabilities": {
-                        "over_0_5": pred.get("over_0_5_prob", 0.92),
-                        "over_1_5": pred.get("over_1_5_prob", 0.78),
-                        "over_2_5": pred.get("over_2_5_prob", 0.54),
-                        "over_3_5": pred.get("over_3_5_prob", 0.31),
-                        "btts": pred.get("btts_prob", 0.52),
-                        "home_win": pred.get("home_win_prob", 0.48),
-                        "draw": pred.get("draw_prob", 0.26),
-                        "away_win": pred.get("away_win_prob", 0.26)
+                        "over_0_5": round(float(o05 if o05 is not None else 0.90), 4),
+                        "over_1_5": round(float(o15 if o15 is not None else 0.75), 4),
+                        "over_2_5": round(float(o25 if o25 is not None else 0.50), 4),
+                        "over_3_5": round(float(o35 if o35 is not None else 0.28), 4),
+                        "btts": round(float(btts if btts is not None else 0.52), 4),
+                        "home_win": round(float(h_win if h_win is not None else 0.45), 4),
+                        "draw": round(float(draw if draw is not None else 0.27), 4),
+                        "away_win": round(float(a_win if a_win is not None else 0.28), 4)
                     },
-                    "confidence": pred.get("confidence", 75)
+                    "confidence": conf_int
                 }
         except Exception as ex:
             logger.debug(f"Goals prediction fallback for fixture {fixture.id}: {ex}")
 
-        return {"status": "UNAVAILABLE", "model_version": "dixon_coles_v2", "probabilities": {}}
+        # Dynamic calculation fallback if predict_fixture failed
+        try:
+            h_xg, a_xg, tot_xg = PoissonPredictionEngine.calculate_xg(
+                db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id)
+            )
+            probs = PoissonPredictionEngine.calculate_poisson_probabilities(
+                h_xg, a_xg, db=db, home_team_id=fixture.home_team_id, away_team_id=fixture.away_team_id, league_id=fixture.league_id
+            )
+            return {
+                "status": "AVAILABLE",
+                "model_version": "dixon_coles_v2",
+                "home_xg": h_xg,
+                "away_xg": a_xg,
+                "total_xg": tot_xg,
+                "probabilities": {
+                    "over_0_5": probs["over_0_5_probability"],
+                    "over_1_5": probs["over_1_5_probability"],
+                    "over_2_5": probs["over_2_5_probability"],
+                    "over_3_5": probs["over_3_5_probability"],
+                    "btts": probs["btts_probability"],
+                    "home_win": probs["home_win_probability"],
+                    "draw": probs["draw_probability"],
+                    "away_win": probs["away_win_probability"]
+                },
+                "confidence": probs.get("confidence", {}).get("overall", 75)
+            }
+        except Exception:
+            return {"status": "UNAVAILABLE", "model_version": "dixon_coles_v2", "probabilities": {}}
 
     @classmethod
     def _get_corners_intelligence(cls, db: Session, fixture: Fixture) -> Dict[str, Any]:
@@ -179,20 +252,51 @@ class UnifiedMatchIntelligenceService:
         try:
             pred = CornersPredictionEngine.predict_corners(db, fixture.id)
             if pred and not pred.get("error"):
+                exp = pred.get("expected") or {}
+                tot_m = pred.get("total_markets") or {}
+                conf_obj = pred.get("confidence") or {}
+                conf_val = conf_obj.get("overall", 70) if isinstance(conf_obj, dict) else (pred.get("confidence") or 70)
+
+                h_c = exp.get("home", pred.get("home_corners"))
+                a_c = exp.get("away", pred.get("away_corners"))
+                tot_c = exp.get("total", pred.get("total_corners"))
+
+                if h_c is None or a_c is None:
+                    # Derive dynamic corner baselines from team ratings
+                    from services.prediction_service import PoissonPredictionEngine
+                    h_team = db.query(Team).filter(Team.id == fixture.home_team_id).first() if fixture.home_team_id else None
+                    a_team = db.query(Team).filter(Team.id == fixture.away_team_id).first() if fixture.away_team_id else None
+                    h_att, h_def, _, _ = PoissonPredictionEngine.resolve_team_ratings(h_team) if h_team else (1.0, 1.0, 1.0, 1.0)
+                    _, _, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(a_team) if a_team else (1.0, 1.0, 1.0, 1.0)
+                    h_c = round(5.4 * h_att * a_def, 1)
+                    a_c = round(4.6 * a_att * h_def, 1)
+                    tot_c = round(h_c + a_c, 1)
+
+                p_o75 = tot_m.get("over_7_5") or (pred.get("prob_over_7_5") if pred else None)
+                if p_o75 is None: p_o75 = round(min(0.95, max(0.40, 0.74 + ((tot_c - 10.0) * 0.05))), 4)
+                p_o85 = tot_m.get("over_8_5") or (pred.get("prob_over_8_5") if pred else None)
+                if p_o85 is None: p_o85 = round(min(0.90, max(0.30, 0.62 + ((tot_c - 10.0) * 0.05))), 4)
+                p_o95 = tot_m.get("over_9_5") or (pred.get("prob_over_9_5") if pred else None)
+                if p_o95 is None: p_o95 = round(min(0.85, max(0.20, 0.49 + ((tot_c - 10.0) * 0.05))), 4)
+                p_o105 = tot_m.get("over_10_5") or (pred.get("prob_over_10_5") if pred else None)
+                if p_o105 is None: p_o105 = round(min(0.75, max(0.12, 0.37 + ((tot_c - 10.0) * 0.05))), 4)
+                p_o115 = tot_m.get("over_11_5") or (pred.get("prob_over_11_5") if pred else None)
+                if p_o115 is None: p_o115 = round(min(0.65, max(0.08, 0.26 + ((tot_c - 10.0) * 0.05))), 4)
+
                 return {
                     "status": "AVAILABLE",
                     "model_version": "corners_negbin_v2",
-                    "home_expected_corners": pred.get("home_corners", 5.2),
-                    "away_expected_corners": pred.get("away_corners", 4.3),
-                    "total_expected_corners": pred.get("total_corners", 9.5),
+                    "home_expected_corners": round(float(h_c), 2),
+                    "away_expected_corners": round(float(a_c), 2),
+                    "total_expected_corners": round(float(tot_c or (h_c + a_c)), 2),
                     "probabilities": {
-                        "over_7_5": pred.get("prob_over_7_5", 0.74),
-                        "over_8_5": pred.get("prob_over_8_5", 0.62),
-                        "over_9_5": pred.get("prob_over_9_5", 0.49),
-                        "over_10_5": pred.get("prob_over_10_5", 0.37),
-                        "over_11_5": pred.get("prob_over_11_5", 0.26)
+                        "over_7_5": p_o75,
+                        "over_8_5": p_o85,
+                        "over_9_5": p_o95,
+                        "over_10_5": p_o105,
+                        "over_11_5": p_o115
                     },
-                    "confidence": pred.get("confidence", 70)
+                    "confidence": conf_val
                 }
         except Exception as ex:
             logger.debug(f"Corners prediction fallback for fixture {fixture.id}: {ex}")
@@ -205,23 +309,54 @@ class UnifiedMatchIntelligenceService:
         try:
             pred = CardsPredictionEngine.predict_cards(db, fixture.id)
             if pred and not pred.get("error"):
+                exp = pred.get("expected") or {}
+                tot_m = pred.get("total_markets") or {}
+                ref_obj = pred.get("referee") or {}
+                conf_obj = pred.get("confidence") or {}
+                conf_val = conf_obj.get("overall", 65) if isinstance(conf_obj, dict) else (pred.get("confidence") or 65)
+
+                tot_y = exp.get("total_yellow", pred.get("expected_yellow_cards"))
+                tot_c = exp.get("total", pred.get("total_expected_cards"))
+                red_risk = pred.get("red_card_risk") or {}
+                p_red = red_risk.get("probability_at_least_one_red", pred.get("prob_any_red_card"))
+
+                if tot_y is None or tot_c is None:
+                    from services.prediction_service import PoissonPredictionEngine
+                    h_team = db.query(Team).filter(Team.id == fixture.home_team_id).first() if fixture.home_team_id else None
+                    a_team = db.query(Team).filter(Team.id == fixture.away_team_id).first() if fixture.away_team_id else None
+                    h_att, h_def, _, _ = PoissonPredictionEngine.resolve_team_ratings(h_team) if h_team else (1.0, 1.0, 1.0, 1.0)
+                    _, _, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(a_team) if a_team else (1.0, 1.0, 1.0, 1.0)
+                    ref_strict = ref_obj.get("strictness_index", 1.0)
+                    tot_y = round((1.9 * h_def + 1.9 * a_def) * ref_strict, 2)
+                    tot_c = round(tot_y * 1.05, 2)
+                    p_red = round(min(0.35, max(0.05, 0.14 * ref_strict)), 4)
+
+                p_o25 = tot_m.get("over_2_5") or (pred.get("prob_over_2_5") if pred else None)
+                if p_o25 is None: p_o25 = round(min(0.95, max(0.50, 0.81 + ((tot_c - 4.0) * 0.06))), 4)
+                p_o35 = tot_m.get("over_3_5") or (pred.get("prob_over_3_5") if pred else None)
+                if p_o35 is None: p_o35 = round(min(0.90, max(0.30, 0.61 + ((tot_c - 4.0) * 0.06))), 4)
+                p_o45 = tot_m.get("over_4_5") or (pred.get("prob_over_4_5") if pred else None)
+                if p_o45 is None: p_o45 = round(min(0.80, max(0.15, 0.39 + ((tot_c - 4.0) * 0.06))), 4)
+                p_o55 = tot_m.get("over_5_5") or (pred.get("prob_over_5_5") if pred else None)
+                if p_o55 is None: p_o55 = round(min(0.65, max(0.08, 0.22 + ((tot_c - 4.0) * 0.06))), 4)
+
                 return {
                     "status": "AVAILABLE",
                     "model_version": "cards_referee_v2",
-                    "expected_yellow_cards": pred.get("expected_yellow_cards", 3.8),
-                    "expected_red_cards": pred.get("expected_red_cards", 0.18),
-                    "total_expected_cards": pred.get("total_expected_cards", 4.0),
-                    "referee_name": pred.get("referee_name"),
-                    "referee_tier": pred.get("referee_tier", "TIER_5_LEAGUE_DEFAULT"),
-                    "referee_strictness_index": pred.get("referee_strictness_index", 1.0),
+                    "expected_yellow_cards": round(float(tot_y), 2),
+                    "expected_red_cards": round(float(exp.get("red_cards", 0.18)), 2),
+                    "total_expected_cards": round(float(tot_c), 2),
+                    "referee_name": ref_obj.get("name") or pred.get("referee_name"),
+                    "referee_tier": ref_obj.get("tier") or pred.get("referee_tier", "TIER_5_LEAGUE_DEFAULT"),
+                    "referee_strictness_index": ref_obj.get("strictness_index") or pred.get("referee_strictness_index", 1.0),
                     "probabilities": {
-                        "over_2_5": pred.get("prob_over_2_5", 0.81),
-                        "over_3_5": pred.get("prob_over_3_5", 0.61),
-                        "over_4_5": pred.get("prob_over_4_5", 0.39),
-                        "over_5_5": pred.get("prob_over_5_5", 0.22),
-                        "any_red_card": pred.get("prob_any_red_card", 0.16)
+                        "over_2_5": p_o25,
+                        "over_3_5": p_o35,
+                        "over_4_5": p_o45,
+                        "over_5_5": p_o55,
+                        "any_red_card": round(float(p_red if p_red is not None else 0.16), 4)
                     },
-                    "confidence": pred.get("confidence", 65)
+                    "confidence": conf_val
                 }
         except Exception as ex:
             logger.debug(f"Cards prediction fallback for fixture {fixture.id}: {ex}")

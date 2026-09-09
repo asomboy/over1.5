@@ -152,6 +152,26 @@ class MatchStatisticsFeatureService:
             blk = stats.home_blocked_shots if is_match_home else stats.away_blocked_shots
             if blk is not None: blocked_list.append(blk)
 
+        # Baseline priors scaled dynamically with team attack / defense strength
+        team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
+        att_str, def_str = 1.0, 1.0
+        if team:
+            try:
+                from services.prediction_service import PoissonPredictionEngine
+                h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
+                att_str = h_att if is_home else a_att
+                def_str = h_def if is_home else a_def
+            except Exception:
+                pass
+
+        base_poss = (DEFAULT_LEAGUE_POSSESSION_HOME if is_home else DEFAULT_LEAGUE_POSSESSION_AWAY) + ((att_str - 1.0) * 15.0) - ((def_str - 1.0) * 8.0)
+        base_poss = round(max(32.0, min(68.0, base_poss)), 1)
+        base_fouls_comm = round((DEFAULT_LEAGUE_FOULS_HOME if is_home else DEFAULT_LEAGUE_FOULS_AWAY) * (0.6 + 0.4 * def_str), 2)
+        base_fouls_drn = round((DEFAULT_LEAGUE_FOULS_AWAY if is_home else DEFAULT_LEAGUE_FOULS_HOME) * (0.6 + 0.4 * att_str), 2)
+        base_offs = round((DEFAULT_LEAGUE_OFFSIDES_HOME if is_home else DEFAULT_LEAGUE_OFFSIDES_AWAY) * att_str, 2)
+        base_saves = round((DEFAULT_LEAGUE_SAVES_HOME if is_home else DEFAULT_LEAGUE_SAVES_AWAY) * def_str, 2)
+        base_blk = round((DEFAULT_LEAGUE_BLOCKED_HOME if is_home else DEFAULT_LEAGUE_BLOCKED_AWAY) * def_str, 2)
+
         # Bayesian Shrinkage helper: w = min(1.0, N / 8.0)
         def _shrink(obs: List[float], baseline: float, target_n: float = 8.0) -> float:
             if not obs: return baseline
@@ -160,12 +180,12 @@ class MatchStatisticsFeatureService:
 
         return {
             "sample_size": n,
-            "avg_possession": round(_shrink(poss_list, DEFAULT_LEAGUE_POSSESSION_HOME if is_home else DEFAULT_LEAGUE_POSSESSION_AWAY), 1),
-            "avg_fouls_committed": round(_shrink(fouls_comm, DEFAULT_LEAGUE_FOULS_HOME if is_home else DEFAULT_LEAGUE_FOULS_AWAY), 2),
-            "avg_fouls_drawn": round(_shrink(fouls_drn, DEFAULT_LEAGUE_FOULS_AWAY if is_home else DEFAULT_LEAGUE_FOULS_HOME), 2),
-            "avg_offsides": round(_shrink(offsides_list, DEFAULT_LEAGUE_OFFSIDES_HOME if is_home else DEFAULT_LEAGUE_OFFSIDES_AWAY), 2),
-            "avg_saves": round(_shrink(saves_list, DEFAULT_LEAGUE_SAVES_HOME if is_home else DEFAULT_LEAGUE_SAVES_AWAY), 2),
-            "avg_blocked": round(_shrink(blocked_list, DEFAULT_LEAGUE_BLOCKED_HOME if is_home else DEFAULT_LEAGUE_BLOCKED_AWAY), 2)
+            "avg_possession": round(_shrink(poss_list, base_poss), 1),
+            "avg_fouls_committed": round(_shrink(fouls_comm, base_fouls_comm), 2),
+            "avg_fouls_drawn": round(_shrink(fouls_drn, base_fouls_drn), 2),
+            "avg_offsides": round(_shrink(offsides_list, base_offs), 2),
+            "avg_saves": round(_shrink(saves_list, base_saves), 2),
+            "avg_blocked": round(_shrink(blocked_list, base_blk), 2)
         }
 
 

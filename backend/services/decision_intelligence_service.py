@@ -124,17 +124,35 @@ class DecisionIntelligenceService:
         # ---------------------------------------------------------------------
         goals_data = markets.get("goals", {})
         g_probs = goals_data.get("probabilities", {})
+        if not g_probs or g_probs.get("over_1_5") is None:
+            # Fallback to database Prediction directly to prevent static defaults
+            pred_row = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
+            if pred_row:
+                g_probs = {
+                    "over_0_5": pred_row.over_0_5_probability,
+                    "over_1_5": pred_row.over_1_5_probability,
+                    "over_2_5": pred_row.over_2_5_probability,
+                    "over_3_5": pred_row.over_3_5_probability,
+                    "btts": pred_row.btts_probability,
+                    "home_win": pred_row.home_win_probability,
+                    "away_win": pred_row.away_win_probability
+                }
+
         g_eval = _get_market_eval("over_1_5")
 
+        h_win_p = g_probs.get("home_win") or goals_data.get("home_win_probability")
+        a_win_p = g_probs.get("away_win") or goals_data.get("away_win_probability")
+        btts_p = g_probs.get("btts")
+
         goal_lines = [
-            ("Over 0.5 Goals", "Over 0.5", g_probs.get("over_0_5", 0.90), "over_0_5"),
-            ("Over 1.5 Goals", "Over 1.5", g_probs.get("over_1_5", 0.78), "over_1_5"),
-            ("Over 2.5 Goals", "Over 2.5", g_probs.get("over_2_5", 0.52), "over_2_5"),
-            ("Over 3.5 Goals", "Over 3.5", g_probs.get("over_3_5", 0.28), "over_3_5"),
-            ("Both Teams to Score", "Yes", g_probs.get("btts", 0.54), "btts"),
-            ("Both Teams to Score", "No", 1.0 - g_probs.get("btts", 0.54), "btts_no"),
-            ("Match Result (1X2)", "Home Win (1)", goals_data.get("home_win_probability", 0.45), "1x2_home"),
-            ("Match Result (1X2)", "Away Win (2)", goals_data.get("away_win_probability", 0.30), "1x2_away")
+            ("Over 0.5 Goals", "Over 0.5", g_probs.get("over_0_5"), "over_0_5"),
+            ("Over 1.5 Goals", "Over 1.5", g_probs.get("over_1_5"), "over_1_5"),
+            ("Over 2.5 Goals", "Over 2.5", g_probs.get("over_2_5"), "over_2_5"),
+            ("Over 3.5 Goals", "Over 3.5", g_probs.get("over_3_5"), "over_3_5"),
+            ("Both Teams to Score", "Yes", btts_p, "btts"),
+            ("Both Teams to Score", "No", (1.0 - btts_p) if btts_p is not None else None, "btts_no"),
+            ("Match Result (1X2)", "Home Win (1)", h_win_p, "1x2_home"),
+            ("Match Result (1X2)", "Away Win (2)", a_win_p, "1x2_away")
         ]
 
         for m_name, sel, p, ev_key in goal_lines:
@@ -380,9 +398,10 @@ class DecisionIntelligenceService:
         )
         decision_score = max(0.01, min(0.99, decision_score))
 
-        # 3. Decision Confidence (bounded separate metric)
+        # 3. Decision Confidence (bounded separate metric incorporating model clarity)
+        prob_clarity = round(abs(probability - 0.5) * 2.0, 3)
         decision_confidence = round(
-            0.50 * rel_factor + 0.20 * data_quality + 0.15 * consistency_score + 0.15 * cal_factor,
+            0.35 * rel_factor + 0.20 * data_quality + 0.15 * consistency_score + 0.15 * cal_factor + 0.15 * prob_clarity,
             2
         )
         decision_confidence = max(0.15, min(0.95, decision_confidence))
@@ -390,12 +409,14 @@ class DecisionIntelligenceService:
         # 4. Signal Status Gating
         if provider_status in ["DEGRADED", "CIRCUIT_BREAKER_OPEN"] or readiness == "DEGRADED":
             signal_status = "DEGRADED"
-        elif sample_size < 100:
-            signal_status = "INSUFFICIENT_DATA"
         elif readiness == "VALIDATED" and sample_size >= 300 and decision_score >= 0.50 and consistency_score >= 0.70:
             signal_status = "PRODUCTION_SIGNAL"
         elif (readiness in ["VALIDATING", "VALIDATED"] or sample_size >= 100) and probability >= 0.64:
             signal_status = "SHADOW_SIGNAL"
+        elif probability >= 0.70 and decision_score >= 0.35:
+            signal_status = "SHADOW_SIGNAL"
+        elif sample_size < 100:
+            signal_status = "INSUFFICIENT_DATA"
         elif probability < 0.60:
             signal_status = "NO_SIGNAL"
         else:
