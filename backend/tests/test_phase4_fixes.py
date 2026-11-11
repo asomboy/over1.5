@@ -1,10 +1,11 @@
 import os
 import sys
+import asyncio
 import sqlite3
 import unittest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
-from sqlalchemy import create_engine
+from unittest.mock import patch, MagicMock
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +22,7 @@ from services.accumulator_service import AccumulatorGeneratorService
 from services.alert_service import AlertService
 from services.provider_health_service import ProviderHealthService
 from services.decision_intelligence_service import DecisionIntelligenceService
+from services.ingestion_service import DataIngestionService
 
 
 class TestPhase4Fixes(unittest.TestCase):
@@ -152,6 +154,82 @@ class TestPhase4Fixes(unittest.TestCase):
                 self.assertEqual(fk_val, 1)
             finally:
                 raw_conn.close()
+
+    def test_espn_ingestion_none_fields_and_fk_safety(self):
+        """Regression test: None subfields in ESPN feeds must not roll back uncommitted leagues/teams or trigger FK errors."""
+        fk_engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        event.listen(fk_engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
+        Base.metadata.create_all(bind=fk_engine)
+        FkSession = sessionmaker(autocommit=False, autoflush=False, bind=fk_engine)
+        fk_db = FkSession()
+        try:
+            future_iso = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            sample_payload = {
+                "leagues": [{"name": "English Premier League"}],
+                "events": [
+                    {
+                        "id": "990001",
+                        "date": future_iso,
+                        "season": {"slug": "eng.1"},
+                        "status": {"type": {"name": "STATUS_SCHEDULED", "state": "pre"}},
+                        "competitions": [{
+                            "venue": None,
+                            "notes": [None],
+                            "odds": [{"tracking": None}],
+                            "competitors": [
+                                {"id": "101", "homeAway": "home", "team": {"displayName": "Arsenal", "abbreviation": "ARS"}},
+                                {"id": "102", "homeAway": "away", "team": {"displayName": "Chelsea", "abbreviation": "CHE"}},
+                            ],
+                        }],
+                    },
+                    {
+                        "id": "990002",
+                        "date": future_iso,
+                        "season": None,
+                        "status": None,
+                        "competitions": [{
+                            "venue": {"fullName": "Etihad Stadium"},
+                            "competitors": [
+                                {"id": "103", "homeAway": "home", "team": {"displayName": "Manchester City", "abbreviation": "MCI"}},
+                                {"id": "104", "homeAway": "away", "team": {"displayName": "Liverpool", "abbreviation": "LIV"}},
+                            ],
+                        }],
+                    },
+                ],
+            }
+
+            class FakeResp:
+                status_code = 200
+                def json(self):
+                    return sample_payload
+
+            class FakeClient:
+                def __init__(self, *args, **kwargs):
+                    pass
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *args):
+                    return False
+                async def get(self, url):
+                    if "/eng.1/" in url:
+                        return FakeResp()
+                    resp = MagicMock()
+                    resp.status_code = 404
+                    return resp
+
+            with patch("services.ingestion_service.httpx.AsyncClient", FakeClient):
+                res = asyncio.run(DataIngestionService.fetch_and_ingest_from_api(fk_db))
+
+            self.assertEqual(res.get("status"), "ok")
+            self.assertEqual(res.get("fixtures_ingested"), 2)
+            self.assertEqual(fk_db.query(Fixture).count(), 2)
+        finally:
+            fk_db.close()
+            fk_engine.dispose()
 
 
 if __name__ == "__main__":

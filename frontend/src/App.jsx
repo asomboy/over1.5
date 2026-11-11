@@ -121,6 +121,7 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
   const pollAbortRef = useRef(null);
+  const initialFetchActiveRef = useRef(true);
 
   // Layout View Mode (Default: Compact Table/List View)
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
@@ -273,18 +274,18 @@ export default function App() {
   });
 
   // Check Backend Health with retry and multi-URL candidates
-  const checkHealth = useCallback(async (retries = 3, signal = undefined) => {
-    const startTime = performance.now();
+  const checkHealth = useCallback(async (retries = 5, signal = undefined) => {
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (signal?.aborted) return;
+      const attemptStart = performance.now();
       try {
-        const reqOpts = signal ? { timeout: 30000, signal } : { timeout: 30000 };
+        const reqOpts = signal ? { timeout: 12000, signal } : { timeout: 12000 };
         const res = await apiRequest('get', '/health', null, reqOpts);
-        const endTime = performance.now();
+        const attemptEnd = performance.now();
         if (res.data?.status === 'ok') {
           setBackendHealth({
             online: true,
-            latency: Math.round(endTime - startTime),
+            latency: Math.round(attemptEnd - attemptStart),
             lastChecked: new Date().toLocaleTimeString(),
           });
           return;
@@ -300,23 +301,50 @@ export default function App() {
     }
   }, []);
 
-  // Fetch upcoming fixtures from FastAPI with multi-URL fallback
+  // Fetch upcoming fixtures from FastAPI with cold-start retry & multi-URL fallback
   const fetchUpcomingFixtures = useCallback(async (isSilent = false, signal = undefined) => {
-    if (!isSilent) setLoading(true);
-    if (!isSilent) setError(null);
+    if (!isSilent) {
+      initialFetchActiveRef.current = true;
+      setLoading(true);
+      setError(null);
+    }
+    const maxAttempts = isSilent ? 1 : 3;
     try {
-      const response = await apiRequest('get', '/api/fixtures/upcoming', null, signal ? { signal } : {});
-      if (signal?.aborted) return;
-      if (response.data?.status === 'ok') {
-        setFixtures(response.data.data || []);
-      } else if (!isSilent) {
-        setError('Failed to fetch upcoming match predictions');
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (signal?.aborted) return;
+        const reqStart = performance.now();
+        try {
+          const response = await apiRequest('get', '/api/fixtures/upcoming', null, signal ? { signal } : {});
+          if (signal?.aborted) return;
+          if (response.data?.status === 'ok') {
+            setFixtures(response.data.data || []);
+            setError(null);
+            const elapsed = Math.round(performance.now() - reqStart);
+            setBackendHealth(prev => (prev.online ? prev : { online: true, latency: elapsed, lastChecked: new Date().toLocaleTimeString() }));
+            return;
+          }
+          if (!isSilent && attempt === maxAttempts - 1) {
+            setError('Failed to fetch upcoming match predictions');
+          }
+        } catch (err) {
+          if (err?.name === 'CanceledError' || err?.name === 'AbortError' || signal?.aborted) return;
+          const status = err?.response?.status;
+          const transient = !err?.response || status >= 502;
+          if (transient && attempt < maxAttempts - 1) {
+            await new Promise(r => setTimeout(r, 2500));
+            continue;
+          }
+          if (!isSilent) {
+            setError(err.message || 'Unable to connect to FastAPI backend server. Ensure backend is running.');
+          }
+        }
+        break;
       }
-    } catch (err) {
-      if (err?.name === 'CanceledError' || err?.name === 'AbortError' || signal?.aborted) return;
-      if (!isSilent) setError(err.message || 'Unable to connect to FastAPI backend server. Ensure backend is running.');
     } finally {
-      if (!isSilent && !signal?.aborted) setLoading(false);
+      if (!isSilent && !signal?.aborted) {
+        initialFetchActiveRef.current = false;
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -358,13 +386,14 @@ export default function App() {
 
   useEffect(() => {
     const initController = new AbortController();
-    checkHealth(3, initController.signal);
+    checkHealth(5, initController.signal);
     fetchUpcomingFixtures(false, initController.signal);
     fetchFinishedFixtures(false, initController.signal);
     fetchAccuracyStats(initController.signal);
     // Auto refresh live scores & finished matches silently every 20 seconds when tab is visible
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (initialFetchActiveRef.current) return;
       if (pollAbortRef.current) pollAbortRef.current.abort();
       const pollCtrl = new AbortController();
       pollAbortRef.current = pollCtrl;

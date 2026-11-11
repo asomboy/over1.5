@@ -508,19 +508,15 @@ class DataIngestionService:
         from external HTTP endpoint (or ingests fallback seed dataset if offline).
         """
         try:
-            db.query(Prediction).filter(Prediction.fixture_id.in_(
-                db.query(Fixture.id).filter(
-                    (Fixture.external_id.like("FIX-%")) | 
-                    (Fixture.external_id.like("HIST-%")) | 
-                    (Fixture.external_id.like("SEED-%"))
-                )
-            )).delete(synchronize_session=False)
-            db.query(Fixture).filter(
-                (Fixture.external_id.like("FIX-%")) | 
-                (Fixture.external_id.like("HIST-%")) | 
+            synth_fixtures = db.query(Fixture).filter(
+                (Fixture.external_id.like("FIX-%")) |
+                (Fixture.external_id.like("HIST-%")) |
                 (Fixture.external_id.like("SEED-%"))
-            ).delete(synchronize_session=False)
-            db.commit()
+            ).all()
+            if synth_fixtures:
+                for sf in synth_fixtures:
+                    db.delete(sf)
+                db.commit()
         except Exception as e:
             db.rollback()
             logger.warning(f"Error purging synthetic placeholders: {e}")
@@ -583,182 +579,245 @@ class DataIngestionService:
                 logger.warning(f"Error fetching ESPN feed {code} ({date_str}): {str(ex)}")
             return (code, default_name, country, None)
 
-        all_espn_payloads = []
+        def _as_dict(val: Any) -> Dict[str, Any]:
+            return val if isinstance(val, dict) else {}
+
+        def _first_dict(items: Any) -> Dict[str, Any]:
+            if isinstance(items, list) and items and isinstance(items[0], dict):
+                return items[0]
+            return {}
+
+        def _clean_team_name(raw_name: str) -> str:
+            if not raw_name:
+                return "Team"
+            clean = raw_name.strip()
+            if clean.lower() in ["colo-colo", "colo colo"]:
+                return "Colo-Colo"
+            parts = clean.split()
+            if len(parts) >= 4 and f"{parts[0]} {parts[1]}".lower() == f"{parts[2]} {parts[3]}".lower():
+                parts = parts[2:]
+            elif len(parts) >= 3 and parts[0].lower() == parts[1].lower() and parts[1].isupper():
+                parts.pop(0)
+            return " ".join(parts)
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             feed_tasks = [fetch_espn_feed(client, code, default_name, country) for code, default_name, country in espn_leagues if code != "all"]
             feed_tasks.extend([fetch_espn_feed(client, "all", "Global Matches & Cup Competitions", "Global", d_str) for d_str in target_dates])
             feed_results = await asyncio.gather(*feed_tasks)
 
-            for code, default_name, country, data in feed_results:
-                if not data:
+        # Parse all ESPN JSON responses in memory first (no DB side effects / rollbacks mid-loop)
+        unique_leagues_map: Dict[str, Dict[str, Any]] = {}
+        unique_teams_map: Dict[str, Dict[str, Any]] = {}
+        parsed_events: List[Dict[str, Any]] = []
+
+        for code, default_name, country, data in feed_results:
+            if not isinstance(data, dict):
+                continue
+            events = data.get("events") or []
+            leagues_list = data.get("leagues") or []
+            first_league = _first_dict(leagues_list)
+            api_league_name = first_league.get("name") if (code != "all" and first_league.get("name")) else None
+
+            for ev in events:
+                if not isinstance(ev, dict):
                     continue
-                events = data.get("events", [])
-                leagues_list = data.get("leagues", [])
-                api_league_name = leagues_list[0].get("name") if (code != "all" and leagues_list and leagues_list[0].get("name")) else None
-                
-                for ev in events:
-                    try:
-                        comp_info = ev.get("competitions", [{}])[0]
-                        notes = comp_info.get("notes", [{}])[0].get("headline", "") if comp_info.get("notes") else ""
-                        alt_note = comp_info.get("altGameNote")
-                        season_slug = ev.get("season", {}).get("slug", "")
-                        
-                        odds_list = comp_info.get("odds", [])
-                        odds_league_code = None
-                        if odds_list and isinstance(odds_list, list) and len(odds_list) > 0:
-                            odds_league_code = odds_list[0].get("tracking", {}).get("tags", {}).get("league")
+                try:
+                    comp_info = _first_dict(ev.get("competitions"))
+                    notes = _first_dict(comp_info.get("notes")).get("headline", "")
+                    alt_note = comp_info.get("altGameNote")
+                    season_slug = _as_dict(ev.get("season")).get("slug", "")
 
-                        event_code = odds_league_code if (odds_league_code and odds_league_code in CanonicalCompetitionService.ESPN_CODE_MAP) else code
+                    odds0 = _first_dict(comp_info.get("odds"))
+                    odds_league_code = _as_dict(_as_dict(odds0.get("tracking")).get("tags")).get("league")
+                    event_code = odds_league_code if (odds_league_code and odds_league_code in CanonicalCompetitionService.ESPN_CODE_MAP) else code
 
-                        competitors = comp_info.get("competitors", [])
-                        if len(competitors) < 2:
-                            continue
+                    competitors = comp_info.get("competitors") or []
+                    if not isinstance(competitors, list) or len(competitors) < 2:
+                        continue
 
-                        home_data = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
-                        away_data = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
+                    c0 = _as_dict(competitors[0])
+                    c1 = _as_dict(competitors[1])
+                    home_data = c0 if c0.get("homeAway") == "home" else c1
+                    away_data = c1 if c0.get("homeAway") == "home" else c0
+                    h_team_meta = _as_dict(home_data.get("team"))
+                    a_team_meta = _as_dict(away_data.get("team"))
 
-                        # === EARLY EXIT: Skip NCAA/university/school events before any DB writes ===
-                        _alt_lower = (alt_note or '').lower()
-                        _season_lower = (season_slug or '').lower()
-                        _combined_early = f"{_alt_lower} {_season_lower}"
-                        if any(kw in _combined_early for kw in ['ncaaw', 'ncaam', 'ncaa ', 'ncaa-', 'college soccer', 'high school soccer']):
-                            continue
+                    _alt_lower = str(alt_note or "").lower()
+                    _season_lower = str(season_slug or "").lower()
+                    _combined_early = f"{_alt_lower} {_season_lower}"
+                    if any(kw in _combined_early for kw in ["ncaaw", "ncaam", "ncaa ", "ncaa-", "college soccer", "high school soccer"]):
+                        continue
 
-                        # Also check team logo URLs for NCAA pattern
-                        _home_logo = home_data.get("team", {}).get("logo", "") or ""
-                        _away_logo = away_data.get("team", {}).get("logo", "") or ""
-                        if "teamlogos/ncaa/" in _home_logo or "teamlogos/ncaa/" in _away_logo:
-                            continue
+                    _home_logo = str(h_team_meta.get("logo") or "")
+                    _away_logo = str(a_team_meta.get("logo") or "")
+                    if "teamlogos/ncaa/" in _home_logo or "teamlogos/ncaa/" in _away_logo:
+                        continue
 
-                        def _clean_team_name(raw_name: str) -> str:
-                            if not raw_name:
-                                return "Team"
-                            clean = raw_name.strip()
-                            if clean.lower() in ["colo-colo", "colo colo"]:
-                                return "Colo-Colo"
-                            parts = clean.split()
-                            # Check if second half is duplicate uppercase string e.g. "UNC Greensboro UNC GREENSBORO SPARTANS"
-                            if len(parts) >= 4 and f"{parts[0]} {parts[1]}".lower() == f"{parts[2]} {parts[3]}".lower():
-                                parts = parts[2:]
-                            elif len(parts) >= 3 and parts[0].lower() == parts[1].lower() and parts[1].isupper():
-                                parts.pop(0)
-                            return " ".join(parts)
+                    h_clean_name = _clean_team_name(h_team_meta.get("displayName", "Home Team"))
+                    a_clean_name = _clean_team_name(a_team_meta.get("displayName", "Away Team"))
 
-                        h_raw_name = home_data.get("team", {}).get("displayName", "Home Team")
-                        a_raw_name = away_data.get("team", {}).get("displayName", "Away Team")
-                        h_clean_name = _clean_team_name(h_raw_name)
-                        a_clean_name = _clean_team_name(a_raw_name)
+                    canon_ident = CanonicalCompetitionService.resolve_competition(
+                        provider_code=event_code,
+                        league_name=api_league_name or default_name,
+                        season_slug=season_slug,
+                        alt_note=alt_note,
+                        notes=notes,
+                        home_team_name=h_clean_name,
+                        away_team_name=a_clean_name,
+                    )
+                    league_name = canon_ident.competition_name
+                    resolved_country = canon_ident.country_name
+                    league_ext_id = canon_ident.provider_competition_id
 
-                        # Resolve canonical competition identity and country
-                        canon_ident = CanonicalCompetitionService.resolve_competition(
-                            provider_code=event_code,
-                            league_name=api_league_name or default_name,
-                            season_slug=season_slug,
-                            alt_note=alt_note,
-                            notes=notes,
-                            home_team_name=h_clean_name,
-                            away_team_name=a_clean_name
-                        )
-                        league_name = canon_ident.competition_name
-                        resolved_country = canon_ident.country_name
-                        league_ext_id = canon_ident.provider_competition_id
+                    if CanonicalCompetitionService.is_school_or_youth_competition(
+                        league_name=league_name,
+                        provider_code=code,
+                        home_team_name=h_clean_name,
+                        away_team_name=a_clean_name,
+                        notes=f"{season_slug} {notes} {alt_note or ''}",
+                    ):
+                        continue
 
-                        # Filter out school, collegiate, youth, and non-senior soccer competitions
-                        if CanonicalCompetitionService.is_school_or_youth_competition(
-                            league_name=league_name,
-                            provider_code=code,
-                            home_team_name=h_clean_name,
-                            away_team_name=a_clean_name,
-                            notes=f"{season_slug} {notes} {alt_note or ''}"
-                        ):
-                            continue
+                    date_str_raw = ev.get("date")
+                    if not date_str_raw:
+                        continue
+                    dt_parsed = datetime.fromisoformat(str(date_str_raw).replace("Z", "+00:00"))
+                    match_date = dt_parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
-                        league_obj = cls.ingest_leagues(db, [{
-                            "external_id": league_ext_id,
-                            "name": league_name,
-                            "country": resolved_country,
-                            "season": "2025/2026"
-                        }], commit=False)[0]
+                    status_obj = _as_dict(ev.get("status"))
+                    status_type = _as_dict(status_obj.get("type"))
+                    status_name = str(status_type.get("name") or "STATUS_SCHEDULED").upper()
+                    status_state = str(status_type.get("state") or "").lower()
+                    status_detail = str(status_type.get("shortDetail") or status_type.get("detail") or "").strip()
+                    live_clock = status_obj.get("displayClock") or (status_detail if ("'" in status_detail or "HT" in status_detail) else None)
 
-                        h_team = cls.ingest_teams(db, [{
-                            "external_id": f"ESPN-TEAM-{home_data.get('id')}",
-                            "name": h_clean_name,
-                            "short_code": home_data.get("team", {}).get("abbreviation", "HOM"),
-                            "logo_url": home_data.get("team", {}).get("logo"),
-                            "league_id": league_obj.id
-                        }], commit=False)[0]
+                    venue = _as_dict(comp_info.get("venue")).get("fullName")
+                    raw_h_score = home_data.get("score") if home_data.get("score") is not None else home_data.get("displayValue")
+                    raw_a_score = away_data.get("score") if away_data.get("score") is not None else away_data.get("displayValue")
+                    parsed_h_score = extract_score_value(raw_h_score)
+                    parsed_a_score = extract_score_value(raw_a_score)
 
-                        a_team = cls.ingest_teams(db, [{
-                            "external_id": f"ESPN-TEAM-{away_data.get('id')}",
-                            "name": _clean_team_name(a_raw_name),
-                            "short_code": away_data.get("team", {}).get("abbreviation", "AWY"),
-                            "logo_url": away_data.get("team", {}).get("logo"),
-                            "league_id": league_obj.id
-                        }], commit=False)[0]
+                    if status_state == "post" or any(k in status_name for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
+                        status = "FINISHED"
+                    elif status_state == "in" or any(k in status_name for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME", "LIVE", "IN PROGRESS", "SHOOTOUT"]):
+                        status = "LIVE"
+                    elif any(k in status_name for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
+                        status = "POSTPONED"
+                        parsed_h_score = None
+                        parsed_a_score = None
+                    else:
+                        status = "SCHEDULED"
+                        parsed_h_score = None
+                        parsed_a_score = None
+                        live_clock = None
 
-                        date_str_raw = ev.get("date")
-                        if not date_str_raw:
-                            continue
-                        dt_parsed = datetime.fromisoformat(date_str_raw.replace("Z", "+00:00"))
-                        match_date = dt_parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                    ev_id = ev.get("id")
+                    if ev_id is None:
+                        continue
 
-                        status_type = ev.get("status", {}).get("type", {})
-                        status_name = str(status_type.get("name", "STATUS_SCHEDULED")).upper()
-                        status_state = str(status_type.get("state", "")).lower()
-                        status_detail = str(status_type.get("shortDetail") or status_type.get("detail") or "").strip()
-                        live_clock = ev.get("status", {}).get("displayClock") or (status_detail if ("'" in status_detail or "HT" in status_detail) else None)
+                    unique_leagues_map[league_ext_id] = {
+                        "external_id": league_ext_id,
+                        "name": league_name,
+                        "country": resolved_country,
+                        "season": "2025/2026",
+                    }
 
-                        venue = comp_info.get("venue", {}).get("fullName")
-                        raw_h_score = home_data.get("score") if home_data.get("score") is not None else home_data.get("displayValue")
-                        raw_a_score = away_data.get("score") if away_data.get("score") is not None else away_data.get("displayValue")
-                        parsed_h_score = extract_score_value(raw_h_score)
-                        parsed_a_score = extract_score_value(raw_a_score)
+                    h_raw_id = home_data.get("id") or h_team_meta.get("id")
+                    a_raw_id = away_data.get("id") or a_team_meta.get("id")
+                    h_ext_id = f"ESPN-TEAM-{h_raw_id}" if h_raw_id is not None else None
+                    a_ext_id = f"ESPN-TEAM-{a_raw_id}" if a_raw_id is not None else None
+                    h_team_key = h_ext_id or f"NAME::{h_clean_name}::{league_ext_id}"
+                    a_team_key = a_ext_id or f"NAME::{a_clean_name}::{league_ext_id}"
 
-                        if status_state == "post" or any(k in status_name for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
-                            status = "FINISHED"
-                        elif status_state == "in" or any(k in status_name for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME", "LIVE", "IN PROGRESS", "SHOOTOUT"]):
-                            status = "LIVE"
-                        elif any(k in status_name for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
-                            status = "POSTPONED"
-                            parsed_h_score = None
-                            parsed_a_score = None
-                        else:
-                            # Keep pre-match/unreported ESPN state factual without inventing scores or fake clocks
-                            status = "SCHEDULED"
-                            parsed_h_score = None
-                            parsed_a_score = None
-                            live_clock = None
+                    unique_teams_map[h_team_key] = {
+                        "external_id": h_ext_id,
+                        "name": h_clean_name,
+                        "short_code": h_team_meta.get("abbreviation", "HOM"),
+                        "logo_url": h_team_meta.get("logo"),
+                        "league_ext_id": league_ext_id,
+                    }
+                    unique_teams_map[a_team_key] = {
+                        "external_id": a_ext_id,
+                        "name": a_clean_name,
+                        "short_code": a_team_meta.get("abbreviation", "AWY"),
+                        "logo_url": a_team_meta.get("logo"),
+                        "league_ext_id": league_ext_id,
+                    }
 
-                        all_espn_payloads.append({
-                            "external_id": f"ESPN-FIX-{ev.get('id')}",
-                            "league_id": league_obj.id,
-                            "home_team_id": h_team.id,
-                            "away_team_id": a_team.id,
-                            "match_date": match_date,
-                            "status": status,
-                            "venue": venue,
-                            "home_score": parsed_h_score,
-                            "away_score": parsed_a_score,
-                            "live_clock": live_clock if status == "LIVE" else ("FT" if status == "FINISHED" else None),
-                        })
-                    except Exception as ev_ex:
-                        db.rollback()
-                        logger.warning(f"Error processing ESPN event {ev.get('id')}: {str(ev_ex)}")
+                    parsed_events.append({
+                        "external_id": f"ESPN-FIX-{ev_id}",
+                        "league_ext_id": league_ext_id,
+                        "home_team_key": h_team_key,
+                        "away_team_key": a_team_key,
+                        "match_date": match_date,
+                        "status": status,
+                        "venue": venue,
+                        "home_score": parsed_h_score,
+                        "away_score": parsed_a_score,
+                        "live_clock": live_clock if status == "LIVE" else ("FT" if status == "FINISHED" else None),
+                    })
+                except Exception as ev_ex:
+                    logger.warning(f"Error parsing ESPN event {ev.get('id')}: {str(ev_ex)}")
 
-        if all_espn_payloads:
-            ingested = cls.ingest_fixtures(db, all_espn_payloads, commit=False)
+        if parsed_events:
+            league_payloads = list(unique_leagues_map.values())
+            upserted_leagues = cls.ingest_leagues(db, league_payloads, commit=True)
+            league_id_map: Dict[str, int] = {}
+            for lg in upserted_leagues:
+                if lg.external_id:
+                    league_id_map[lg.external_id] = lg.id
+
+            team_keys_ordered: List[str] = []
+            team_payloads: List[Dict[str, Any]] = []
+            for t_key, t_info in unique_teams_map.items():
+                resolved_lg_id = league_id_map.get(t_info["league_ext_id"])
+                if not resolved_lg_id:
+                    continue
+                team_keys_ordered.append(t_key)
+                team_payloads.append({
+                    "external_id": t_info["external_id"],
+                    "name": t_info["name"],
+                    "short_code": t_info["short_code"],
+                    "logo_url": t_info["logo_url"],
+                    "league_id": resolved_lg_id,
+                })
+            upserted_teams = cls.ingest_teams(db, team_payloads, commit=True)
+            team_id_map: Dict[str, int] = {}
+            for t_key, tm in zip(team_keys_ordered, upserted_teams):
+                team_id_map[t_key] = tm.id
+
+            all_espn_payloads = []
+            for p_ev in parsed_events:
+                lg_id = league_id_map.get(p_ev["league_ext_id"])
+                h_id = team_id_map.get(p_ev["home_team_key"])
+                a_id = team_id_map.get(p_ev["away_team_key"])
+                if not lg_id or not h_id or not a_id:
+                    continue
+                all_espn_payloads.append({
+                    "external_id": p_ev["external_id"],
+                    "league_id": lg_id,
+                    "home_team_id": h_id,
+                    "away_team_id": a_id,
+                    "match_date": p_ev["match_date"],
+                    "status": p_ev["status"],
+                    "venue": p_ev["venue"],
+                    "home_score": p_ev["home_score"],
+                    "away_score": p_ev["away_score"],
+                    "live_clock": p_ev["live_clock"],
+                })
+
+            ingested = cls.ingest_fixtures(db, all_espn_payloads, commit=True)
             espn_fixtures_count = len(ingested)
         else:
             espn_fixtures_count = 0
 
         if espn_fixtures_count > 0:
-            db.commit()
             return {
                 "status": "ok",
                 "source": "espn_realtime_api",
                 "leagues_ingested": db.query(League).count(),
                 "teams_ingested": db.query(Team).count(),
-                "fixtures_ingested": espn_fixtures_count
+                "fixtures_ingested": espn_fixtures_count,
             }
 
         # Backup: Football API (with 10-day date window)

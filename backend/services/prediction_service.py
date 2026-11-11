@@ -3,7 +3,7 @@ import sys
 import json
 import math
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple, cast
 from sqlalchemy.orm import Session
 
@@ -1159,20 +1159,21 @@ class DixonColesPredictionEngine:
         return prediction
 
     @classmethod
-    def predict_all_upcoming_fixtures(cls, db: Session) -> List[Prediction]:
-        """Calculates and stores Match Intelligence predictions for all non-finished fixtures in SQLite."""
-        fixtures = db.query(Fixture).filter(Fixture.status != "FINISHED").all()
+    def predict_all_upcoming_fixtures(cls, db: Session, upcoming_only: bool = False) -> List[Prediction]:
+        """Calculates and stores Match Intelligence predictions for non-finished fixtures in SQLite."""
+        query = db.query(Fixture).filter(Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]))
+        if upcoming_only:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).replace(tzinfo=None)
+            query = query.filter(Fixture.match_date >= cutoff)
+        fixtures = query.all()
         predictions = []
-        for f in fixtures:
+        for idx, f in enumerate(fixtures, 1):
             pred = cls.predict_fixture(db, cast(int, f.id), commit=False)
             if pred:
                 predictions.append(pred)
+            if idx % 50 == 0:
+                db.commit()
         db.commit()
-        for p in predictions:
-            try:
-                db.refresh(p)
-            except Exception:
-                pass
         return predictions
 
 

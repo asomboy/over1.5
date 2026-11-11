@@ -92,6 +92,12 @@ class Fixture(Base):
     enrichment_status = relationship("HistoricalEnrichmentStatus", back_populates="fixture", uselist=False, cascade="all, delete-orphan")
     provider_mappings = relationship("FixtureProviderMapping", back_populates="fixture", cascade="all, delete-orphan")
     observed_snapshots = relationship("LiveObservedSnapshot", back_populates="fixture", cascade="all, delete-orphan")
+    data_provenance = relationship("DataProvenance", cascade="all, delete-orphan")
+    data_conflicts = relationship("DataConflict", cascade="all, delete-orphan")
+    unified_intelligence_snapshots = relationship("UnifiedMatchIntelligenceSnapshot", cascade="all, delete-orphan")
+    shot_snapshots = relationship("ShotPredictionSnapshot", cascade="all, delete-orphan")
+    match_statistics_snapshots = relationship("MatchStatisticsPredictionSnapshot", cascade="all, delete-orphan")
+    decision_snapshots = relationship("PredictionDecisionSnapshot", cascade="all, delete-orphan")
 
 
 class HistoricalResult(Base):

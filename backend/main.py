@@ -5,12 +5,14 @@ import math
 import hmac
 import logging
 import asyncio
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Request, Query, Body
+from fastapi import FastAPI, Depends, HTTPException, Request, Query, Body, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field, field_validator
 import re
 from fastapi.middleware.cors import CORSMiddleware
@@ -171,27 +173,32 @@ def require_admin_auth(request: Request):
 # Track the last successful sync time to prevent redundant API calls
 # while ensuring daily updates are loaded automatically on request.
 LAST_SYNC_TIME: Optional[datetime] = None
+_DATA_REFRESH_LOCK = threading.Lock()
 
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
 
-async def scheduled_data_refresh():
-    """
-    Automated background worker job that executes periodically:
-    1. Fetches/ingests latest competitions, teams, match results, and upcoming fixtures.
-    2. Recalculates team and league statistics.
-    3. Recalculates Poisson goal predictions for all upcoming fixtures.
-    """
-    logger.info("Executing scheduled data refresh and prediction recalculation cycle...")
-    ing_db = SessionLocal()
+def _run_data_refresh_sync() -> bool:
+    """Runs full ingestion + post-ingest recalculation in a dedicated worker thread with overlap lock."""
+    if not _DATA_REFRESH_LOCK.acquire(blocking=False):
+        logger.info("Data refresh already in progress; skipping overlapping trigger.")
+        return False
+    global LAST_SYNC_TIME
     try:
-        await DataIngestionService.fetch_and_ingest_from_api(ing_db, api_key=FOOTBALL_API_KEY)
-    except Exception as e:
-        logger.error(f"Error during scheduled API ingestion: {str(e)}")
-    finally:
-        ing_db.close()
+        logger.info("Executing scheduled data refresh and prediction recalculation cycle...")
+        ing_db = SessionLocal()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(ing_db, api_key=FOOTBALL_API_KEY))
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Error during scheduled API ingestion: {str(e)}")
+        finally:
+            ing_db.close()
 
-    def run_post_ingest():
         calc_db = SessionLocal()
         try:
             calculate_all_league_statistics(calc_db)
@@ -199,16 +206,22 @@ async def scheduled_data_refresh():
             DataIngestionService.purge_school_and_youth_competitions(calc_db)
             DataIngestionService.repair_and_canonicalize_fixture_leagues(calc_db)
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
-            PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
+            PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db, upcoming_only=True)
             logger.info("Scheduled data refresh completed successfully.")
         except Exception as e:
             logger.error(f"Error during scheduled post-ingest stats/predictions: {str(e)}")
         finally:
             calc_db.close()
 
-    await asyncio.to_thread(run_post_ingest)
-    global LAST_SYNC_TIME
-    LAST_SYNC_TIME = datetime.now(timezone.utc)
+        LAST_SYNC_TIME = datetime.now(timezone.utc)
+        return True
+    finally:
+        _DATA_REFRESH_LOCK.release()
+
+
+async def scheduled_data_refresh():
+    """Non-blocking wrapper dispatching data refresh to worker thread so asyncio loop stays responsive."""
+    await asyncio.to_thread(_run_data_refresh_sync)
 
 
 async def scheduled_live_score_refresh():
@@ -588,17 +601,23 @@ async def lifespan(app: FastAPI):
             boot_db = SessionLocal()
             try:
                 count = boot_db.query(models.Fixture).count()
+                now_cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None)
+                upcoming_count = boot_db.query(models.Fixture).filter(
+                    models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"]),
+                    models.Fixture.match_date >= now_cutoff,
+                ).count()
             except Exception:
                 count = 0
+                upcoming_count = 0
             finally:
                 boot_db.close()
 
-            if count == 0:
-                await asyncio.sleep(3)
-                logger.info("Database is empty on startup. Triggering initial background data refresh...")
+            if count == 0 or upcoming_count == 0:
+                await asyncio.sleep(2)
+                logger.info("No current upcoming fixtures found on startup. Triggering immediate background data refresh...")
                 await scheduled_data_refresh()
             else:
-                await asyncio.sleep(20)
+                await asyncio.sleep(15)
                 await scheduled_data_refresh()
         
         asyncio.create_task(delayed_startup_refresh())
@@ -645,6 +664,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Admin-Key", "Accept"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -768,23 +788,7 @@ async def sync_data(request: Request, db: Session = Depends(get_db)):
     Triggers non-blocking automated ingestion sync for competitions, teams,
     historical results, and upcoming fixtures in a background thread.
     """
-    import asyncio
-    def run_bg_sync():
-        bg_db = SessionLocal()
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY))
-                PoissonPredictionEngine.predict_all_upcoming_fixtures(bg_db)
-            finally:
-                loop.close()
-        except Exception as err:
-            logger.error(f"Error in manual sync background thread: {err}")
-        finally:
-            bg_db.close()
-            
-    asyncio.create_task(asyncio.to_thread(run_bg_sync))
+    asyncio.create_task(asyncio.to_thread(_run_data_refresh_sync))
     return {"status": "ok", "message": "Real-time data ingestion sync initiated in background!"}
 
 
@@ -2296,7 +2300,7 @@ async def trigger_manual_broadcast(request: Request, window: Optional[str] = "au
 
 @app.get("/api/fixtures/upcoming")
 @limiter.limit("60/minute")
-async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = Depends(validate_fixture_query), db: Session = Depends(get_db)):
+def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, params: FixtureQueryParams = Depends(validate_fixture_query), db: Session = Depends(get_db)):
     """
     Retrieve all upcoming/scheduled global fixtures starting from present date
     with full team, league, and Poisson goal prediction details.
@@ -2349,28 +2353,7 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
 
     if not fixtures and not has_explicit_filters:
         logger.info("No upcoming fixtures found in DB. Triggering non-blocking background ingestion fallback...")
-        async def run_bg_sync():
-            bg_db = SessionLocal()
-            try:
-                await DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY)
-            except Exception as ing_err:
-                logger.error(f"Error during background ingestion fallback: {ing_err}")
-                return
-            finally:
-                bg_db.close()
-
-            def _run_preds():
-                pred_db = SessionLocal()
-                try:
-                    PoissonPredictionEngine.predict_all_upcoming_fixtures(pred_db)
-                finally:
-                    pred_db.close()
-
-            try:
-                await asyncio.to_thread(_run_preds)
-            except Exception as pred_err:
-                logger.error(f"Error during background prediction generation: {pred_err}")
-        asyncio.create_task(run_bg_sync())
+        background_tasks.add_task(_run_data_refresh_sync)
 
     try:
         all_preds = _load_preds_for_fixtures(db, [f.id for f in fixtures])
