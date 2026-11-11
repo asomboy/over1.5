@@ -32,6 +32,7 @@ import MatchDetailModal from './components/MatchDetailModal';
 import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal';
 import ModelIntelligenceDashboard from './components/ModelIntelligenceDashboard';
 import FixtureMarketsPanel from './components/FixtureMarketsPanel';
+import LiveGoalRadarTab from './components/LiveGoalRadarTab';
 import { TABLE_MARKET_TABS, pctVal } from './utils/marketTabs';
 
 const getApiBaseUrl = () => {
@@ -146,6 +147,18 @@ export default function App() {
 
   // Main Tab Selection ('upcoming' | 'finished')
   const [activeTab, setActiveTab] = useState('upcoming');
+  const [liveFixtures, setLiveFixtures] = useState([]);
+  const [loadingLive, setLoadingLive] = useState(false);
+
+  const liveByFixtureId = useMemo(() => {
+    const map = {};
+    for (const item of liveFixtures) {
+      if (item && item.fixture_id) {
+        map[item.fixture_id] = item;
+      }
+    }
+    return map;
+  }, [liveFixtures]);
   const [finishedFixtures, setFinishedFixtures] = useState([]);
   const [loadingFinished, setLoadingFinished] = useState(false);
   // Notification Banner State
@@ -484,6 +497,25 @@ export default function App() {
   }, []);
 
   // Fetch upcoming fixtures from FastAPI with cold-start retry & multi-URL fallback
+  const fetchLiveFixtures = useCallback(async (isSilent = false, signal = undefined) => {
+    if (!isSilent) setLoadingLive(true);
+    try {
+      const res = await apiRequest('get', '/api/live/fixtures', null, { timeout: 20000, signal });
+      if (signal?.aborted) return;
+      const list = Array.isArray(res.data?.fixtures) ? res.data.fixtures : [];
+      setLiveFixtures(list);
+    } catch (err) {
+      if (err.name === 'CanceledError' || err.name === 'AbortError' || err.code === 'ERR_CANCELED') {
+        return;
+      }
+      console.warn('Error fetching live fixtures:', err);
+    } finally {
+      if (!signal?.aborted && !isSilent) {
+        setLoadingLive(false);
+      }
+    }
+  }, []);
+
   const fetchUpcomingFixtures = useCallback(async (isSilent = false, signal = undefined) => {
     if (!isSilent) {
       initialFetchActiveRef.current = true;
@@ -556,6 +588,7 @@ export default function App() {
       await apiRequest('post', '/api/predictions/predict-all');
       await fetchUpcomingFixtures(true);
       await fetchFinishedFixtures(true);
+      await fetchLiveFixtures(true);
       setNotification({ type: 'success', message: 'Live global fixtures & predictions refreshed successfully!' });
     } catch (err) {
       console.error('Sync failed:', err);
@@ -571,6 +604,7 @@ export default function App() {
     checkHealth(5, initController.signal);
     fetchUpcomingFixtures(false, initController.signal);
     fetchFinishedFixtures(false, initController.signal);
+    fetchLiveFixtures(false, initController.signal);
     fetchAccuracyStats(initController.signal);
     // Auto refresh live scores & finished matches silently every 20 seconds when tab is visible
     const interval = setInterval(() => {
@@ -582,13 +616,14 @@ export default function App() {
       checkHealth(1, pollCtrl.signal);
       fetchUpcomingFixtures(true, pollCtrl.signal);
       fetchFinishedFixtures(true, pollCtrl.signal);
+      fetchLiveFixtures(true, pollCtrl.signal);
     }, 20000);
     return () => {
       clearInterval(interval);
       initController.abort();
       if (pollAbortRef.current) pollAbortRef.current.abort();
     };
-  }, [checkHealth, fetchUpcomingFixtures, fetchFinishedFixtures, fetchAccuracyStats]);
+  }, [checkHealth, fetchUpcomingFixtures, fetchFinishedFixtures, fetchLiveFixtures, fetchAccuracyStats]);
 
   // Helper to test if match is currently live
   const isMatchLive = (fix) => {
@@ -752,14 +787,20 @@ export default function App() {
   };
 
   // Helper for rendering Live Score / Match Status Badge
+  const getMergedLiveInfo = (fix) => {
+    if (!fix) return null;
+    return liveByFixtureId[fix.id] || fix.live || null;
+  };
+
   const renderLiveStatusBadge = (fix) => {
-    const isLive = isMatchLive(fix);
+    const liveInfo = getMergedLiveInfo(fix);
+    const isLive = isMatchLive(fix) || Boolean(liveInfo?.is_live || liveByFixtureId[fix?.id]);
     const mTime = parseMatchDate(fix?.match_date)?.getTime();
     const now = Date.now();
     const isFinished = fix?.status === 'FINISHED' || fix?.status === 'FT' || (mTime && mTime < (now - 3.5 * 3600000) && fix?.status !== 'POSTPONED' && fix?.status !== 'CANCELLED' && fix?.status !== 'ABANDONED');
 
     if (isLive) {
-      let clockStr = fix?.live_clock;
+      let clockStr = liveInfo?.live_clock || fix?.live_clock || (liveInfo?.minute ? `${liveInfo.minute}'` : '');
       if (!clockStr || clockStr === "0'") {
         if (mTime) {
           const elapsedMins = Math.max(1, Math.floor((now - mTime) / 60000));
@@ -769,10 +810,12 @@ export default function App() {
           else clockStr = "90+'";
         }
       }
+      const effH = liveInfo?.home_score ?? fix?.home_score ?? 0;
+      const effA = liveInfo?.away_score ?? fix?.away_score ?? 0;
       return (
         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-rose-600 text-white shadow-lg ring-2 ring-rose-400 animate-pulse">
           <Radio className="w-3 h-3 text-white animate-spin" />
-          <span>🔴 LIVE {clockStr ? `${clockStr} ` : ''}&bull; {fix?.home_score ?? 0} - {fix?.away_score ?? 0}</span>
+          <span>🔴 LIVE {clockStr ? `${clockStr} ` : ''}&bull; {effH} - {effA}</span>
         </span>
       );
     }
@@ -787,6 +830,36 @@ export default function App() {
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-slate-800/50 text-slate-400 border border-slate-700/50">
         <Clock className="w-3 h-3 text-slate-400" />
         <span>Scheduled</span>
+      </span>
+    );
+  };
+
+  const renderLiveGoalInlineBadge = (fix) => {
+    const liveInfo = getMergedLiveInfo(fix);
+    const lg = liveInfo?.live_goals;
+    if (!lg) return null;
+
+    const pPlus1 = lg.at_least_1_more_goal?.probability;
+    const o15Status = lg.full_match_over_1_5?.status;
+    if (o15Status === 'already_resolved') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 mt-1">
+          Live O1.5 Hit{pPlus1 != null ? ` · +1G ${Math.round(pPlus1 * 100)}%` : ''}
+        </span>
+      );
+    }
+    if (pPlus1 == null) return null;
+    const pct = Math.round(pPlus1 * 100);
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold border mt-1 ${
+          pct >= 72
+            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+            : 'bg-rose-500/15 text-rose-300 border-rose-500/35'
+        }`}
+      >
+        <Activity className="w-2.5 h-2.5" />
+        Live +1G: {pct}%
       </span>
     );
   };
@@ -1202,6 +1275,29 @@ export default function App() {
             <span>Upcoming & Live Fixtures</span>
             <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-slate-950/60 text-emerald-400 border border-emerald-500/30">
               {dayUpcomingFixturesCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('live');
+              fetchLiveFixtures(false);
+            }}
+            className={`px-4 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all shrink-0 ${
+              activeTab === 'live'
+                ? 'bg-gradient-to-r from-rose-600 to-pink-600 text-white shadow-lg shadow-rose-600/25'
+                : darkMode ? 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+            }`}
+          >
+            <Radio className={`w-4 h-4 ${liveFixtures.length > 0 ? 'animate-pulse text-rose-300' : 'text-rose-400'}`} />
+            <span>Live Goal Radar</span>
+            <span className={`ml-1 px-2 py-0.5 rounded-full text-[10px] ${
+              activeTab === 'live'
+                ? 'bg-slate-950/40 text-white border border-white/20'
+                : 'bg-slate-950/60 text-rose-400 border border-rose-500/30'
+            }`}>
+              {liveFixtures.length}
             </span>
           </button>
 
@@ -1838,6 +1934,15 @@ export default function App() {
               )}
             </section>
           </section>
+        ) : activeTab === 'live' ? (
+          <LiveGoalRadarTab
+            liveFixtures={liveFixtures}
+            loadingLive={loadingLive}
+            darkMode={darkMode}
+            onOpenLiveModal={(id) => openLiveModal(id)}
+            onOpenDetailModal={(id) => openFixtureDetail(id, 'h2h')}
+            onRefreshLive={() => fetchLiveFixtures(false)}
+          />
         ) : (
           <>
         
@@ -2782,6 +2887,7 @@ export default function App() {
                                 <Flame className="w-3 h-3 fill-current" />
                                 <span>Over 1.5: {over15Pct}%</span>
                               </span>
+                              {renderLiveGoalInlineBadge(rowFix)}
                               {fix.value_bet?.is_value_bet && fix.value_bet?.value_edge_pct != null ? (
                                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet.value_edge_pct}%`}>
                                   💎 Value ({fix.value_bet.model_odds})
@@ -2902,9 +3008,23 @@ export default function App() {
                           )}
                         </td>
 
-                        {/* Markets Toggle & Detail Button */}
+                        {/* Markets Toggle, Live Intel & Detail Button */}
                         <td className="py-3 px-4 text-right">
                           <div className="inline-flex items-center justify-end gap-1.5">
+                            {(isLive || Boolean(liveByFixtureId[fix.id])) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openLiveModal(fix.id);
+                                }}
+                                title="Open Live Match Goal Predictions"
+                                className="px-2 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white border border-rose-400/60 transition-all inline-flex items-center gap-1 font-extrabold text-[11px] shadow-sm"
+                              >
+                                <Radio className="w-3 h-3 animate-pulse" />
+                                <span>Live</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -3176,12 +3296,28 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Footer */}
+                  {/* Live Goal Preview & Footer */}
+                  {renderLiveGoalInlineBadge(rowFix)}
                   <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
                     <span>xG: {formatFixed(pred.expected_goals_xg, 2)}</span>
-                    <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                      Full Details <ChevronRight className="w-3.5 h-3.5" />
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {(isLive || Boolean(liveByFixtureId[fix.id])) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLiveModal(fix.id);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-black"
+                        >
+                          <Radio className="w-3 h-3 animate-pulse" />
+                          <span>Live</span>
+                        </button>
+                      )}
+                      <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                        Full Details <ChevronRight className="w-3.5 h-3.5" />
+                      </span>
+                    </div>
                   </div>
                 </div>
               );

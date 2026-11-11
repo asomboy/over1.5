@@ -7,7 +7,7 @@ import logging
 import asyncio
 import threading
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request, Query, Body, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
@@ -45,7 +45,7 @@ try:
     from services.ingestion_service import DataIngestionService
     from services.prediction_service import PoissonPredictionEngine
     from services.accumulator_service import AccumulatorGeneratorService
-    from services.telegram_service import TelegramNotificationService
+    from services.telegram_service import TelegramNotificationService, get_telegram_token, get_telegram_chat_id
     from services.weather_service import WeatherService
     from services.whatsapp_service import WhatsAppNotificationService
     from services.canonical_competition_service import CanonicalCompetitionService
@@ -67,7 +67,7 @@ except ImportError:
     from .services.ingestion_service import DataIngestionService
     from .services.prediction_service import PoissonPredictionEngine
     from .services.accumulator_service import AccumulatorGeneratorService
-    from .services.telegram_service import TelegramNotificationService
+    from .services.telegram_service import TelegramNotificationService, get_telegram_token, get_telegram_chat_id
     from .services.weather_service import WeatherService
     from .services.whatsapp_service import WhatsAppNotificationService
     from .services.canonical_competition_service import CanonicalCompetitionService
@@ -115,6 +115,209 @@ def _load_corners_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int,
 def _load_cards_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.CardPredictionSnapshot]:
     """Loads latest CardPredictionSnapshot rows strictly for the requested fixture IDs."""
     return _load_latest_by_fixture(db, models.CardPredictionSnapshot, fixture_ids)
+
+
+LIVE_ACTIVE_STATUSES = ("LIVE", "HT", "1H", "2H", "ET")
+_LIVE_ALERT_LOCK = threading.Lock()
+_LIVE_ALERT_SENT_CACHE: Dict[Tuple[int, str], datetime] = {}
+_LIVE_ALERT_TTL_MINUTES = 180
+
+
+def _load_live_states_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.LiveMatchState]:
+    """Loads latest LiveMatchState rows strictly for the requested fixture IDs in safe chunks."""
+    result: Dict[int, models.LiveMatchState] = {}
+    if not fixture_ids:
+        return result
+    for i in range(0, len(fixture_ids), 500):
+        chunk = fixture_ids[i:i + 500]
+        rows = (
+            db.query(models.LiveMatchState)
+            .filter(models.LiveMatchState.fixture_id.in_(chunk))
+            .order_by(models.LiveMatchState.id.desc())
+            .all()
+        )
+        for row in rows:
+            if row.fixture_id not in result:
+                result[row.fixture_id] = row
+    return result
+
+
+def _load_live_snapshots_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.LivePredictionSnapshot]:
+    """Loads latest LivePredictionSnapshot rows strictly for the requested fixture IDs in safe chunks."""
+    result: Dict[int, models.LivePredictionSnapshot] = {}
+    if not fixture_ids:
+        return result
+    for i in range(0, len(fixture_ids), 500):
+        chunk = fixture_ids[i:i + 500]
+        rows = (
+            db.query(models.LivePredictionSnapshot)
+            .filter(models.LivePredictionSnapshot.fixture_id.in_(chunk))
+            .order_by(
+                models.LivePredictionSnapshot.prediction_timestamp.desc(),
+                models.LivePredictionSnapshot.id.desc(),
+            )
+            .all()
+        )
+        for row in rows:
+            if row.fixture_id not in result:
+                result[row.fixture_id] = row
+    return result
+
+
+def _extract_live_goals_summary(live_goals: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Extracts structured live goal prediction markets for API/UI consumption."""
+    if not isinstance(live_goals, dict) or not live_goals:
+        return None
+
+    def _mkt(key: str) -> Optional[Dict[str, Any]]:
+        node = live_goals.get(key)
+        if not isinstance(node, dict) or node.get("probability") is None:
+            return None
+        return {
+            "probability": round(float(node["probability"]), 4),
+            "status": str(node.get("status") or "active"),
+        }
+
+    return {
+        "pre_match_xg": live_goals.get("pre_match_xg") or {},
+        "remaining_xg": live_goals.get("remaining_xg") or {},
+        "current_score": live_goals.get("current_score") or {},
+        "at_least_1_more_goal": _mkt("at_least_1_more_goal"),
+        "at_least_2_more_goals": _mkt("at_least_2_more_goals"),
+        "full_match_over_1_5": _mkt("full_match_over_1_5"),
+        "full_match_over_2_5": _mkt("full_match_over_2_5"),
+        "full_match_over_3_5": _mkt("full_match_over_3_5"),
+        "btts_yes": _mkt("btts_yes"),
+        "next_goal": live_goals.get("next_goal") or {},
+    }
+
+
+def _should_send_live_goal_alert(
+    fixture_id: int, market: str, now_utc: Optional[datetime] = None
+) -> bool:
+    """Checks deduplication cache so identical live goal alerts are not spammed."""
+    now = now_utc or datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(minutes=_LIVE_ALERT_TTL_MINUTES)
+    key = (int(fixture_id), str(market))
+    with _LIVE_ALERT_LOCK:
+        stale_keys = [k for k, ts in _LIVE_ALERT_SENT_CACHE.items() if ts < cutoff]
+        for k in stale_keys:
+            _LIVE_ALERT_SENT_CACHE.pop(k, None)
+        return key not in _LIVE_ALERT_SENT_CACHE
+
+
+def _mark_live_goal_alert_sent(
+    fixture_id: int, market: str, now_utc: Optional[datetime] = None
+) -> None:
+    """Records a sent live goal alert timestamp in the in-memory deduplication cache."""
+    now = now_utc or datetime.now(timezone.utc).replace(tzinfo=None)
+    with _LIVE_ALERT_LOCK:
+        _LIVE_ALERT_SENT_CACHE[(int(fixture_id), str(market))] = now
+
+
+def _evaluate_live_goal_alert_candidate(
+    fix: models.Fixture, intel: Dict[str, Any]
+) -> Optional[Tuple[int, str, Dict[str, Any]]]:
+    """
+    Validates strict production gates before queueing an automated live goal Telegram push alert.
+    Returns (fixture_id, market, kwargs_for_broadcast) or None.
+    """
+    if not intel or not fix:
+        return None
+    if intel.get("identity_status") != "IDENTITY_VALID":
+        return None
+    if intel.get("freshness_status") != "FRESH":
+        return None
+
+    conf_obj = intel.get("confidence") or {}
+    overall_conf = int(conf_obj.get("overall_confidence") or 0)
+    if overall_conf < 70:
+        return None
+
+    best_sig = intel.get("best_live_signal") or {}
+    all_signals = intel.get("live_signals") or []
+    def _sig_strength(node: Any) -> str:
+        if not isinstance(node, dict):
+            return ""
+        return str(node.get("signal_strength") or node.get("label") or "").upper()
+
+    goal_sigs = [
+        s for s in all_signals
+        if isinstance(s, dict)
+        and str(s.get("category") or "").lower() == "goals"
+        and _sig_strength(s) == "STRONG"
+    ]
+
+    chosen_sig: Optional[Dict[str, Any]] = None
+    if (
+        isinstance(best_sig, dict)
+        and str(best_sig.get("category") or "").lower() == "goals"
+        and _sig_strength(best_sig) == "STRONG"
+    ):
+        chosen_sig = best_sig
+    elif goal_sigs:
+        goal_sigs.sort(key=lambda s: float(s.get("probability") or 0.0), reverse=True)
+        chosen_sig = goal_sigs[0]
+
+    if not chosen_sig:
+        return None
+
+    market = str(chosen_sig.get("market") or "").strip()
+    if not market or market.upper() == "NO_SIGNAL":
+        return None
+
+    prob = float(chosen_sig.get("probability") or 0.0)
+    time_rem = float(chosen_sig.get("time_remaining_minutes") or 0.0)
+    sig_conf = int(chosen_sig.get("confidence_score") or chosen_sig.get("signal_score") or overall_conf)
+    if prob < 0.74 or time_rem < 10.0 or max(overall_conf, sig_conf) < 70:
+        return None
+
+    if not _should_send_live_goal_alert(fix.id, market):
+        return None
+
+    st = intel.get("match_state") or {}
+    lg = intel.get("live_goals") or {}
+    rem_xg = float((lg.get("remaining_xg") or {}).get("total") or 0.0)
+    pre_xg = float((lg.get("pre_match_xg") or {}).get("total") or 0.0)
+
+    p_1_more_node = lg.get("at_least_1_more_goal")
+    p_o25_node = lg.get("full_match_over_2_5")
+    p_1_more = float(p_1_more_node.get("probability")) if isinstance(p_1_more_node, dict) and p_1_more_node.get("probability") is not None else None
+    p_o25 = float(p_o25_node.get("probability")) if isinstance(p_o25_node, dict) and p_o25_node.get("probability") is not None else None
+
+    payload = {
+        "home": fix.home_team.name if fix.home_team else "Home",
+        "away": fix.away_team.name if fix.away_team else "Away",
+        "league": fix.league.name if fix.league else "Live Match",
+        "minute": int(st.get("minute") or 0),
+        "period": str(st.get("period") or "LIVE"),
+        "home_score": int(st.get("home_score") if st.get("home_score") is not None else (fix.home_score or 0)),
+        "away_score": int(st.get("away_score") if st.get("away_score") is not None else (fix.away_score or 0)),
+        "signal_market": market,
+        "signal_strength": _sig_strength(chosen_sig) or "STRONG",
+        "probability": prob,
+        "confidence": max(overall_conf, sig_conf),
+        "remaining_xg": rem_xg,
+        "pre_match_xg": pre_xg,
+        "at_least_1_more_prob": p_1_more,
+        "over_2_5_prob": p_o25,
+    }
+    return (fix.id, market, payload)
+
+
+def _live_priority_sort_key(item: Dict[str, Any]) -> Tuple[int, float, int]:
+    """Ranks strong live goal signals and higher +1 goal probability first."""
+    best = item.get("best_signal") or {}
+    strength = str(best.get("signal_strength") or best.get("label") or "").upper()
+    rank_map = {"STRONG": 3, "MODERATE": 2, "WATCH": 1}
+    strength_rank = rank_map.get(strength, 0)
+    if str(best.get("category") or "").lower() == "goals" and strength_rank > 0:
+        strength_rank += 1
+    lg = item.get("live_goals") or {}
+    p1 = lg.get("at_least_1_more_goal")
+    p1_val = float(p1.get("probability") or 0.0) if isinstance(p1, dict) else 0.0
+    minute_val = int(item.get("minute") or 0)
+    return (strength_rank, p1_val, minute_val)
 
 
 def _serialize_corner_snapshot(c: Optional[models.CornerPredictionSnapshot]) -> Optional[Dict[str, Any]]:
@@ -342,48 +545,99 @@ async def scheduled_data_refresh():
 
 async def scheduled_live_score_refresh():
     """
-    Lightweight 60-second background job updating ONLY active/imminent fixtures via
-    LiveProviderAdapterService (decoupled from the full 34-league schedule sync).
+    Lightweight background job discovering live matches across ESPN, updating in-play scores/clocks,
+    computing & persisting live Poisson goal predictions, and queueing high-confidence Telegram alerts.
     """
-    def run_live_refresh():
+    def run_live_refresh() -> List[Tuple[int, str, Dict[str, Any]]]:
         import httpx
-        from services.live_provider_service import LiveProviderAdapterService
+        try:
+            from services.live_provider_service import LiveProviderAdapterService
+            from services.live_service import LiveMatchIntelligenceService
+        except ImportError:
+            from .services.live_provider_service import LiveProviderAdapterService
+            from .services.live_service import LiveMatchIntelligenceService
+
         calc_db = SessionLocal()
+        pending_alerts: List[Tuple[int, str, Dict[str, Any]]] = []
+        tg_enabled = bool(get_telegram_token() and get_telegram_chat_id())
         try:
             now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             win_start = now_naive - timedelta(hours=3)
-            win_end = now_naive + timedelta(minutes=15)
-            active_fixtures = (
-                calc_db.query(models.Fixture)
-                .filter(
-                    models.Fixture.external_id.isnot(None),
-                    (
-                        (models.Fixture.status == "LIVE")
-                        | (
-                            models.Fixture.status.in_(["SCHEDULED", "PRE_EVENT", "PRE"])
-                            & (models.Fixture.match_date >= win_start)
-                            & (models.Fixture.match_date <= win_end)
-                        )
-                    ),
+            win_end = now_naive + timedelta(minutes=20)
+
+            with httpx.Client(timeout=8.0) as client:
+                try:
+                    LiveProviderAdapterService.sync_scoreboard_live_fixtures(calc_db, client=client)
+                except Exception as scan_ex:
+                    logger.debug(f"Scoreboard live scan skipped: {scan_ex}")
+
+                live_rows = (
+                    calc_db.query(models.Fixture)
+                    .options(
+                        joinedload(models.Fixture.home_team),
+                        joinedload(models.Fixture.away_team),
+                        joinedload(models.Fixture.league),
+                    )
+                    .filter(
+                        models.Fixture.external_id.isnot(None),
+                        models.Fixture.status.in_(list(LIVE_ACTIVE_STATUSES)),
+                    )
+                    .order_by(models.Fixture.match_date.asc())
+                    .limit(45)
+                    .all()
                 )
-                .order_by(models.Fixture.match_date.asc())
-                .limit(40)
-                .all()
-            )
-            if active_fixtures:
-                with httpx.Client(timeout=6.0) as client:
-                    for fix in active_fixtures:
-                        try:
-                            LiveProviderAdapterService.fetch_live_summary(calc_db, fix.id, client=client)
-                        except Exception as item_ex:
-                            logger.debug(f"Live score poll skipped for fixture {fix.id}: {item_ex}")
+                seen_ids = {f.id for f in live_rows}
+                remaining_slots = max(10, 60 - len(live_rows))
+
+                imminent_rows = (
+                    calc_db.query(models.Fixture)
+                    .options(
+                        joinedload(models.Fixture.home_team),
+                        joinedload(models.Fixture.away_team),
+                        joinedload(models.Fixture.league),
+                    )
+                    .filter(
+                        models.Fixture.external_id.isnot(None),
+                        models.Fixture.status.in_(["SCHEDULED", "PRE_EVENT", "PRE"]),
+                        models.Fixture.match_date >= win_start,
+                        models.Fixture.match_date <= win_end,
+                    )
+                    .order_by(models.Fixture.match_date.asc())
+                    .limit(remaining_slots)
+                    .all()
+                )
+                active_fixtures = list(live_rows) + [f for f in imminent_rows if f.id not in seen_ids]
+
+                for fix in active_fixtures:
+                    try:
+                        live_res = LiveProviderAdapterService.fetch_live_summary(calc_db, fix.id, client=client)
+                        if str(fix.status or "").upper() in LIVE_ACTIVE_STATUSES:
+                            intel = LiveMatchIntelligenceService.get_live_intelligence(
+                                calc_db, fix.id, pre_fetched_live=live_res
+                            )
+                            if intel and tg_enabled:
+                                cand = _evaluate_live_goal_alert_candidate(fix, intel)
+                                if cand:
+                                    pending_alerts.append(cand)
+                    except Exception as item_ex:
+                        logger.debug(f"Live score/intel poll skipped for fixture {fix.id}: {item_ex}")
+
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
         except Exception as e:
             logger.error(f"Error in scheduled live score refresh: {e}")
         finally:
             calc_db.close()
+        return pending_alerts
 
-    await asyncio.to_thread(run_live_refresh)
+    pending_alerts = await asyncio.to_thread(run_live_refresh)
+    for fid, mkt, alert_payload in pending_alerts:
+        if not _should_send_live_goal_alert(fid, mkt):
+            continue
+        _mark_live_goal_alert_sent(fid, mkt)
+        try:
+            await TelegramNotificationService.broadcast_live_goal_signal(**alert_payload)
+        except Exception as tg_ex:
+            logger.debug(f"Live goal Telegram dispatch skipped for fixture {fid}: {tg_ex}")
 
 
 async def scheduled_telegram_daily_digest(
@@ -659,11 +913,12 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
-    # Schedule 60-second automated live score refresh
+    # Schedule rapid automated live score & goal signal polling (INTERVAL_LIVE_POLL)
+    live_poll_seconds = max(20, int(getattr(settings, "INTERVAL_LIVE_POLL", 30) or 30))
     scheduler.add_job(
         scheduled_live_score_refresh,
         'interval',
-        seconds=60,
+        seconds=live_poll_seconds,
         id='live_score_60s_refresh',
         replace_existing=True
     )
@@ -1453,33 +1708,163 @@ def get_fixture_live_intelligence(request: Request, fixture_id: int, db: Session
 @app.get("/api/live/fixtures")
 @limiter.limit("60/minute")
 def get_live_fixtures(request: Request, db: Session = Depends(get_db)):
-    """Returns all currently live fixtures with live minutes, scores, and best live signals."""
-    from services.live_service import LiveMatchIntelligenceService
-    from models import Fixture, LiveMatchState
+    """Returns all currently live fixtures with DB-cached live goal predictions, scores, and ranked signals."""
+    try:
+        from services.live_service import LiveMatchIntelligenceService, LivePredictionSnapshotService
+    except ImportError:
+        from .services.live_service import LiveMatchIntelligenceService, LivePredictionSnapshotService
+
     live_fixtures = (
-        db.query(Fixture)
-        .filter(Fixture.status.in_(["LIVE", "HT", "1H", "2H", "ET"]))
+        db.query(models.Fixture)
+        .options(
+            joinedload(models.Fixture.league),
+            joinedload(models.Fixture.home_team),
+            joinedload(models.Fixture.away_team),
+        )
+        .filter(models.Fixture.status.in_(list(LIVE_ACTIVE_STATUSES)))
+        .order_by(models.Fixture.match_date.asc())
         .all()
     )
-    results = []
+
+    fids = [f.id for f in live_fixtures]
+    preds_map = _load_preds_for_fixtures(db, fids)
+    live_states = _load_live_states_for_fixtures(db, fids)
+    live_snaps = _load_live_snapshots_for_fixtures(db, fids)
+
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    results: List[Dict[str, Any]] = []
+
     for f in live_fixtures:
-        intel = LiveMatchIntelligenceService.get_live_intelligence(db, f.id)
-        if intel:
-            st = intel["match_state"]
+        live_st = live_states.get(f.id)
+        snap = live_snaps.get(f.id)
+        snap_data = LivePredictionSnapshotService.deserialize_snapshot(snap) if snap else {}
+
+        use_cached_snap = False
+        if snap and snap_data.get("live_goals"):
+            snap_h = snap_data.get("home_score")
+            snap_a = snap_data.get("away_score")
+            scores_match = (
+                (f.home_score is None or snap_h == f.home_score)
+                and (f.away_score is None or snap_a == f.away_score)
+            )
+            snap_fresh = True
+            if getattr(snap, "prediction_timestamp", None):
+                snap_fresh = (now_naive - snap.prediction_timestamp).total_seconds() <= 120
+            use_cached_snap = bool(scores_match and snap_fresh)
+
+        pred_row = preds_map.get(f.id)
+        pre_over_15 = (
+            round(float(pred_row.over_1_5_probability), 4)
+            if pred_row and pred_row.over_1_5_probability is not None
+            else None
+        )
+        match_date_iso = (
+            f.match_date.isoformat() + "Z"
+            if f.match_date and getattr(f.match_date, "tzinfo", None) is None
+            else (f.match_date.isoformat() if f.match_date else None)
+        )
+
+        if use_cached_snap:
+            minute = int(
+                getattr(live_st, "minute", None)
+                if getattr(live_st, "minute", None) is not None
+                else (snap_data.get("match_minute") or 0)
+            )
+            period = str(
+                getattr(live_st, "period", None)
+                or snap_data.get("period")
+                or f.status
+                or "LIVE"
+            )
+            h_score = int(
+                f.home_score
+                if f.home_score is not None
+                else (getattr(live_st, "home_score", None) if getattr(live_st, "home_score", None) is not None else (snap_data.get("home_score") or 0))
+            )
+            a_score = int(
+                f.away_score
+                if f.away_score is not None
+                else (getattr(live_st, "away_score", None) if getattr(live_st, "away_score", None) is not None else (snap_data.get("away_score") or 0))
+            )
+            best_sig = snap_data.get("best_live_signal") or {}
+            goal_signals = (
+                [best_sig]
+                if isinstance(best_sig, dict)
+                and str(best_sig.get("category") or "").lower() == "goals"
+                and str(best_sig.get("market") or "").upper() != "NO_SIGNAL"
+                else []
+            )
+            last_upd = getattr(live_st, "last_updated", None)
+            last_upd_iso = (
+                last_upd.isoformat() + "Z"
+                if last_upd and getattr(last_upd, "tzinfo", None) is None
+                else (last_upd.isoformat() if last_upd else snap_data.get("prediction_timestamp"))
+            )
             results.append({
                 "fixture_id": f.id,
                 "league_name": f.league.name if f.league else None,
+                "league_country": f.league.country if f.league else None,
                 "home_team_name": f.home_team.name if f.home_team else "Home",
                 "away_team_name": f.away_team.name if f.away_team else "Away",
+                "home_team_logo": f.home_team.logo_url if f.home_team else None,
+                "away_team_logo": f.away_team.logo_url if f.away_team else None,
+                "match_date": match_date_iso,
+                "status": str(f.status or "LIVE").upper(),
+                "live_clock": f.live_clock or (f"{minute}'" if minute > 0 else period),
+                "minute": minute,
+                "period": period,
+                "home_score": h_score,
+                "away_score": a_score,
+                "best_signal": best_sig,
+                "goal_signals": goal_signals,
+                "live_goals": _extract_live_goals_summary(snap_data.get("live_goals")),
+                "confidence": int(snap_data.get("confidence") or 0),
+                "data_quality": int(snap_data.get("data_quality") or 0),
+                "pre_match_over_1_5": pre_over_15,
+                "last_update": last_upd_iso,
+            })
+            continue
+
+        skip_fetch = bool(
+            live_st is not None
+            and getattr(live_st, "last_updated", None) is not None
+            and (now_naive - live_st.last_updated).total_seconds() < 25
+        )
+        intel = LiveMatchIntelligenceService.get_live_intelligence(
+            db, f.id, skip_provider_fetch=skip_fetch
+        )
+        if intel:
+            st = intel["match_state"]
+            best_sig = intel.get("best_live_signal") or {}
+            goal_signals = [
+                s for s in (intel.get("live_signals") or [])
+                if isinstance(s, dict) and str(s.get("category") or "").lower() == "goals"
+            ]
+            results.append({
+                "fixture_id": f.id,
+                "league_name": f.league.name if f.league else None,
+                "league_country": f.league.country if f.league else None,
+                "home_team_name": f.home_team.name if f.home_team else "Home",
+                "away_team_name": f.away_team.name if f.away_team else "Away",
+                "home_team_logo": f.home_team.logo_url if f.home_team else None,
+                "away_team_logo": f.away_team.logo_url if f.away_team else None,
+                "match_date": match_date_iso,
+                "status": str(f.status or "LIVE").upper(),
+                "live_clock": f.live_clock or (f"{st['minute']}'" if (st.get("minute") or 0) > 0 else st.get("period")),
                 "minute": st["minute"],
                 "period": st["period"],
                 "home_score": st["home_score"],
                 "away_score": st["away_score"],
-                "best_signal": intel["best_live_signal"],
+                "best_signal": best_sig,
+                "goal_signals": goal_signals,
+                "live_goals": _extract_live_goals_summary(intel.get("live_goals")),
                 "confidence": intel["confidence"]["overall_confidence"],
                 "data_quality": intel["confidence"]["live_data_quality"],
-                "last_update": st["last_updated"]
+                "pre_match_over_1_5": pre_over_15,
+                "last_update": st["last_updated"],
             })
+
+    results.sort(key=_live_priority_sort_key, reverse=True)
     return {"status": "ok", "live_count": len(results), "fixtures": results}
 
 
@@ -2491,6 +2876,19 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
         logger.debug(f"Error loading card snapshots: {card_err}")
         all_cards = {}
 
+    try:
+        all_live_states = _load_live_states_for_fixtures(db, fixture_ids_list)
+        all_live_snaps = _load_live_snapshots_for_fixtures(db, fixture_ids_list)
+    except Exception as live_err:
+        logger.debug(f"Error loading live states/snapshots: {live_err}")
+        all_live_states = {}
+        all_live_snaps = {}
+
+    try:
+        from services.live_service import LivePredictionSnapshotService as _LiveSnapSvc
+    except ImportError:
+        from .services.live_service import LivePredictionSnapshotService as _LiveSnapSvc
+
     result_data = []
     for fix in fixtures:
         # Comprehensive Python-level school/youth filter
@@ -2567,11 +2965,46 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
         value_edge_pct = None
         is_value_bet = False
 
-        # Factual match status & clock from persisted provider telemetry
+        # Factual match status & clock overlaid cleanly with persisted LiveMatchState & LivePredictionSnapshot
         eff_status = str(fix.status or "SCHEDULED").upper()
         eff_home_score = getattr(fix, "home_score", None)
         eff_away_score = getattr(fix, "away_score", None)
         eff_live_clock = getattr(fix, "live_clock", None)
+        live_st = all_live_states.get(fix.id)
+        live_snap = all_live_snaps.get(fix.id)
+        live_snap_data = _LiveSnapSvc.deserialize_snapshot(live_snap) if live_snap else {}
+        is_live_row = eff_status in LIVE_ACTIVE_STATUSES
+        if is_live_row and live_st is not None:
+            st_h = getattr(live_st, "home_score", None)
+            st_a = getattr(live_st, "away_score", None)
+            st_min = getattr(live_st, "minute", None)
+            st_period = getattr(live_st, "period", None)
+            if eff_home_score is None and st_h is not None:
+                eff_home_score = st_h
+            if eff_away_score is None and st_a is not None:
+                eff_away_score = st_a
+            if not eff_live_clock:
+                eff_live_clock = f"{st_min}'" if st_min and int(st_min) > 0 else st_period
+
+        live_summary: Optional[Dict[str, Any]] = None
+        if is_live_row or live_snap is not None:
+            ls_minute = (
+                getattr(live_st, "minute", None)
+                if getattr(live_st, "minute", None) is not None
+                else live_snap_data.get("match_minute")
+            )
+            ls_period = getattr(live_st, "period", None) or live_snap_data.get("period") or eff_status
+            ls_goals = _extract_live_goals_summary(live_snap_data.get("live_goals"))
+            live_summary = {
+                "is_live": is_live_row,
+                "available": bool(ls_goals),
+                "minute": int(ls_minute or 0) if ls_minute is not None else None,
+                "period": ls_period,
+                "best_signal": live_snap_data.get("best_live_signal") or None,
+                "live_goals": ls_goals,
+                "confidence": live_snap_data.get("confidence"),
+                "data_quality": live_snap_data.get("data_quality"),
+            }
 
         # Dynamic Canonical Competition & Country Resolution (Phase 13: provider-verified, zero team-name guessing)
         canon_ident = CanonicalCompetitionService.resolve_competition(
@@ -2692,6 +3125,7 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
             "prediction": pred_dict,
             "corners": _serialize_corner_snapshot(all_corners.get(fix.id)),
             "cards": _serialize_card_snapshot(all_cards.get(fix.id)),
+            "live": live_summary,
         })
 
     return {"status": "ok", "count": len(result_data), "data": result_data}

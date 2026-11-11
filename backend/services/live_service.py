@@ -722,6 +722,26 @@ class LiveSignalEngine:
                 rationale="Away side generating high xG opportunities."
             ))
 
+        # Full-match Over goal thresholds (only unresolved/active lines)
+        cur_tot_goals = goals.current_score.get("total", 0) if isinstance(getattr(goals, "current_score", None), dict) else 0
+        rem_xg_tot = goals.remaining_xg.get("total", 0.0) if isinstance(getattr(goals, "remaining_xg", None), dict) else 0.0
+        for line_label, m_prob in [
+            ("Full Match Over 1.5 Goals", getattr(goals, "full_match_over_1_5", None)),
+            ("Full Match Over 2.5 Goals", getattr(goals, "full_match_over_2_5", None)),
+            ("Full Match Over 3.5 Goals", getattr(goals, "full_match_over_3_5", None)),
+        ]:
+            if m_prob is not None and getattr(m_prob, "status", None) == "active" and m_prob.probability >= cls.MIN_PROB_MODERATE:
+                p = m_prob.probability
+                candidates.append(LiveSignalItem(
+                    market=line_label,
+                    category="goals",
+                    probability=p,
+                    confidence_score=confidence.overall_confidence,
+                    time_remaining_minutes=time_rem_mins,
+                    signal_strength="STRONG" if (p >= cls.MIN_PROB_STRONG and confidence.overall_confidence >= cls.MIN_CONF_STRONG) else "MODERATE",
+                    rationale=f"Current total {cur_tot_goals} goals with {rem_xg_tot} remaining expected goals."
+                ))
+
         # 2. Evaluate Corners
         for line_name, m_prob in [
             ("Over 8.5 Corners", corners.over_8_5),
@@ -791,10 +811,16 @@ class LiveMatchIntelligenceService:
 
     @classmethod
     def get_live_intelligence(
-        cls, db: Session, fixture_id: int
+        cls,
+        db: Session,
+        fixture_id: int,
+        skip_provider_fetch: bool = False,
+        pre_fetched_live: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Generates complete Live Match Intelligence payload for an active or scheduled fixture.
+        Supports reusing pre-fetched provider payloads or cached DB snapshots to avoid
+        redundant external HTTP requests during background polling and list views.
         """
         fixture = db.query(Fixture).filter(Fixture.id == fixture_id).first()
         if not fixture:
@@ -832,20 +858,29 @@ class LiveMatchIntelligenceService:
                 "statistics": {}
             }
 
-        # 0. Fetch real verified live state from provider adapter
-        live_prov = LiveProviderAdapterService.fetch_live_summary(db, fixture_id)
+        # 0. Fetch real verified live state from provider adapter or cached payload
+        if pre_fetched_live is not None:
+            live_prov = pre_fetched_live
+        elif skip_provider_fetch:
+            live_prov = LiveProviderAdapterService.build_cached_live_payload(db, fixture)
+        else:
+            live_prov = LiveProviderAdapterService.fetch_live_summary(db, fixture_id)
 
         # Fetch latest LiveMatchState record
         live_state_obj = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture_id).first()
         if not live_state_obj:
+            prov_score = live_prov.get("score") or {}
+            prov_min = live_prov.get("minute")
+            prov_h = prov_score.get("home")
+            prov_a = prov_score.get("away")
             live_state_obj = LiveMatchState(
                 fixture_id=fixture_id,
-                minute=live_prov.get("minute", 0),
+                minute=prov_min if prov_min is not None else 0,
                 added_time=0,
-                period=live_prov.get("period", "1H"),
-                status=live_prov.get("status", fixture.status or "LIVE"),
-                home_score=live_prov.get("score", {}).get("home", fixture.home_score or 0),
-                away_score=live_prov.get("score", {}).get("away", fixture.away_score or 0),
+                period=live_prov.get("period") or "1H",
+                status=live_prov.get("status") or fixture.status or "LIVE",
+                home_score=prov_h if prov_h is not None else (fixture.home_score or 0),
+                away_score=prov_a if prov_a is not None else (fixture.away_score or 0),
                 data_source="espn_live_summary",
                 data_quality="verified"
             )
@@ -1130,14 +1165,24 @@ class LivePredictionSnapshotService:
             .first()
         )
 
-        # Always save on first snapshot or state change (score, red card)
+        # Save on first snapshot, score change, signal shift, or every >= 5 minutes of live play
         should_save = False
         if not last_snap:
             should_save = True
         elif last_snap.home_score != state.home_score or last_snap.away_score != state.away_score:
             should_save = True
-        elif state.minute - last_snap.match_minute >= 15:
+        elif abs(state.minute - last_snap.match_minute) >= 5:
             should_save = True
+        else:
+            prev_best_market = None
+            if last_snap.best_live_signal_json:
+                try:
+                    prev_best_market = json.loads(last_snap.best_live_signal_json).get("market")
+                except Exception:
+                    prev_best_market = None
+            curr_best_market = (payload.get("best_live_signal") or {}).get("market")
+            if curr_best_market and curr_best_market != prev_best_market:
+                should_save = True
 
         if not should_save:
             return last_snap
@@ -1160,6 +1205,38 @@ class LivePredictionSnapshotService:
         db.add(snap)
         db.commit()
         return snap
+
+    @staticmethod
+    def deserialize_snapshot(snap: Optional[LivePredictionSnapshot]) -> Dict[str, Any]:
+        """Safely decodes cached live prediction JSON payloads from a LivePredictionSnapshot row."""
+        if not snap:
+            return {}
+
+        def _safe_load(raw_json: Optional[str]) -> Any:
+            if not raw_json:
+                return None
+            try:
+                return json.loads(raw_json)
+            except Exception:
+                return None
+
+        return {
+            "live_goals": _safe_load(snap.goals_prediction_json) or {},
+            "live_corners": _safe_load(snap.corners_prediction_json) or {},
+            "live_cards": _safe_load(snap.cards_prediction_json) or {},
+            "best_live_signal": _safe_load(snap.best_live_signal_json) or {},
+            "confidence": snap.confidence,
+            "data_quality": snap.data_quality,
+            "match_minute": snap.match_minute,
+            "period": snap.period,
+            "home_score": snap.home_score,
+            "away_score": snap.away_score,
+            "prediction_timestamp": (
+                snap.prediction_timestamp.isoformat() + "Z"
+                if snap.prediction_timestamp and getattr(snap.prediction_timestamp, "tzinfo", None) is None
+                else (snap.prediction_timestamp.isoformat() if snap.prediction_timestamp else None)
+            ),
+        }
 
 
 class LiveModelEvaluationService:

@@ -1,5 +1,6 @@
 import os
 import sys
+import html
 import logging
 import itertools
 from functools import reduce
@@ -282,3 +283,51 @@ class TelegramNotificationService:
         msg = "\n".join(lines)
         return await cls.send_message(msg, bot_token=bot_token, chat_id=chat_id)
 
+    @classmethod
+    async def broadcast_live_goal_signal(
+        cls,
+        home: str,
+        away: str,
+        league: str,
+        minute: int,
+        period: str,
+        home_score: int,
+        away_score: int,
+        signal_market: str,
+        signal_strength: str,
+        probability: float,
+        confidence: int,
+        remaining_xg: float,
+        pre_match_xg: float,
+        at_least_1_more_prob: Optional[float] = None,
+        over_2_5_prob: Optional[float] = None,
+        bot_token: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Dispatches a formatted real-time HTML alert when an in-play match crosses a strong goal threshold."""
+        prob_pct = round(float(probability or 0.0) * 100)
+        fair_odds = cls.calculate_market_odds(float(probability or 0.0))
+        safe_home = html.escape(str(home or "Home"))
+        safe_away = html.escape(str(away or "Away"))
+        safe_league = html.escape(str(league or "Live Match"))
+        safe_market = html.escape(str(signal_market or "Live Goal Market"))
+        safe_period = html.escape(str(period or "LIVE"))
+
+        lines = [
+            f"🔴 <b>LIVE GOAL ALERT — {signal_strength}</b> 🔴",
+            f"⚽ <b>{safe_home} {int(home_score)} - {int(away_score)} {safe_away}</b>",
+            f"🏆 {safe_league} &bull; ⏱ <b>{int(minute)}' ({safe_period})</b>\n",
+            f"🎯 Signal: <b>{safe_market}</b>",
+            f"📊 Live Prob: <b>{prob_pct}%</b> | Est. Odds: <b>{fair_odds:.2f}</b> | Conf: <b>{int(confidence)}%</b>",
+            f"📈 Remaining xG: <b>{float(remaining_xg):.2f}</b> (Pre-Match: {float(pre_match_xg):.2f})",
+        ]
+        extras = []
+        if at_least_1_more_prob is not None:
+            extras.append(f"+1 More Goal: <b>{round(float(at_least_1_more_prob) * 100)}%</b>")
+        if over_2_5_prob is not None:
+            extras.append(f"Live O2.5: <b>{round(float(over_2_5_prob) * 100)}%</b>")
+        if extras:
+            lines.append("⚡ " + " | ".join(extras))
+        lines.append("\n🤖 <i>Bayesian Live Poisson & Momentum Fusion</i>")
+
+        return await cls.send_message("\n".join(lines), bot_token=bot_token, chat_id=chat_id)

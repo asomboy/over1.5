@@ -452,9 +452,20 @@ class LiveProviderAdapterService:
         live_state.data_source = "espn_live_summary"
         live_state.data_quality = "verified" if has_stats_core else "partial"
 
+        # Sync authoritative in-play status, clock & score back onto Fixture row
+        if state_type == "in" and not is_completed:
+            fixture.status = "LIVE"
+            if display_clock:
+                fixture.live_clock = display_clock
+            if h_score is not None:
+                fixture.home_score = h_score
+            if a_score is not None:
+                fixture.away_score = a_score
+
         # If match completed, persist to Fixture and MatchStatistics
         if is_completed:
             fixture.status = "FINISHED"
+            fixture.live_clock = "FT"
             if h_score is not None:
                 fixture.home_score = h_score
             if a_score is not None:
@@ -669,14 +680,19 @@ class LiveProviderAdapterService:
         return {"status": status, "age_seconds": int(age_sec)}
 
     @classmethod
-    def _handle_provider_failure(
-        cls, db: Session, fixture: Fixture, provider_event_id: str, error_msg: Optional[str] = None
+    def build_cached_live_payload(
+        cls,
+        db: Session,
+        fixture: Fixture,
+        provider_event_id: Optional[str] = None,
+        error_msg: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Gracefully handles provider unavailability without fabricating or resetting values.
-        Retains the last verified state and assigns explicit STALE data status.
-        Never resets home_score or away_score to 0 or minute to 0!
+        Builds a normalized live match payload directly from persisted LiveMatchState
+        and LiveObservedSnapshot without making external HTTP calls.
+        Never fabricates scores or clocks when unstarted.
         """
+        ev_id = provider_event_id or cls.extract_provider_event_id(fixture) or "ESPN-CACHED"
         live_state = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture.id).first()
         latest_snap = db.query(LiveObservedSnapshot).filter(
             LiveObservedSnapshot.fixture_id == fixture.id
@@ -689,19 +705,37 @@ class LiveProviderAdapterService:
             data_status = f_info["status"]
             age_sec = f_info["age_seconds"] or 0
             retrieved_at = live_state.last_updated.isoformat() + "Z"
-            
-            return {
+
+            parsed_events = []
+            if latest_snap and latest_snap.events_json:
+                try:
+                    parsed_events = json.loads(latest_snap.events_json) or []
+                except Exception:
+                    parsed_events = []
+
+            has_core = (
+                live_state.home_shots is not None
+                and live_state.home_corners is not None
+                and live_state.home_possession is not None
+            )
+            stat_cov = "FULL" if has_core else ("PARTIAL" if (live_state.home_shots is not None or live_state.home_corners is not None) else "MINIMAL")
+            dq_score = 85 if has_core else (60 if stat_cov == "PARTIAL" else 45)
+            if error_msg:
+                dq_score = min(dq_score, 50)
+                stat_cov = "PARTIAL"
+
+            payload = {
                 "status": live_state.status or "LIVE",
                 "is_completed": live_state.status == "FINISHED",
                 "fixture_id": fixture.id,
-                "provider_fixture_id": provider_event_id,
+                "provider_fixture_id": ev_id,
                 "provider": "ESPN (Cached)",
                 "period": live_state.period or "1H",
                 "minute": live_state.minute or 0,
-                "display_clock": f"{live_state.minute}'" if live_state.minute else "LIVE",
+                "display_clock": (live_state.period if live_state.period in ("HT", "FT") else (f"{live_state.minute}'" if live_state.minute else (fixture.live_clock or "LIVE"))),
                 "score": {
                     "home": live_state.home_score,
-                    "away": live_state.away_score
+                    "away": live_state.away_score,
                 },
                 "statistics": {
                     "shots": {"home": live_state.home_shots, "away": live_state.away_shots, "source_status": "CACHED" if live_state.home_shots is not None else "UNAVAILABLE"},
@@ -711,9 +745,9 @@ class LiveProviderAdapterService:
                     "fouls": {"home": live_state.home_fouls, "away": live_state.away_fouls, "source_status": "CACHED" if live_state.home_fouls is not None else "UNAVAILABLE"},
                     "offsides": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                     "possession": {"home": live_state.home_possession, "away": live_state.away_possession, "source_status": "CACHED" if live_state.home_possession is not None else "UNAVAILABLE"},
-                    "saves": {"home": None, "away": None, "source_status": "UNAVAILABLE"}
+                    "saves": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                 },
-                "events": [],
+                "events": parsed_events,
                 "retrieved_at": retrieved_at,
                 "age_seconds": max(0, int(age_sec)),
                 "freshness": data_status,
@@ -722,21 +756,23 @@ class LiveProviderAdapterService:
                 "snapshot_hash": latest_snap.snapshot_hash if latest_snap else "cached",
                 "identity_status": "IDENTITY_VALID",
                 "data_status": data_status,
-                "data_quality_score": 50,
-                "statistical_coverage": "PARTIAL",
-                "error": error_msg or "Live provider request failed. Serving last verified local snapshot."
+                "data_quality_score": dq_score,
+                "statistical_coverage": stat_cov,
             }
+            if error_msg:
+                payload["error"] = error_msg
+            return payload
 
-        return {
+        empty_payload = {
             "status": fixture.status or "SCHEDULED",
-            "is_completed": False,
+            "is_completed": str(fixture.status or "").upper() in ("FINISHED", "FT", "AET", "PEN"),
             "fixture_id": fixture.id,
-            "provider_fixture_id": provider_event_id,
+            "provider_fixture_id": ev_id,
             "provider": "ESPN",
-            "period": "PRE",
+            "period": "1H" if str(fixture.status or "").upper() in ("LIVE", "1H", "2H", "HT", "ET") else "PRE",
             "minute": None,
-            "display_clock": "—",
-            "score": {"home": None, "away": None},
+            "display_clock": fixture.live_clock or "—",
+            "score": {"home": fixture.home_score, "away": fixture.away_score},
             "statistics": {
                 "shots": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                 "shots_on_target": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
@@ -745,7 +781,7 @@ class LiveProviderAdapterService:
                 "fouls": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                 "offsides": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
                 "possession": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
-                "saves": {"home": None, "away": None, "source_status": "UNAVAILABLE"}
+                "saves": {"home": None, "away": None, "source_status": "UNAVAILABLE"},
             },
             "events": [],
             "retrieved_at": now_utc.isoformat(),
@@ -754,9 +790,181 @@ class LiveProviderAdapterService:
             "freshness_status": "UNAVAILABLE",
             "snapshot_version": 0,
             "snapshot_hash": "none",
-            "identity_status": "UNAVAILABLE",
+            "identity_status": "IDENTITY_VALID" if not error_msg and str(fixture.status or "").upper() == "LIVE" else "UNAVAILABLE",
             "data_status": "UNAVAILABLE",
             "data_quality_score": 0,
             "statistical_coverage": "UNAVAILABLE",
-            "error": error_msg or "No verified live snapshot received from provider."
+        }
+        if error_msg:
+            empty_payload["error"] = error_msg
+        return empty_payload
+
+    @classmethod
+    def _handle_provider_failure(
+        cls, db: Session, fixture: Fixture, provider_event_id: str, error_msg: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Gracefully handles provider unavailability without fabricating or resetting values.
+        Retains the last verified state and assigns explicit STALE data status.
+        Never resets home_score or away_score to 0 or minute to 0!
+        """
+        live_state = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture.id).first()
+        default_msg = (
+            "Live provider request failed. Serving last verified local snapshot."
+            if (live_state and live_state.last_updated)
+            else "No verified live snapshot received from provider."
+        )
+        return cls.build_cached_live_payload(
+            db, fixture, provider_event_id=provider_event_id, error_msg=error_msg or default_msg
+        )
+
+    @classmethod
+    def sync_scoreboard_live_fixtures(
+        cls, db: Session, client: Optional[httpx.Client] = None
+    ) -> Dict[str, Any]:
+        """
+        Lightweight single-request global scoreboard scan discovering all currently live
+        (and newly completed) ESPN fixtures in DB without hitting the 40-fixture summary cap.
+        """
+        circuit = CircuitBreakerService.get_circuit("ESPN")
+        if not circuit.can_execute():
+            return {"discovered_live_ids": [], "transitioned_live": 0, "transitioned_finished": 0, "skipped": "circuit_open"}
+
+        url = f"{cls.ESPN_BASE_URL}/all/scoreboard"
+        should_close_client = False
+        if client is None:
+            client = httpx.Client(timeout=6.0)
+            should_close_client = True
+
+        payload = None
+        start_time = time.time()
+        try:
+            resp = client.get(url)
+            latency_ms = (time.time() - start_time) * 1000.0
+            if resp.status_code == 200:
+                payload = resp.json()
+                circuit.record_success(latency_ms=latency_ms)
+            else:
+                circuit.record_http_error(resp.status_code)
+        except httpx.TimeoutException:
+            circuit.record_timeout()
+        except Exception as ex:
+            logger.debug(f"Global ESPN live scoreboard scan skipped: {ex}")
+            circuit.record_failure()
+        finally:
+            if should_close_client and client:
+                client.close()
+
+        if not isinstance(payload, dict):
+            return {"discovered_live_ids": [], "transitioned_live": 0, "transitioned_finished": 0}
+
+        events = payload.get("events") or []
+        event_updates: Dict[str, Dict[str, Any]] = {}
+
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            ev_id = ev.get("id")
+            if not ev_id:
+                continue
+            comps = ev.get("competitions") or []
+            comp0 = comps[0] if (isinstance(comps, list) and comps and isinstance(comps[0], dict)) else {}
+            status_obj = ev.get("status") if isinstance(ev.get("status"), dict) else (comp0.get("status") if isinstance(comp0.get("status"), dict) else {})
+            status_type = status_obj.get("type") if isinstance(status_obj.get("type"), dict) else {}
+            status_name = str(status_type.get("name") or "").upper()
+            status_state = str(status_type.get("state") or "").lower()
+            status_detail = str(status_type.get("shortDetail") or status_type.get("detail") or "").strip()
+            live_clock = status_obj.get("displayClock") or (status_detail if ("'" in status_detail or "HT" in status_detail.upper()) else None)
+
+            if any(k in status_name for k in ("POSTPONED", "CANCELLED", "CANCELED", "ABANDONED", "SUSPENDED")):
+                norm_status = "POSTPONED"
+            elif status_state == "in" or any(k in status_name for k in ("IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "OVERTIME", "LIVE")):
+                norm_status = "LIVE"
+            elif status_state == "post" or status_type.get("completed") or any(k in status_name for k in ("FINAL", "FULL", "FINISHED", "FT")):
+                norm_status = "FINISHED"
+            else:
+                continue
+
+            competitors = comp0.get("competitors") or []
+            h_score = None
+            a_score = None
+            if isinstance(competitors, list) and len(competitors) >= 2:
+                c0, c1 = competitors[0], competitors[1]
+                h_comp = c0 if (isinstance(c0, dict) and c0.get("homeAway") == "home") else c1
+                a_comp = c1 if (isinstance(c0, dict) and c0.get("homeAway") == "home") else c0
+                for val_raw, target in ((h_comp, "home"), (a_comp, "away")):
+                    raw_s = val_raw.get("score") if isinstance(val_raw, dict) else None
+                    if isinstance(raw_s, dict):
+                        raw_s = raw_s.get("value") if raw_s.get("value") is not None else raw_s.get("displayValue")
+                    try:
+                        parsed_s = int(float(str(raw_s).strip())) if raw_s is not None and str(raw_s).strip() != "" else None
+                    except Exception:
+                        parsed_s = None
+                    if target == "home":
+                        h_score = parsed_s
+                    else:
+                        a_score = parsed_s
+
+            event_updates[f"ESPN-FIX-{ev_id}"] = {
+                "status": norm_status,
+                "live_clock": live_clock,
+                "home_score": h_score,
+                "away_score": a_score,
+            }
+
+        if not event_updates:
+            return {"discovered_live_ids": [], "transitioned_live": 0, "transitioned_finished": 0}
+
+        discovered_live_ids: List[int] = []
+        transitioned_live = 0
+        transitioned_finished = 0
+        dirty = False
+
+        ext_keys = list(event_updates.keys())
+        for i in range(0, len(ext_keys), 500):
+            chunk = ext_keys[i:i + 500]
+            matched = db.query(Fixture).filter(Fixture.external_id.in_(chunk)).all()
+            for fix in matched:
+                info = event_updates.get(fix.external_id or "")
+                if not info:
+                    continue
+                target_st = info["status"]
+                if target_st == "POSTPONED":
+                    if fix.status != "POSTPONED":
+                        fix.status = "POSTPONED"
+                        fix.live_clock = None
+                        dirty = True
+                    continue
+                if target_st == "LIVE":
+                    discovered_live_ids.append(fix.id)
+                    if fix.status != "LIVE":
+                        fix.status = "LIVE"
+                        transitioned_live += 1
+                        dirty = True
+                    if info["live_clock"] and fix.live_clock != info["live_clock"]:
+                        fix.live_clock = info["live_clock"]
+                        dirty = True
+                    if info["home_score"] is not None and fix.home_score != info["home_score"]:
+                        fix.home_score = info["home_score"]
+                        dirty = True
+                    if info["away_score"] is not None and fix.away_score != info["away_score"]:
+                        fix.away_score = info["away_score"]
+                        dirty = True
+                elif target_st == "FINISHED" and fix.status != "FINISHED":
+                    fix.status = "FINISHED"
+                    fix.live_clock = "FT"
+                    if info["home_score"] is not None:
+                        fix.home_score = info["home_score"]
+                    if info["away_score"] is not None:
+                        fix.away_score = info["away_score"]
+                    transitioned_finished += 1
+                    dirty = True
+
+        if dirty:
+            db.commit()
+
+        return {
+            "discovered_live_ids": discovered_live_ids,
+            "transitioned_live": transitioned_live,
+            "transitioned_finished": transitioned_finished,
         }
