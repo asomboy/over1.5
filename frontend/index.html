@@ -21,10 +21,20 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script>
-      // Register Service Worker for PWA and offline caching support
+      // Register Service Worker with immediate update checks for fresh deployments
       if ('serviceWorker' in navigator) {
+        var hadController = Boolean(navigator.serviceWorker.controller);
+        var swReloading = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function() {
+          if (hadController && !swReloading) {
+            swReloading = true;
+            window.location.reload();
+          }
+        });
         window.addEventListener('load', function() {
-          navigator.serviceWorker.register('/sw.js').catch(function(err) {
+          navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then(function(reg) {
+            reg.update().catch(function() {});
+          }).catch(function(err) {
             console.warn('Service Worker registration failed:', err);
           });
         });

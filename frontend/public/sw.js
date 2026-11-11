@@ -1,8 +1,6 @@
 // Service Worker for Soccer Goal Predictor (Offline & PWA Support)
-const CACHE_NAME = 'sgp-cache-v1';
+const CACHE_NAME = 'sgp-cache-v2';
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
   '/favicon.svg',
   '/manifest.json'
 ];
@@ -22,6 +20,7 @@ self.addEventListener('activate', (event) => {
           if (key !== CACHE_NAME) {
             return caches.delete(key);
           }
+          return Promise.resolve();
         })
       )
     ).then(() => self.clients.claim())
@@ -29,7 +28,14 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+
+  // Never intercept or cache the Service Worker script itself
+  if (url.pathname === '/sw.js') {
+    event.respondWith(fetch(new Request(event.request, { cache: 'no-store' })));
+    return;
+  }
 
   // 1. Network-first strategy for all API requests
   if (url.pathname.startsWith('/api/')) {
@@ -39,15 +45,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Offline fallback: serve index.html for navigation requests when network fails
-  if (event.request.mode === 'navigate') {
+  // 2. Network-first (no-store) for HTML navigations so deploys appear immediately
+  if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match('/index.html'))
+      fetch(new Request(event.request.url, { cache: 'no-store' }))
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match('/index.html'))
     );
     return;
   }
 
-  // 3. Cache-first strategy for all static assets (/assets/, fonts, icons, styles, scripts)
+  // 3. Cache-first strategy for hashed immutable build assets (/assets/), fonts, and icons
   if (
     url.pathname.startsWith('/assets/') ||
     url.hostname.includes('fonts.googleapis.com') ||

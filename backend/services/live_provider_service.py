@@ -14,13 +14,13 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
+    from models import Fixture, League, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
     from services.data_reconciliation_service import DataReconciliationService
     from services.observability_service import ObservabilityService
     from services.provider_reconciliation_service import ProviderReconciliationService
     from services.circuit_breaker_service import CircuitBreakerService
 except ImportError:
-    from ..models import Fixture, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
+    from ..models import Fixture, League, LiveMatchState, MatchStatistics, HistoricalResult, Team, FixtureProviderMapping, LiveObservedSnapshot
     from .data_reconciliation_service import DataReconciliationService
     from .observability_service import ObservabilityService
     from .provider_reconciliation_service import ProviderReconciliationService
@@ -830,35 +830,74 @@ class LiveProviderAdapterService:
         if not circuit.can_execute():
             return {"discovered_live_ids": [], "transitioned_live": 0, "transitioned_finished": 0, "skipped": "circuit_open"}
 
-        url = f"{cls.ESPN_BASE_URL}/all/scoreboard"
+        # Discover active league slugs in the live window so regional/cup matches omitted from /all/scoreboard are scanned
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        win_start = now_naive - timedelta(hours=3)
+        win_end = now_naive + timedelta(minutes=25)
+        active_league_slugs: List[str] = []
+        try:
+            slug_rows = (
+                db.query(League.external_id)
+                .join(Fixture, Fixture.league_id == League.id)
+                .filter(
+                    League.external_id.like("ESPN-%"),
+                    Fixture.external_id.like("ESPN-FIX-%"),
+                    Fixture.match_date >= win_start,
+                    Fixture.match_date <= win_end,
+                )
+                .distinct()
+                .limit(6)
+                .all()
+            )
+            for (ext_league_id,) in slug_rows:
+                slug = str(ext_league_id or "").replace("ESPN-", "", 1).strip().lower()
+                if slug and slug != "all" and slug not in active_league_slugs:
+                    active_league_slugs.append(slug)
+        except Exception:
+            active_league_slugs = []
+
+        scoreboard_urls = [f"{cls.ESPN_BASE_URL}/all/scoreboard"] + [
+            f"{cls.ESPN_BASE_URL}/{slug}/scoreboard" for slug in active_league_slugs
+        ]
+
         should_close_client = False
         if client is None:
             client = httpx.Client(timeout=6.0)
             should_close_client = True
 
-        payload = None
-        start_time = time.time()
+        events: List[Dict[str, Any]] = []
+        seen_ev_ids = set()
+        got_any_payload = False
         try:
-            resp = client.get(url)
-            latency_ms = (time.time() - start_time) * 1000.0
-            if resp.status_code == 200:
-                payload = resp.json()
-                circuit.record_success(latency_ms=latency_ms)
-            else:
-                circuit.record_http_error(resp.status_code)
-        except httpx.TimeoutException:
-            circuit.record_timeout()
-        except Exception as ex:
-            logger.debug(f"Global ESPN live scoreboard scan skipped: {ex}")
-            circuit.record_failure()
+            for sb_url in scoreboard_urls:
+                if not circuit.can_execute():
+                    break
+                start_time = time.time()
+                try:
+                    resp = client.get(sb_url)
+                    latency_ms = (time.time() - start_time) * 1000.0
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        circuit.record_success(latency_ms=latency_ms)
+                        if isinstance(payload, dict):
+                            got_any_payload = True
+                            for ev in (payload.get("events") or []):
+                                if isinstance(ev, dict) and ev.get("id") and ev["id"] not in seen_ev_ids:
+                                    seen_ev_ids.add(ev["id"])
+                                    events.append(ev)
+                    else:
+                        circuit.record_http_error(resp.status_code)
+                except httpx.TimeoutException:
+                    circuit.record_timeout()
+                except Exception as ex:
+                    logger.debug(f"ESPN scoreboard scan skipped ({sb_url}): {ex}")
+                    circuit.record_failure()
         finally:
             if should_close_client and client:
                 client.close()
 
-        if not isinstance(payload, dict):
+        if not got_any_payload:
             return {"discovered_live_ids": [], "transitioned_live": 0, "transitioned_finished": 0}
-
-        events = payload.get("events") or []
         event_updates: Dict[str, Dict[str, Any]] = {}
 
         for ev in events:
