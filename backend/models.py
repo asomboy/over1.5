@@ -975,6 +975,8 @@ class BetSlip(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, default="manual", index=True)  # manual | accumulator | live_signal
+    bookmaker: Mapped[Optional[str]] = mapped_column(String, nullable=True, default="general")  # general | sportybet | bet9ja
+    booking_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     stake: Mapped[float] = mapped_column(Float, default=10.0)
     combined_odds: Mapped[float] = mapped_column(Float, default=1.0)
     expected_win_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

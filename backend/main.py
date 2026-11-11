@@ -52,6 +52,7 @@ try:
     from services.calibration_service import CalibrationService
     from services.bet_slip_service import BetSlipService
     from services.alert_preferences_service import AlertPreferencesService
+    from services.bookmaker_slip_service import BookmakerSlipService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY, settings
@@ -76,6 +77,7 @@ except ImportError:
     from .services.calibration_service import CalibrationService
     from .services.bet_slip_service import BetSlipService
     from .services.alert_preferences_service import AlertPreferencesService
+    from .services.bookmaker_slip_service import BookmakerSlipService
 
 logger = logging.getLogger(__name__)
 
@@ -3437,8 +3439,15 @@ class BetSlipLegIn(BaseModel):
 class BetSlipCreateIn(BaseModel):
     title: Optional[str] = Field("Tracked Prediction Slip", max_length=120)
     source: Optional[str] = Field("manual", max_length=32)
+    bookmaker: Optional[str] = Field("general", max_length=32)
+    booking_code: Optional[str] = Field(None, max_length=32)
     stake: float = Field(10.0, gt=0.0, le=100000.0)
     legs: List[BetSlipLegIn] = Field(..., min_length=1, max_length=20)
+
+
+class BetSlipBookingCodeIn(BaseModel):
+    bookmaker: Optional[str] = Field(None, max_length=32)
+    booking_code: Optional[str] = Field(None, max_length=32)
 
 
 class AlertPreferenceUpdateIn(BaseModel):
@@ -3472,6 +3481,8 @@ def create_betslip(request: Request, payload: BetSlipCreateIn, db: Session = Dep
         source=payload.source or "manual",
         stake=payload.stake,
         legs=[lg.model_dump() for lg in payload.legs],
+        bookmaker=payload.bookmaker or "general",
+        booking_code=payload.booking_code,
     )
     return {"status": "ok", "slip": slip}
 
@@ -3485,6 +3496,26 @@ def settle_betslips(request: Request, db: Session = Depends(get_db)):
     return {"status": "ok", "settled_count": settled_count, **summary_payload}
 
 
+@app.patch("/api/betslips/{slip_id}/booking-code")
+@limiter.limit("30/minute")
+def update_betslip_booking_code(
+    request: Request,
+    slip_id: int,
+    payload: BetSlipBookingCodeIn,
+    db: Session = Depends(get_db),
+):
+    """Updates bookmaker profile and/or user-attached booking code on a tracked bet slip."""
+    updated = BetSlipService.update_booking_code(
+        db=db,
+        slip_id=slip_id,
+        bookmaker=payload.bookmaker,
+        booking_code=payload.booking_code,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Bet slip not found")
+    return {"status": "ok", "slip": updated}
+
+
 @app.delete("/api/betslips/{slip_id}")
 @limiter.limit("30/minute")
 def delete_betslip(request: Request, slip_id: int, db: Session = Depends(get_db)):
@@ -3493,6 +3524,18 @@ def delete_betslip(request: Request, slip_id: int, db: Session = Depends(get_db)
     if not deleted:
         raise HTTPException(status_code=404, detail="Bet slip not found")
     return {"status": "ok", "deleted_id": slip_id}
+
+
+@app.get("/api/bookmakers/slips")
+@limiter.limit("30/minute")
+def get_bookmaker_slips(
+    request: Request,
+    bookmaker: str = Query("sportybet", pattern="^(sportybet|bet9ja|SPORTYBET|BET9JA)$"),
+    day: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Generates target-odds betting slips formatted for SportyBet (NG) or Bet9ja."""
+    return BookmakerSlipService.build_slips(db=db, bookmaker=bookmaker, match_day=day)
 
 
 @app.get("/api/alerts/preferences")

@@ -151,6 +151,12 @@ class MarketResolutionService:
                 return 1.0 if home_score == away_score else 0.0
             elif market in ["1x2_away", "away_win"]:
                 return 1.0 if away_score > home_score else 0.0
+            elif market in ["dc_1x", "double_chance_1x"]:
+                return 1.0 if home_score >= away_score else 0.0
+            elif market in ["dc_x2", "double_chance_x2"]:
+                return 1.0 if away_score >= home_score else 0.0
+            elif market in ["dc_12", "double_chance_12"]:
+                return 1.0 if home_score != away_score else 0.0
             elif market in ["home_over_0_5", "home_to_score"]:
                 return 1.0 if home_score >= 1 else 0.0
             elif market in ["home_over_1_5", "home_over_1_5_goals"]:

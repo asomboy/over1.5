@@ -100,7 +100,7 @@ const apiRequest = async (method, path, data = null, options = {}) => {
     '';
   const mergedHeaders = {
     ...(options.headers || {}),
-    ...((method === 'post' || method === 'put' || method === 'delete') && adminKey ? { 'X-Admin-Key': adminKey } : {}),
+    ...((method === 'post' || method === 'put' || method === 'patch' || method === 'delete') && adminKey ? { 'X-Admin-Key': adminKey } : {}),
   };
 
   for (const url of urls) {
@@ -113,6 +113,8 @@ const apiRequest = async (method, path, data = null, options = {}) => {
         res = await axios.post(url, data, reqOptions);
       } else if (method === 'put') {
         res = await axios.put(url, data, reqOptions);
+      } else if (method === 'patch') {
+        res = await axios.patch(url, data, reqOptions);
       } else if (method === 'delete') {
         res = await axios.delete(url, reqOptions);
       }
@@ -201,6 +203,7 @@ export default function App() {
   const [showAlertSettingsModal, setShowAlertSettingsModal] = useState(false);
   const [showBetSlipModal, setShowBetSlipModal] = useState(false);
   const [draftSlipLegs, setDraftSlipLegs] = useState([]);
+  const [draftBookmaker, setDraftBookmaker] = useState('general');
   const [livePerfData, setLivePerfData] = useState(null);
 
   const watchlistSet = useMemo(() => new Set(watchlistIds.map(Number)), [watchlistIds]);
@@ -246,9 +249,17 @@ export default function App() {
     setDraftSlipLegs([]);
   }, []);
 
-  const handleSendAccaToSlip = useCallback((legs) => {
+  const handleLoadBookmakerLegs = useCallback((legs, bookmaker = 'sportybet') => {
     if (!Array.isArray(legs) || legs.length === 0) return;
     setDraftSlipLegs(legs);
+    setDraftBookmaker(bookmaker || 'sportybet');
+    setShowBetSlipModal(true);
+  }, []);
+
+  const handleSendAccaToSlip = useCallback((legs, _activeTab, bookmaker = 'general') => {
+    if (!Array.isArray(legs) || legs.length === 0) return;
+    setDraftSlipLegs(legs);
+    setDraftBookmaker(bookmaker || 'general');
     setShowAccaModal(false);
     setShowBetSlipModal(true);
   }, []);
@@ -1305,10 +1316,10 @@ export default function App() {
             <button
               onClick={() => setShowBetSlipModal(true)}
               className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-extrabold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-xl transition-all shadow-sm active:scale-95"
-              title="Open +EV Edge Calculator & Paper Bet Ledger"
+              title="Open SportyBet & Bet9ja Slip Builder, +EV Calculator & Paper Ledger"
             >
               <Calculator className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Bet Slip</span>
+              <span className="hidden sm:inline">Bet Slips</span>
               {draftSlipLegs.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-slate-950">
                   {draftSlipLegs.length}
@@ -3662,9 +3673,13 @@ export default function App() {
         isOpen={showBetSlipModal}
         onClose={() => setShowBetSlipModal(false)}
         draftLegs={draftSlipLegs}
+        draftBookmaker={draftBookmaker}
+        onChangeDraftBookmaker={setDraftBookmaker}
+        onLoadBookmakerLegs={handleLoadBookmakerLegs}
         onUpdateDraftLeg={handleUpdateDraftLeg}
         onRemoveDraftLeg={handleRemoveDraftLeg}
         onClearDraftLegs={handleClearDraftLegs}
+        selectedPickDay={selectedPickDay}
         apiRequest={apiRequest}
         darkMode={darkMode}
         onNotifyBanner={(msg) => {

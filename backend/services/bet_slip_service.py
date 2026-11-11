@@ -57,10 +57,25 @@ class BetSlipService:
         "x": "1x2_draw",
         "away win": "1x2_away",
         "2": "1x2_away",
+        "1x": "dc_1x",
+        "dc 1x": "dc_1x",
+        "double chance 1x": "dc_1x",
+        "home or draw": "dc_1x",
+        "x2": "dc_x2",
+        "dc x2": "dc_x2",
+        "double chance x2": "dc_x2",
+        "draw or away": "dc_x2",
+        "12": "dc_12",
+        "dc 12": "dc_12",
+        "double chance 12": "dc_12",
+        "home or away": "dc_12",
         "1h over 0.5": "ht_over_0_5_goals",
         "1h over 0.5 goals": "ht_over_0_5_goals",
+        "over 7.5 corners": "over_7_5_corners",
         "over 8.5 corners": "over_8_5_corners",
         "over 9.5 corners": "over_9_5_corners",
+        "over 10.5 corners": "over_10_5_corners",
+        "over 2.5 cards": "over_2_5_cards",
         "over 3.5 cards": "over_3_5_cards",
         "over 4.5 cards": "over_4_5_cards",
     }
@@ -161,6 +176,8 @@ class BetSlipService:
             "id": slip.id,
             "title": slip.title,
             "source": slip.source,
+            "bookmaker": (getattr(slip, "bookmaker", None) or "general"),
+            "booking_code": getattr(slip, "booking_code", None),
             "stake": round(float(slip.stake or 0.0), 2),
             "combined_odds": round(float(slip.combined_odds or 1.0), 2),
             "expected_win_prob": round(float(slip.expected_win_prob), 4) if slip.expected_win_prob is not None else None,
@@ -173,6 +190,18 @@ class BetSlipService:
             "settled_at": settled_iso,
         }
 
+    @staticmethod
+    def normalize_bookmaker(bookmaker: Optional[str]) -> str:
+        val = (bookmaker or "general").strip().lower()
+        return val if val in ("sportybet", "bet9ja", "general") else "general"
+
+    @staticmethod
+    def normalize_booking_code(booking_code: Optional[str]) -> Optional[str]:
+        if booking_code is None:
+            return None
+        cleaned = str(booking_code).strip().upper()[:32]
+        return cleaned if cleaned else None
+
     @classmethod
     def create_slip(
         cls,
@@ -181,6 +210,8 @@ class BetSlipService:
         source: str,
         stake: float,
         legs: List[Dict[str, Any]],
+        bookmaker: str = "general",
+        booking_code: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Validates, prices, persists, and settles (if applicable) a new tracked BetSlip."""
         existing_count = db.query(BetSlip).count()
@@ -224,6 +255,8 @@ class BetSlipService:
         slip = BetSlip(
             title=str(title or "Tracked Prediction Slip").strip()[:120],
             source=str(source or "manual").strip()[:32],
+            bookmaker=cls.normalize_bookmaker(bookmaker),
+            booking_code=cls.normalize_booking_code(booking_code),
             stake=eff_stake,
             combined_odds=eff_combined,
             expected_win_prob=round(joint_prob, 4),
@@ -403,6 +436,26 @@ class BetSlipService:
                 "max_drawdown": round(max_dd, 2),
             },
         }
+
+    @classmethod
+    def update_booking_code(
+        cls,
+        db: Session,
+        slip_id: int,
+        bookmaker: Optional[str] = None,
+        booking_code: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Updates the bookmaker profile and/or user-attached booking code on a tracked slip."""
+        row = db.query(BetSlip).filter(BetSlip.id == slip_id).first()
+        if not row:
+            return None
+        if bookmaker is not None:
+            row.bookmaker = cls.normalize_bookmaker(bookmaker)
+        if booking_code is not None:
+            row.booking_code = cls.normalize_booking_code(booking_code)
+        db.commit()
+        db.refresh(row)
+        return cls.serialize_slip(row)
 
     @staticmethod
     def delete_slip(db: Session, slip_id: int) -> bool:
