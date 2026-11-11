@@ -259,22 +259,61 @@ export default function App() {
   const [expandedRowMarketTabs, setExpandedRowMarketTabs] = useState({});
   const [extraMarketsMap, setExtraMarketsMap] = useState({});
   const [loadingExtraMap, setLoadingExtraMap] = useState({});
+  const [attemptedExtraMap, setAttemptedExtraMap] = useState({});
+  const extraMarketsRef = useRef({});
+  const loadingExtraRef = useRef(new Set());
+  const extraMarketsAttemptedRef = useRef(new Set());
 
-  const ensureExtraFixtureMarkets = useCallback(async (fix) => {
+  useEffect(() => {
+    extraMarketsRef.current = extraMarketsMap;
+  }, [extraMarketsMap]);
+
+  const mergeFixtureExtra = useCallback((fix, extra) => {
+    if (!extra) return fix;
+    const mergedCorners = extra.corners?.expected?.total != null ? extra.corners : (fix.corners ?? extra.corners);
+    const mergedCards = extra.cards?.expected?.total != null ? extra.cards : (fix.cards ?? extra.cards);
+    return {
+      ...fix,
+      ...(extra.prediction ? { prediction: { ...(fix.prediction || {}), ...extra.prediction } } : {}),
+      ...(mergedCorners !== undefined ? { corners: mergedCorners } : {}),
+      ...(mergedCards !== undefined ? { cards: mergedCards } : {}),
+    };
+  }, []);
+
+  const ensureExtraFixtureMarkets = useCallback(async (fix, force = false) => {
     const fixtureId = typeof fix === 'object' ? fix?.id : fix;
     if (!fixtureId) return;
-    const hasCorners = typeof fix === 'object' ? Boolean(fix?.corners?.total_markets) : false;
-    const hasCards = typeof fix === 'object' ? Boolean(fix?.cards?.total_markets) : false;
-    if (extraMarketsMap[fixtureId] || (hasCorners && hasCards)) return;
+    const cached = extraMarketsRef.current[fixtureId];
+    const hasCorners = Boolean((typeof fix === 'object' ? fix?.corners?.expected?.total != null : false) || cached?.corners?.expected?.total != null);
+    const hasCards = Boolean((typeof fix === 'object' ? fix?.cards?.expected?.total != null : false) || cached?.cards?.expected?.total != null);
+    if (hasCorners && hasCards) return;
+    if (loadingExtraRef.current.has(fixtureId)) return;
+    if (!force && extraMarketsAttemptedRef.current.has(fixtureId)) return;
+
+    extraMarketsAttemptedRef.current.add(fixtureId);
+    loadingExtraRef.current.add(fixtureId);
     setLoadingExtraMap(prev => (prev[fixtureId] ? prev : { ...prev, [fixtureId]: true }));
     try {
-      const res = await apiRequest('get', `/api/fixtures/${fixtureId}`, null, { timeout: 15000 });
+      const res = await apiRequest('get', `/api/fixtures/${fixtureId}/details`, null, { timeout: 20000 });
       const data = res?.data;
-      if (data && (data.corners || data.cards || data.prediction)) {
+      if (data && (data.corners !== undefined || data.cards !== undefined || data.prediction)) {
+        const incomingPred = data.prediction || null;
+        const existingPred = typeof fix === 'object' ? (fix?.prediction || {}) : {};
+        const normalizedPred = incomingPred
+          ? {
+              ...existingPred,
+              ...incomingPred,
+              over_4_5_probability: incomingPred.over_4_5_probability ?? incomingPred.goals?.over_4_5 ?? existingPred.over_4_5_probability,
+              btts_no_probability: incomingPred.btts_no_probability ?? incomingPred.btts?.no ?? existingPred.btts_no_probability,
+              home_win_probability: incomingPred.home_win_probability ?? incomingPred.result?.home_win ?? existingPred.home_win_probability,
+              draw_probability: incomingPred.draw_probability ?? incomingPred.result?.draw ?? existingPred.draw_probability,
+              away_win_probability: incomingPred.away_win_probability ?? incomingPred.result?.away_win ?? existingPred.away_win_probability,
+            }
+          : undefined;
         setExtraMarketsMap(prev => ({
           ...prev,
           [fixtureId]: {
-            ...(data.prediction ? { prediction: data.prediction } : {}),
+            ...(normalizedPred ? { prediction: normalizedPred } : {}),
             ...(data.corners !== undefined ? { corners: data.corners } : {}),
             ...(data.cards !== undefined ? { cards: data.cards } : {}),
           },
@@ -283,14 +322,16 @@ export default function App() {
     } catch (err) {
       console.warn(`Failed to lazy-load extra markets for fixture ${fixtureId}:`, err);
     } finally {
+      loadingExtraRef.current.delete(fixtureId);
       setLoadingExtraMap(prev => {
         if (!prev[fixtureId]) return prev;
         const next = { ...prev };
         delete next[fixtureId];
         return next;
       });
+      setAttemptedExtraMap(prev => (prev[fixtureId] ? prev : { ...prev, [fixtureId]: true }));
     }
-  }, [extraMarketsMap]);
+  }, []);
 
   const toggleTableRowMarkets = useCallback((fix) => {
     if (!fix?.id) return;
@@ -887,6 +928,46 @@ export default function App() {
     const startIndex = (currentPage - 1) * size;
     return filteredFixtures.slice(startIndex, startIndex + size);
   }, [filteredFixtures, currentPage, pageSize]);
+
+  // Auto-load missing Corners/Cards snapshots for visible rows when those tabs are opened
+  useEffect(() => {
+    if (activeTab !== 'upcoming') return;
+    if (activeMarketTab !== 'corners' && activeMarketTab !== 'cards') return;
+
+    let cancelled = false;
+    const marketKey = activeMarketTab === 'corners' ? 'corners' : 'cards';
+    const alreadyAttemptedOnPage = paginatedFixtures.filter((fix) =>
+      extraMarketsAttemptedRef.current.has(fix.id)
+    ).length;
+    const remainingBudget = Math.max(0, 24 - alreadyAttemptedOnPage);
+    if (remainingBudget === 0) return;
+
+    const candidates = paginatedFixtures
+      .filter((fix) => {
+        const merged = mergeFixtureExtra(fix, extraMarketsRef.current[fix.id]);
+        const hasData = merged?.[marketKey]?.expected?.total != null;
+        return !hasData && !extraMarketsAttemptedRef.current.has(fix.id) && !loadingExtraRef.current.has(fix.id);
+      })
+      .slice(0, remainingBudget);
+
+    if (candidates.length === 0) return;
+
+    const queue = [...candidates];
+    const workerCount = Math.min(3, queue.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (queue.length > 0 && !cancelled) {
+        const nextFix = queue.shift();
+        if (nextFix) {
+          await ensureExtraFixtureMarkets(nextFix);
+        }
+      }
+    });
+    void Promise.all(workers);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, activeMarketTab, paginatedFixtures, mergeFixtureExtra, ensureExtraFixtureMarkets]);
 
   // Total pagination pages
   const totalPages = useMemo(() => {
@@ -2356,7 +2437,7 @@ export default function App() {
             {/* MOBILE ACCORDION VIEW (< sm BREAKPOINT) */}
             <div className="block sm:hidden p-2 space-y-2">
               {paginatedFixtures.map(fix => {
-                const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+                const rowFix = mergeFixtureExtra(fix, extraMarketsMap[fix.id]);
                 const pred = rowFix.prediction || {};
                 const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
                 const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
@@ -2523,7 +2604,7 @@ export default function App() {
                 </thead>
                 <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
                   {paginatedFixtures.map(fix => {
-                    const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+                    const rowFix = mergeFixtureExtra(fix, extraMarketsMap[fix.id]);
                     const pred = rowFix.prediction || {};
                     const corners = rowFix.corners;
                     const cards = rowFix.cards;
@@ -2652,10 +2733,10 @@ export default function App() {
                             ) : (
                               <button
                                 type="button"
-                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix); }}
+                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix, true); }}
                                 className="text-[10px] font-semibold text-slate-400 hover:text-emerald-400 underline"
                               >
-                                {loadingExtraMap[fix.id] ? 'Loading...' : 'Load Corners'}
+                                {loadingExtraMap[fix.id] ? 'Syncing...' : attemptedExtraMap[fix.id] ? 'Unavailable (Retry)' : 'Load Corners'}
                               </button>
                             )
                           ) : activeMarketTab === 'cards' ? (
@@ -2671,10 +2752,10 @@ export default function App() {
                             ) : (
                               <button
                                 type="button"
-                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix); }}
+                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix, true); }}
                                 className="text-[10px] font-semibold text-slate-400 hover:text-emerald-400 underline"
                               >
-                                {loadingExtraMap[fix.id] ? 'Loading...' : 'Load Cards'}
+                                {loadingExtraMap[fix.id] ? 'Syncing...' : attemptedExtraMap[fix.id] ? 'Unavailable (Retry)' : 'Load Cards'}
                               </button>
                             )
                           ) : activeMarketTab === 'halves' ? (
@@ -2930,7 +3011,7 @@ export default function App() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {paginatedFixtures.map(fix => {
-              const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+              const rowFix = mergeFixtureExtra(fix, extraMarketsMap[fix.id]);
               const pred = rowFix.prediction || {};
               const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
               const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);

@@ -515,6 +515,30 @@ class TestPhase4Fixes(unittest.TestCase):
         finally:
             app.dependency_overrides.clear()
 
+    def test_main_annotations_evaluate_cleanly_for_python_311(self):
+        """Python 3.11 on Render evaluates module/function/class annotations eagerly at import time."""
+        import inspect
+        import main
+
+        failures = []
+        for name, obj in vars(main).items():
+            if getattr(obj, "__module__", None) != main.__name__:
+                continue
+            targets = [(name, obj)]
+            if inspect.isclass(obj):
+                targets.extend(
+                    (f"{name}.{m_name}", m_obj)
+                    for m_name, m_obj in vars(obj).items()
+                    if callable(m_obj)
+                )
+            for label, target in targets:
+                try:
+                    inspect.get_annotations(target, eval_str=True)
+                except Exception as exc:
+                    failures.append(f"{label}: {type(exc).__name__}: {exc}")
+
+        self.assertEqual(failures, [], f"Eager annotation evaluation failed (Python 3.11 incompatibility): {failures}")
+
 
 if __name__ == "__main__":
     unittest.main()
