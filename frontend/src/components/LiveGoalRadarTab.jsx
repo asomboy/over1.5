@@ -314,7 +314,7 @@ export default function LiveGoalRadarTab({
         </div>
 
         {/* Settled Live Hit-Rate Strip */}
-        {livePerfData && (livePerfData.settled_evaluations > 0 || (livePerfData.market_breakdown || []).length > 0) && (
+        {livePerfData && ((livePerfData.settled_evaluations ?? livePerfData.total_live_evaluations ?? 0) > 0 || (livePerfData.market_breakdown || []).length > 0) && (
           <div
             className={`mt-4 pt-3.5 border-t flex flex-wrap items-center justify-between gap-2 text-xs ${
               darkMode ? 'border-slate-800/80 text-slate-300' : 'border-slate-200 text-slate-700'
@@ -330,7 +330,7 @@ export default function LiveGoalRadarTab({
                     : '—'}
                 </strong>{' '}
                 <span className="text-slate-400 font-normal">
-                  ({livePerfData.settled_evaluations} graded signals across {livePerfData.settled_fixtures_count || 0} finished matches)
+                  ({livePerfData.settled_evaluations ?? livePerfData.total_live_evaluations ?? 0} graded signals across {livePerfData.settled_fixtures_count || 0} finished matches)
                 </span>
               </span>
             </div>

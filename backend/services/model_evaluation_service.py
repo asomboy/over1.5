@@ -768,6 +768,7 @@ class ModelEvaluationService:
 
         return {
             "total_live_evaluations": tot_live,
+            "settled_evaluations": tot_live,
             "settled_fixtures_count": settled_fixtures_count,
             "overall_accuracy": overall_agg.get("accuracy"),
             "status": "VALIDATED" if tot_live >= MIN_PRODUCTION_VALIDATION_SAMPLE else "INSUFFICIENT_DATA",

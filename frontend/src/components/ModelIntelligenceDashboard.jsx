@@ -1169,7 +1169,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               : '—'}
                           </span>
                           <span className="text-slate-400 font-semibold">
-                            {liveData.settled_evaluations ?? 0} graded · {liveData.settled_fixtures_count ?? 0} matches
+                            {liveData.settled_evaluations ?? liveData.total_live_evaluations ?? 0} graded · {liveData.settled_fixtures_count ?? 0} matches
                           </span>
                         </div>
                       )}
