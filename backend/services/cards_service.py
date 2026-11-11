@@ -641,7 +641,7 @@ class TeamDisciplineService:
                 "recent_5_forced": round(r5_forced, 2),
                 "recent_10_received": round(r10_recv, 2),
                 "recent_10_forced": round(r10_forced, 2),
-                "sample_size": len(venue_records),
+                "sample_size": len(records_to_use),
                 "total_sample_size": len(all_records),
                 "red_card_count": tot_reds
             }
@@ -821,8 +821,19 @@ class CardsPredictionEngine:
         """
         Low-frequency red card risk model (Poisson/Bernoulli process).
         """
-        base_h = (h_reds / float(max(1, h_sample))) if h_sample >= 5 else FALLBACK_RED_CARD_RATE_PER_TEAM
-        base_a = (a_reds / float(max(1, a_sample))) if a_sample >= 5 else FALLBACK_RED_CARD_RATE_PER_TEAM
+        if h_sample >= 5:
+            base_h = min(0.35, h_reds / float(h_sample))
+        elif h_sample > 0:
+            base_h = min(0.35, (h_reds + 5.0 * FALLBACK_RED_CARD_RATE_PER_TEAM) / float(h_sample + 5.0))
+        else:
+            base_h = FALLBACK_RED_CARD_RATE_PER_TEAM
+
+        if a_sample >= 5:
+            base_a = min(0.35, a_reds / float(a_sample))
+        elif a_sample > 0:
+            base_a = min(0.35, (a_reds + 5.0 * FALLBACK_RED_CARD_RATE_PER_TEAM) / float(a_sample + 5.0))
+        else:
+            base_a = FALLBACK_RED_CARD_RATE_PER_TEAM
 
         lam_h_red = _clamp(base_h * (lambda_home / 2.0), 0.02, 0.25)
         lam_a_red = _clamp(base_a * (lambda_away / 2.2), 0.02, 0.28)
@@ -969,12 +980,20 @@ class CardsPredictionEngine:
 
         is_low_sample = (h_sample == 0 and a_sample == 0 and l_sample == 0)
 
-        # Extract referee name from fixture or match statistics
-        ref_name = getattr(fixture, "referee_name", None)
-        if not ref_name:
-            m_stats = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fixture_id).first()
-            if m_stats:
-                ref_name = m_stats.referee_name
+        # Extract referee name from observed MatchStatistics / RefereeMatchStatistics records
+        ref_name = None
+        m_stats = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fixture_id).first()
+        if m_stats and m_stats.referee_name:
+            ref_name = m_stats.referee_name
+        else:
+            ref_row = (
+                db.query(Referee.name)
+                .join(RefereeMatchStatistics, RefereeMatchStatistics.referee_id == Referee.id)
+                .filter(RefereeMatchStatistics.fixture_id == fixture_id)
+                .first()
+            )
+            if ref_row:
+                ref_name = ref_row[0]
 
         # Calculate expected cards
         xg_h, xg_a, xg_tot, diag = cls.calculate_expected_cards(
@@ -987,10 +1006,12 @@ class CardsPredictionEngine:
         # Calculate probabilities
         probs = cls.calculate_card_probabilities(xg_h, xg_a, dispersion=dispersion_r)
 
-        # Calculate red card risk
+        # Calculate red card risk (use matching sample sizes from team discipline feature window)
         h_reds = diag["home_features"].get("red_card_count", 0)
         a_reds = diag["away_features"].get("red_card_count", 0)
-        red_risk = cls.calculate_red_card_risk(xg_h, xg_a, h_reds, a_reds, h_sample, a_sample)
+        h_red_sample = diag["home_features"].get("sample_size", 0)
+        a_red_sample = diag["away_features"].get("sample_size", 0)
+        red_risk = cls.calculate_red_card_risk(xg_h, xg_a, h_reds, a_reds, h_red_sample, a_red_sample)
 
         # Calculate confidence
         conf = cls.calculate_card_confidence(
@@ -1115,7 +1136,7 @@ class CardSnapshotService:
         snapshot = CardPredictionSnapshot(
             fixture_id=fixture_id,
             model_version=CARDS_MODEL_VERSION,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             is_prematch=is_prematch,
             expected_home_cards=exp["home"],
             expected_away_cards=exp["away"],
@@ -1188,7 +1209,7 @@ class CardSnapshotService:
             snapshot.actual_away_red_cards = actual_away_r
             snapshot.actual_total_cards = actual_total
             snapshot.is_verified = True
-            snapshot.verified_at = datetime.now(timezone.utc)
+            snapshot.verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
             db.commit()
 
         return snapshot

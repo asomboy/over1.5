@@ -109,26 +109,35 @@ class HistoricalDataService:
         if cls._is_paused:
             return {"status": "PAUSED", "fixtures_inspected": 0, "fixtures_completed": 0}
 
-        finished_fixtures = (
-            db.query(Fixture)
-            .filter(Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+        candidate_rows = (
+            db.query(Fixture, HistoricalEnrichmentStatus)
+            .outerjoin(HistoricalEnrichmentStatus, HistoricalEnrichmentStatus.fixture_id == Fixture.id)
+            .filter(
+                Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                or_(
+                    HistoricalEnrichmentStatus.id.is_(None),
+                    and_(
+                        HistoricalEnrichmentStatus.is_complete == False,
+                        HistoricalEnrichmentStatus.retry_eligible == True,
+                    ),
+                ),
+            )
             .order_by(Fixture.match_date.desc())
+            .limit(batch_size)
             .all()
         )
 
+        fix_ids = [fix.id for fix, _ in candidate_rows]
+        stats_by_fix = {
+            s.fixture_id: s
+            for s in (db.query(MatchStatistics).filter(MatchStatistics.fixture_id.in_(fix_ids)).all() if fix_ids else [])
+        }
+
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         processed = 0
         updated = 0
 
-        for fix in finished_fixtures:
-            if processed >= batch_size:
-                break
-
-            status_rec = (
-                db.query(HistoricalEnrichmentStatus)
-                .filter(HistoricalEnrichmentStatus.fixture_id == fix.id)
-                .first()
-            )
-
+        for fix, status_rec in candidate_rows:
             if not status_rec:
                 status_rec = HistoricalEnrichmentStatus(
                     fixture_id=fix.id,
@@ -137,15 +146,12 @@ class HistoricalDataService:
                 )
                 db.add(status_rec)
 
-            if not status_rec.retry_eligible or status_rec.is_complete:
-                continue
-
             status_rec.enrichment_attempts += 1
-            status_rec.last_attempted_at = datetime.now(timezone.utc)
+            status_rec.last_attempted_at = now_naive
             processed += 1
 
             # Check existing match statistics completeness
-            stats = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fix.id).first()
+            stats = stats_by_fix.get(fix.id)
             has_corners = stats is not None and stats.home_corners is not None and stats.away_corners is not None
             has_cards = stats is not None and stats.home_yellow_cards is not None and stats.away_yellow_cards is not None
             has_ref = stats is not None and (stats.referee_id is not None or stats.referee_name is not None)
@@ -153,19 +159,19 @@ class HistoricalDataService:
             status_rec.has_boxscore_stats = bool(has_corners and has_cards)
             status_rec.has_referee = bool(has_ref)
 
-            # Record provenance for verified fields
+            # Record provenance for verified fields cleanly without per-field commits
             if fix.home_score is not None:
-                DataReconciliationService.record_provenance(db, fix.id, "home_score", fix.home_score, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "home_score", fix.home_score, provider="espn", commit=False)
             if fix.away_score is not None:
-                DataReconciliationService.record_provenance(db, fix.id, "away_score", fix.away_score, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "away_score", fix.away_score, provider="espn", commit=False)
             if stats and stats.home_corners is not None:
-                DataReconciliationService.record_provenance(db, fix.id, "home_corners", stats.home_corners, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "home_corners", stats.home_corners, provider="espn", commit=False)
             if stats and stats.away_corners is not None:
-                DataReconciliationService.record_provenance(db, fix.id, "away_corners", stats.away_corners, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "away_corners", stats.away_corners, provider="espn", commit=False)
             if stats and stats.home_yellow_cards is not None:
-                DataReconciliationService.record_provenance(db, fix.id, "home_yellow_cards", stats.home_yellow_cards, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "home_yellow_cards", stats.home_yellow_cards, provider="espn", commit=False)
             if stats and stats.referee_name:
-                DataReconciliationService.record_provenance(db, fix.id, "referee_name", stats.referee_name, provider="espn")
+                DataReconciliationService.record_provenance(db, fix.id, "referee_name", stats.referee_name, provider="espn", commit=False)
 
             if has_corners and has_cards and has_ref:
                 status_rec.is_complete = True
@@ -175,7 +181,7 @@ class HistoricalDataService:
                 # Mark as not retry eligible to avoid querying provider repeatedly
                 status_rec.retry_eligible = False
 
-            status_rec.updated_at = datetime.now(timezone.utc)
+            status_rec.updated_at = now_naive
 
         db.commit()
 

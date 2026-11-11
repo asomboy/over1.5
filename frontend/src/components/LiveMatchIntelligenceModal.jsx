@@ -1,38 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
-  Activity,
   Zap,
-  Clock,
-  Shield,
-  Flag,
-  Square,
-  UserCheck,
-  AlertTriangle,
   RefreshCw,
-  TrendingUp,
   CheckCircle2,
-  Layers,
-  ChevronRight,
-  Crosshair,
-  BarChart3,
-  Calendar,
   Sparkles,
-  Radio,
-  FileText
+  Radio
 } from 'lucide-react';
 
-export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, isOpen, onClose, apiRequest, darkMode }) {
-  const [liveData, setLiveData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'shots' | 'timeline' | 'model'
-  const [tickerTime, setTickerTime] = useState(Date.now());
-  const activeFixtureIdRef = useRef(fixtureId);
-  const requestIdRef = useRef(0);
-  const abortControllerRef = useRef(null);
+const formatFixed = (val, decimals = 2, fallback = '0.00') =>
+  typeof val === 'number' && Number.isFinite(val) ? val.toFixed(decimals) : fallback;
 
-  // Helper to construct baseline canonical structure from known fixture data
-  const buildInitialDataFromFixture = (fix, fid) => {
+// Helper to construct baseline canonical structure from known fixture data
+const buildInitialDataFromFixture = (fix, fid) => {
     if (!fix) return null;
     const hTeam = fix.home_team || { name: 'Home Team' };
     const aTeam = fix.away_team || { name: 'Away Team' };
@@ -57,7 +37,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
       },
       live_state: {
         minute: fix.live_clock ? parseInt(fix.live_clock, 10) || null : null,
-        display_clock: fix.live_clock || (fix.status === 'LIVE' ? "LIVE" : (fix.status === 'FINISHED' || fix.status === 'FT' ? 'FT' : 'PRE')),
+        display_clock: fix.live_clock || (fix.status === 'FINISHED' || fix.status === 'FT' ? 'FT' : (fix.status === 'SCHEDULED' ? 'PRE' : '—')),
         period: fix.status === 'FINISHED' || fix.status === 'FT' ? 'FT' : (fix.status === 'LIVE' ? '1H' : 'PRE'),
         status: fix.status || 'SCHEDULED',
         score: {
@@ -96,6 +76,25 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
     };
   };
 
+export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, isOpen, onClose, onOpenDetailModal, apiRequest, darkMode }) {
+  const [liveData, setLiveData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'goals' | 'corners' | 'cards' | 'shots' | 'timeline' | 'model'
+  const [tickerTime, setTickerTime] = useState(Date.now());
+  const activeFixtureIdRef = useRef(fixtureId);
+  const initialFixtureRef = useRef(initialFixture);
+  const hasLiveDataRef = useRef(false);
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
+
+  useEffect(() => {
+    initialFixtureRef.current = initialFixture;
+  }, [initialFixture]);
+
+  useEffect(() => {
+    hasLiveDataRef.current = Boolean(liveData);
+  }, [liveData]);
+
   // Keep ref synchronized
   useEffect(() => {
     activeFixtureIdRef.current = fixtureId;
@@ -110,50 +109,9 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
     return () => clearInterval(ticker);
   }, [isOpen]);
 
-  // Fixture change & initial fetch: abort any in-flight request, set baseline immediately
-  useEffect(() => {
-    if (isOpen && fixtureId) {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      const initial = buildInitialDataFromFixture(initialFixture, fixtureId);
-      setLiveData(initial);
-      setActiveTab('overview');
-      fetchLiveMatchData(false, fixtureId);
-    } else {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      setLiveData(null);
-    }
-
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [isOpen, fixtureId]);
-
-  // Single controlled polling loop every 30 seconds
-  useEffect(() => {
-    if (!isOpen || !fixtureId) return;
-
-    // Do not poll if match already finished
-    if (liveData?.is_completed || liveData?.status === 'FINISHED' || liveData?.live_state?.status === 'FINISHED') {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      if (liveData?.is_completed || liveData?.status === 'FINISHED' || liveData?.live_state?.status === 'FINISHED') return;
-      fetchLiveMatchData(true, fixtureId);
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [isOpen, fixtureId, liveData?.is_completed, liveData?.status, liveData?.live_state?.status]);
-
-  const fetchLiveMatchData = async (silent = false, targetId = fixtureId) => {
+  const fetchLiveMatchData = useCallback(async (silent = false, targetId = fixtureId) => {
     if (!targetId) return;
-    if (!silent && !liveData) setLoading(true);
+    if (!silent && !hasLiveDataRef.current) setLoading(true);
 
     const thisRequestId = ++requestIdRef.current;
     const controller = new AbortController();
@@ -240,7 +198,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
           ) {
             const dt = dtRes.data;
             setLiveData(prev => {
-              const base = prev || buildInitialDataFromFixture(initialFixture, targetId) || {};
+              const base = prev || buildInitialDataFromFixture(initialFixtureRef.current, targetId) || {};
               const hName = dt.home_team?.name || base.fixture?.home_team?.name || 'Home Team';
               const aName = dt.away_team?.name || base.fixture?.away_team?.name || 'Away Team';
               return {
@@ -254,7 +212,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
                 },
                 live_state: base.live_state || {
                   minute: null,
-                  display_clock: 'LIVE',
+                  display_clock: dt.live_clock || '—',
                   period: '1H',
                   status: 'LIVE',
                   score: { home: null, away: null }
@@ -274,7 +232,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
               };
             });
           }
-        } catch (dtErr) {
+        } catch {
           // Handled gracefully
         }
       }
@@ -283,7 +241,48 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
         setLoading(false);
       }
     }
-  };
+  }, [apiRequest, fixtureId]);
+
+  // Fixture change & initial fetch: abort any in-flight request, set baseline immediately
+  useEffect(() => {
+    if (isOpen && fixtureId) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const initial = buildInitialDataFromFixture(initialFixtureRef.current, fixtureId);
+      setLiveData(initial);
+      setActiveTab('overview');
+      fetchLiveMatchData(false, fixtureId);
+    } else {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      setLiveData(null);
+    }
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [isOpen, fixtureId, fetchLiveMatchData]);
+
+  // Single controlled polling loop every 30 seconds while tab is visible
+  useEffect(() => {
+    if (!isOpen || !fixtureId) return;
+
+    // Do not poll if match already finished
+    if (liveData?.is_completed || liveData?.status === 'FINISHED' || liveData?.live_state?.status === 'FINISHED') {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      fetchLiveMatchData(true, fixtureId);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [isOpen, fixtureId, liveData?.is_completed, liveData?.status, liveData?.live_state?.status, fetchLiveMatchData]);
 
   if (!isOpen) return null;
 
@@ -303,7 +302,6 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
   const corners = predictions.corners || {};
   const cards = predictions.cards || {};
   const diag = predictions.diagnostics || {};
-  const signals = liveData?.signals || [];
   const bestSignal = liveData?.best_signal || { label: 'NO_SIGNAL' };
   const dataQuality = liveData?.data_quality || {};
 
@@ -311,20 +309,16 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
   const retrievedAtMs = liveData?.retrieved_at ? new Date(liveData.retrieved_at).getTime() : 0;
   const ageSec = retrievedAtMs > 0 ? Math.max(0, Math.round((tickerTime - retrievedAtMs) / 1000)) : 999;
   
-  let freshnessState = 'FRESH';
   let freshnessColor = 'text-emerald-400 bg-emerald-500/15 border-emerald-500/40';
   let freshnessLabel = `LIVE / FRESH (${ageSec}s ago)`;
 
   if (!liveData?.retrieved_at || liveData?.data_status === 'UNAVAILABLE') {
-    freshnessState = 'UNAVAILABLE';
     freshnessColor = 'text-slate-400 bg-slate-800/40 border-slate-700';
     freshnessLabel = 'LIVE DATA UNAVAILABLE';
   } else if (ageSec > 180 || liveData?.data_status === 'VERY_STALE') {
-    freshnessState = 'VERY_STALE';
     freshnessColor = 'text-rose-400 bg-rose-500/15 border-rose-500/40';
     freshnessLabel = `FEED STALE (Last: ${Math.round(ageSec / 60)}m ago)`;
   } else if (ageSec > 60 || liveData?.data_status === 'STALE') {
-    freshnessState = 'STALE';
     freshnessColor = 'text-amber-400 bg-amber-500/15 border-amber-500/40';
     freshnessLabel = `FEED DELAYED (${ageSec}s ago)`;
   }
@@ -398,8 +392,17 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
               </div>
             </div>
 
-            {/* Actions: Refresh & Close */}
+            {/* Actions: Pre-Match Detail, Refresh & Close */}
             <div className="flex items-center gap-2">
+              {onOpenDetailModal && (
+                <button
+                  onClick={() => onOpenDetailModal(fixtureId, 'decision_intel')}
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold transition-colors whitespace-nowrap"
+                  title="Switch to pre-match intelligence & stats"
+                >
+                  Pre-Match
+                </button>
+              )}
               <button
                 onClick={() => fetchLiveMatchData(false, fixtureId)}
                 className="p-2 rounded-2xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
@@ -661,18 +664,18 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
                         <span className="text-[10px] text-slate-400 block font-bold">{homeTeam.name} Rem</span>
-                        <span className="text-lg font-black text-white">{goals.remaining_xg?.home?.toFixed(2) ?? '0.00'}</span>
-                        <span className="text-[9px] text-slate-500 block">Pre: {goals.pre_match_xg?.home?.toFixed(2) ?? '0.00'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(goals.remaining_xg?.home, 2, '0.00')}</span>
+                        <span className="text-[9px] text-slate-500 block">Pre: {formatFixed(goals.pre_match_xg?.home, 2, '0.00')}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/30">
                         <span className="text-[10px] text-rose-400 block font-bold">Total Remaining</span>
-                        <span className="text-xl font-black text-rose-400">{goals.remaining_xg?.total?.toFixed(2) ?? '0.00'}</span>
-                        <span className="text-[9px] text-rose-500/80 block">Pre: {goals.pre_match_xg?.total?.toFixed(2) ?? '0.00'}</span>
+                        <span className="text-xl font-black text-rose-400">{formatFixed(goals.remaining_xg?.total, 2, '0.00')}</span>
+                        <span className="text-[9px] text-rose-500/80 block">Pre: {formatFixed(goals.pre_match_xg?.total, 2, '0.00')}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
                         <span className="text-[10px] text-slate-400 block font-bold">{awayTeam.name} Rem</span>
-                        <span className="text-lg font-black text-white">{goals.remaining_xg?.away?.toFixed(2) ?? '0.00'}</span>
-                        <span className="text-[9px] text-slate-500 block">Pre: {goals.pre_match_xg?.away?.toFixed(2) ?? '0.00'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(goals.remaining_xg?.away, 2, '0.00')}</span>
+                        <span className="text-[9px] text-slate-500 block">Pre: {formatFixed(goals.pre_match_xg?.away, 2, '0.00')}</span>
                       </div>
                     </div>
                   </div>
@@ -730,7 +733,7 @@ export default function LiveMatchIntelligenceModal({ fixtureId, initialFixture, 
                       </div>
                       <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/30">
                         <span className="text-[10px] text-purple-300 block font-bold">[MODEL-DERIVED] Expected Rem</span>
-                        <span className="text-base font-black text-purple-300">+{corners.remaining_expected_corners?.total?.toFixed(1) ?? '0.0'}</span>
+                        <span className="text-base font-black text-purple-300">+{formatFixed(corners.remaining_expected_corners?.total, 1, '0.0')}</span>
                       </div>
                     </div>
                   </div>

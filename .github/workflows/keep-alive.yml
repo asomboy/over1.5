@@ -7,7 +7,6 @@ on:
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 env:
-  # Replace with your actual Render backend URL
   RENDER_API_URL: https://soccer-goal-predictor-api.onrender.com
 
 jobs:
@@ -17,26 +16,28 @@ jobs:
       - name: Ping API to prevent spin-down
         run: |
           echo "Pinging Render API at $(date -u)..."
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ env.RENDER_API_URL }}/api/fixtures/upcoming" --max-time 60)
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ env.RENDER_API_URL }}/api/system/health" --max-time 60)
           echo "Response status: $HTTP_STATUS"
-          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 500 ]; then
-            echo "✅ Server is alive (HTTP $HTTP_STATUS)"
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
+            echo "Server is alive (HTTP $HTTP_STATUS)"
           else
-            echo "⚠️ Server returned HTTP $HTTP_STATUS"
+            echo "Server healthcheck failed with HTTP $HTTP_STATUS"
+            exit 1
           fi
 
   daily-sync:
     runs-on: ubuntu-latest
-    # Only run the full sync at midnight UTC and noon UTC
-    if: github.event.schedule == '*/14 * * * *' && (github.event.schedule == '*/14 * * * *')
+    # Run once in the first 14-minute tick of UTC midnight (00:00-00:13) and noon (12:00-12:13)
+    if: github.event.schedule == '*/14 * * * *' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Check if sync is needed (runs at ~00:00 and ~12:00 UTC)
+      - name: Check if sync window matches
         id: check_time
         run: |
           HOUR=$(date -u +%H)
           MINUTE=$(date -u +%M)
+          MIN_INT=$((10#$MINUTE))
           echo "Current UTC time: ${HOUR}:${MINUTE}"
-          if [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || { { [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; } && [ "$MIN_INT" -lt 14 ]; }; then
             echo "sync_needed=true" >> $GITHUB_OUTPUT
           else
             echo "sync_needed=false" >> $GITHUB_OUTPUT
@@ -47,13 +48,15 @@ jobs:
         run: |
           echo "Triggering full data sync at $(date -u)..."
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
-            -X POST "${{ env.RENDER_API_URL }}/api/ingest/sync" \
+            -X POST \
+            -H "X-Admin-Key: ${{ secrets.ADMIN_API_KEY }}" \
+            "${{ env.RENDER_API_URL }}/api/ingest/sync" \
             --max-time 120)
           echo "Sync response status: $HTTP_STATUS"
           cat response.json 2>/dev/null || true
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-            echo "✅ Daily sync completed successfully"
+            echo "Daily sync completed successfully"
           else
-            echo "❌ Sync failed with HTTP $HTTP_STATUS"
+            echo "Sync failed with HTTP $HTTP_STATUS"
             exit 1
           fi

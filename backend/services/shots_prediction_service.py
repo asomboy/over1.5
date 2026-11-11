@@ -179,7 +179,8 @@ class ShotsPredictionEngine:
         if not fixture:
             return {"error": f"Fixture {fixture_id} not found"}
 
-        now = fixture.match_date or datetime.now(timezone.utc)
+        raw_now = fixture.match_date or datetime.now(timezone.utc)
+        now = raw_now.astimezone(timezone.utc).replace(tzinfo=None) if getattr(raw_now, "tzinfo", None) else raw_now
         h_team_id = fixture.home_team_id
         a_team_id = fixture.away_team_id
 
@@ -195,32 +196,36 @@ class ShotsPredictionEngine:
         lambda_a_shots = max(3.0, min(24.0, lambda_a_shots))
         lambda_total_shots = lambda_h_shots + lambda_a_shots
 
-        # SoT Rates (bounded by shots)
-        lambda_h_sot = min(lambda_h_shots * 0.90, max(1.0, h_feat["avg_sot_for"] * (a_feat["avg_sot_against"] / DEFAULT_LEAGUE_SOT_AWAY)))
-        lambda_a_sot = min(lambda_a_shots * 0.90, max(0.8, a_feat["avg_sot_for"] * (h_feat["avg_sot_against"] / DEFAULT_LEAGUE_SOT_HOME)))
+        # SoT Rates (bounded by shots; divide home attack by home baseline, away attack by away baseline)
+        lambda_h_sot = min(lambda_h_shots * 0.90, max(1.0, h_feat["avg_sot_for"] * (a_feat["avg_sot_against"] / DEFAULT_LEAGUE_SOT_HOME)))
+        lambda_a_sot = min(lambda_a_shots * 0.90, max(0.8, a_feat["avg_sot_for"] * (h_feat["avg_sot_against"] / DEFAULT_LEAGUE_SOT_AWAY)))
         lambda_total_sot = lambda_h_sot + lambda_a_sot
 
-        # Construct Discrete PMFs (Negative Binomial)
+        # Construct Discrete PMFs (Negative Binomial) normalized cleanly over full grid
         r_shots = DEFAULT_SHOTS_DISPERSION_R
         r_sot = DEFAULT_SOT_DISPERSION_R
 
-        h_shots_pmf = [_negative_binomial_pmf(k, lambda_h_shots, r_shots) for k in range(MAX_SHOT_GRID)]
-        a_shots_pmf = [_negative_binomial_pmf(k, lambda_a_shots, r_shots) for k in range(MAX_SHOT_GRID)]
+        def _normalized_nb_pmf(mu: float, r: float, grid_size: int) -> List[float]:
+            pmf = [_negative_binomial_pmf(k, mu, r) for k in range(grid_size)]
+            tot = sum(pmf)
+            return [p / tot for p in pmf] if tot > 0 else [1.0] + [0.0] * (grid_size - 1)
 
-        # Convolution for total shots PMF
-        total_shots_pmf = [0.0] * MAX_SHOT_GRID
-        for i in range(MAX_SHOT_GRID):
-            for j in range(MAX_SHOT_GRID - i):
-                total_shots_pmf[i + j] += h_shots_pmf[i] * a_shots_pmf[j]
+        def _convolve_pmfs(pmf_a: List[float], pmf_b: List[float]) -> List[float]:
+            total = [0.0] * (len(pmf_a) + len(pmf_b) - 1)
+            for i, pa in enumerate(pmf_a):
+                for j, pb in enumerate(pmf_b):
+                    total[i + j] += pa * pb
+            tot = sum(total)
+            return [p / tot for p in total] if tot > 0 else total
+
+        h_shots_pmf = _normalized_nb_pmf(lambda_h_shots, r_shots, MAX_SHOT_GRID)
+        a_shots_pmf = _normalized_nb_pmf(lambda_a_shots, r_shots, MAX_SHOT_GRID)
+        total_shots_pmf = _convolve_pmfs(h_shots_pmf, a_shots_pmf)
 
         # SoT PMFs
-        h_sot_pmf = [_negative_binomial_pmf(k, lambda_h_sot, r_sot) for k in range(MAX_SOT_GRID)]
-        a_sot_pmf = [_negative_binomial_pmf(k, lambda_a_sot, r_sot) for k in range(MAX_SOT_GRID)]
-
-        total_sot_pmf = [0.0] * MAX_SOT_GRID
-        for i in range(MAX_SOT_GRID):
-            for j in range(MAX_SOT_GRID - i):
-                total_sot_pmf[i + j] += h_sot_pmf[i] * a_sot_pmf[j]
+        h_sot_pmf = _normalized_nb_pmf(lambda_h_sot, r_sot, MAX_SOT_GRID)
+        a_sot_pmf = _normalized_nb_pmf(lambda_a_sot, r_sot, MAX_SOT_GRID)
+        total_sot_pmf = _convolve_pmfs(h_sot_pmf, a_sot_pmf)
 
         # Derive Monotonic Market Probabilities
         # Total Shots Over/Under Lines
@@ -407,7 +412,7 @@ class ShotsPredictionEngine:
         snapshot = ShotPredictionSnapshot(
             fixture_id=fixture_id,
             model_version=SHOTS_MODEL_VERSION,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             match_minute=0,
             is_live=False,
             expected_home_shots=pred["shots"]["expected_home_shots"],
@@ -421,7 +426,7 @@ class ShotsPredictionEngine:
             confidence=pred["confidence"],
             data_quality=pred["data_quality"],
             diagnostics_json=json.dumps(pred["diagnostics"]),
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
         db.add(snapshot)
         db.commit()

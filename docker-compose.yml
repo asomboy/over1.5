@@ -11,10 +11,11 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=production
-      - DATABASE_URL=sqlite:///./backend/soccer.db
+      - DATABASE_URL=sqlite:////app/data/soccer.db
+      - BACKUP_DIRECTORY=/app/data/backups
       - LOG_LEVEL=INFO
     volumes:
-      - soccer_data:/app/backend
+      - soccer_data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/system/health"]
       interval: 30s

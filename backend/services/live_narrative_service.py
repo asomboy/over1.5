@@ -41,9 +41,9 @@ class LiveNarrativeEngine:
         curr_min = current_state.get("minute", 0)
         curr_clock = current_state.get("display_clock", f"{curr_min}'")
 
-        curr_score = current_state.get("score", {})
-        curr_h_score = curr_score.get("home", 0)
-        curr_a_score = curr_score.get("away", 0)
+        curr_score = current_state.get("score") or {}
+        curr_h_score = curr_score.get("home")
+        curr_a_score = curr_score.get("away")
 
         stats = current_state.get("statistics", {})
         shots_stat = stats.get("shots", {})
@@ -68,29 +68,31 @@ class LiveNarrativeEngine:
 
         # 1. State change analysis against previous state
         if previous_state:
-            prev_score = previous_state.get("score", {})
-            prev_h_score = prev_score.get("home", 0)
-            prev_a_score = prev_score.get("away", 0)
+            prev_score = previous_state.get("score") or {}
+            prev_h_score = prev_score.get("home")
+            prev_a_score = prev_score.get("away")
 
-            # Score change
-            if curr_h_score > prev_h_score:
+            # Score change (only when both prior and current numeric scores are observed)
+            if curr_h_score is not None and prev_h_score is not None and curr_h_score > prev_h_score:
                 diff = curr_h_score - prev_h_score
+                score_away_disp = curr_a_score if curr_a_score is not None else 0
                 statements.append({
                     "id": f"narr_goal_h_{curr_min}_{diff}",
                     "minute": curr_min,
                     "category": "SCORE",
-                    "statement": f"[OBSERVED FACT] GOAL! {home_team} scores to make it {curr_h_score}–{curr_a_score}.",
+                    "statement": f"[OBSERVED FACT] GOAL! {home_team} scores to make it {curr_h_score}–{score_away_disp}.",
                     "field": "score.home",
                     "observed_value": curr_h_score,
                     "retrieved_at": retrieved_at
                 })
-            if curr_a_score > prev_a_score:
+            if curr_a_score is not None and prev_a_score is not None and curr_a_score > prev_a_score:
                 diff = curr_a_score - prev_a_score
+                score_home_disp = curr_h_score if curr_h_score is not None else 0
                 statements.append({
                     "id": f"narr_goal_a_{curr_min}_{diff}",
                     "minute": curr_min,
                     "category": "SCORE",
-                    "statement": f"[OBSERVED FACT] GOAL! {away_team} scores to make it {curr_h_score}–{curr_a_score}.",
+                    "statement": f"[OBSERVED FACT] GOAL! {away_team} scores to make it {score_home_disp}–{curr_a_score}.",
                     "field": "score.away",
                     "observed_value": curr_a_score,
                     "retrieved_at": retrieved_at
@@ -233,7 +235,7 @@ class LiveNarrativeEngine:
             })
 
         # Completed match statement
-        if current_state.get("is_completed"):
+        if current_state.get("is_completed") and curr_h_score is not None and curr_a_score is not None:
             statements.insert(0, {
                 "id": f"narr_ft_{curr_min}",
                 "minute": curr_min,

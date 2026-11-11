@@ -22,13 +22,12 @@ build/
 
 # Environment & Logs
 .env
+**/.env
 *.log
 *.db
-!backend/soccer.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
 backend/backups/
 backend/tests/fixtures/*.db
-

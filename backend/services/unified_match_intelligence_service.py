@@ -367,7 +367,7 @@ class UnifiedMatchIntelligenceService:
     def _get_live_intelligence(cls, db: Session, fixture: Fixture) -> Optional[Dict[str, Any]]:
         """Extracts live dynamic prediction state if match is currently in-play."""
         try:
-            live_pred = LiveMatchIntelligenceService.predict_live_match(db, fixture.id)
+            live_pred = LiveMatchIntelligenceService.get_live_intelligence(db, fixture.id)
             if live_pred and not live_pred.get("error"):
                 return {
                     "status": "LIVE_ACTIVE",
@@ -382,7 +382,7 @@ class UnifiedMatchIntelligenceService:
                     "live_confidence": live_pred.get("confidence", {}).get("overall_confidence", 60)
                 }
         except Exception as ex:
-            logger.debug(f"Live prediction extraction for fixture {fixture.id}: {ex}")
+            logger.warning(f"Live prediction extraction failed for fixture {fixture.id}: {ex}")
         return None
 
     @classmethod
@@ -794,7 +794,7 @@ class UnifiedMatchIntelligenceService:
             match_state_tags=json.dumps(intelligence.get("match_state_classification", [])),
             cross_market_consistency_score=intelligence.get("cross_market_consistency", {}).get("consistency_score", 1.0),
             intelligence_payload=json.dumps(intelligence),
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
         db.add(snapshot)
         db.commit()

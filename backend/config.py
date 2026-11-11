@@ -1,11 +1,40 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
+
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
+
+def _parse_cors_origins() -> List[str]:
+    raw = os.getenv("CORS_ORIGINS", "")
+    defaults = [
+        "https://soccer-goal-predictor-web.onrender.com",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
+    if not raw.strip():
+        return defaults
+    parsed = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    for origin in defaults:
+        if origin not in parsed:
+            parsed.append(origin)
+    return parsed
+
 
 class Settings:
     """
     Centralized configuration management for Soccer Goal Predictor / Match Intelligence Platform.
     Provides environment-driven configuration with safe development defaults.
     """
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
     DEFAULT_DB_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soccer.db")
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -53,6 +82,7 @@ class Settings:
         """Returns non-sensitive operational configuration overview."""
         return {
             "environment": cls.ENVIRONMENT,
+            "admin_auth_configured": bool(cls.ADMIN_API_KEY),
             "database_url": cls.DATABASE_URL.split("?")[0],
             "log_level": cls.LOG_LEVEL,
             "retry_max_attempts": cls.RETRY_MAX_ATTEMPTS,
@@ -72,11 +102,5 @@ class Settings:
 
 settings = Settings()
 DATABASE_URL = settings.DATABASE_URL
-CORS_ORIGINS = [
-    "https://soccer-goal-predictor-web.onrender.com",
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-]
+CORS_ORIGINS = _parse_cors_origins()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "")

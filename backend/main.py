@@ -2,12 +2,13 @@ import os
 import sys
 import json
 import math
+import hmac
 import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Request, Query
+from fastapi import FastAPI, Depends, HTTPException, Request, Query, Body
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -27,7 +28,7 @@ if BACKEND_DIR not in sys.path:
 
 try:
     from database import init_db, get_db, engine, SessionLocal
-    from config import CORS_ORIGINS, FOOTBALL_API_KEY
+    from config import CORS_ORIGINS, FOOTBALL_API_KEY, settings
     import models
     from services.statistics_service import (
         calculate_team_statistics,
@@ -49,7 +50,7 @@ try:
     from services.calibration_service import CalibrationService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
-    from .config import CORS_ORIGINS, FOOTBALL_API_KEY
+    from .config import CORS_ORIGINS, FOOTBALL_API_KEY, settings
     from . import models
     from .services.statistics_service import (
         calculate_team_statistics,
@@ -78,12 +79,60 @@ logger = logging.getLogger(__name__)
 class FixtureQueryParams(BaseModel):
     date: Optional[str] = None
     league: Optional[str] = "ALL"
-    limit: Optional[int] = Field(50, ge=1, le=200)
+    limit: Optional[int] = Field(None, ge=1, le=2000)
+
+
+def _load_preds_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.Prediction]:
+    """Loads Prediction rows strictly for the requested fixture IDs in safe SQLite IN chunks."""
+    preds_map: Dict[int, models.Prediction] = {}
+    if not fixture_ids:
+        return preds_map
+    for i in range(0, len(fixture_ids), 500):
+        chunk = fixture_ids[i:i + 500]
+        rows = (
+            db.query(models.Prediction)
+            .filter(models.Prediction.fixture_id.in_(chunk))
+            .order_by(models.Prediction.id.asc())
+            .all()
+        )
+        for row in rows:
+            preds_map[row.fixture_id] = row
+    return preds_map
+
+
+def _apply_fixture_query_filters(query, params: FixtureQueryParams):
+    if params.date:
+        parsed_dt = datetime.fromisoformat(params.date.replace("Z", "+00:00"))
+        s_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 0, 0, 0)
+        e_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 23, 59, 59, 999999)
+        query = query.filter(models.Fixture.match_date >= s_dt, models.Fixture.match_date <= e_dt)
+    if params.league and params.league.strip().upper() != "ALL":
+        query = query.filter(func.lower(models.League.name).contains(params.league.strip().lower()))
+    return query
+
+def _resolve_trust_flags(fixture, canon_ident, is_finished: bool = False) -> tuple[str, str]:
+    """Computes factual freshness and identity status without hardcoding FRESH/VALID unconditionally."""
+    from services.live_provider_service import LiveProviderAdapterService
+    live_st = getattr(fixture, "live_state", None)
+    if live_st and getattr(live_st, "last_updated", None):
+        freshness = LiveProviderAdapterService.calculate_freshness(live_st.last_updated)["status"]
+    elif is_finished:
+        freshness = "HISTORICAL"
+    elif getattr(fixture, "created_at", None):
+        freshness = "SYNCED"
+    else:
+        freshness = "UNAVAILABLE"
+
+    has_teams = bool(getattr(fixture, "home_team", None) and getattr(fixture, "away_team", None))
+    has_league = bool(canon_ident and getattr(canon_ident, "competition_code", None) and canon_ident.competition_code != "GENERIC")
+    identity_status = "IDENTITY_VALID" if (has_teams and has_league) else "UNVERIFIED"
+    return freshness, identity_status
+
 
 def validate_fixture_query(
     date: Optional[str] = Query(None, description="Match date filter (ISO YYYY-MM-DD)"),
     league: Optional[str] = Query("ALL", description="League name or 'ALL'"),
-    limit: Optional[int] = Query(50, ge=1, le=200, description="Max results limit (1-200)")
+    limit: Optional[int] = Query(None, ge=1, le=2000, description="Optional max results limit (1-2000)")
 ) -> FixtureQueryParams:
     if date is not None and date != "" and date != "ALL":
         try:
@@ -94,7 +143,29 @@ def validate_fixture_query(
         except Exception:
             raise HTTPException(status_code=422, detail=f"Invalid date format '{date}'. Expected ISO format (e.g. YYYY-MM-DD).")
     
-    return FixtureQueryParams(date=date if (date and date != "ALL") else None, league=league or "ALL", limit=limit or 50)
+    return FixtureQueryParams(date=date if (date and date != "ALL") else None, league=league or "ALL", limit=limit)
+
+
+class ConflictResolveRequest(BaseModel):
+    resolved_value: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def require_admin_auth(request: Request):
+    """Enforces admin API key authentication on mutating routes (always fail-closed in production)."""
+    configured_key = (getattr(settings, "ADMIN_API_KEY", None) or "").strip()
+    env = (getattr(settings, "ENVIRONMENT", None) or "development").strip().lower()
+    if not configured_key:
+        if env == "production":
+            raise HTTPException(status_code=503, detail="Admin authentication is not configured in production")
+        return
+    provided = request.headers.get("X-Admin-Key") or ""
+    if not provided:
+        auth_header = request.headers.get("Authorization") or ""
+        if auth_header.lower().startswith("bearer "):
+            provided = auth_header[7:].strip()
+    if not provided or not hmac.compare_digest(provided, configured_key):
+        raise HTTPException(status_code=401, detail="Unauthorized: valid X-Admin-Key or Bearer token required")
 
 
 # Track the last successful sync time to prevent redundant API calls
@@ -112,16 +183,17 @@ async def scheduled_data_refresh():
     3. Recalculates Poisson goal predictions for all upcoming fixtures.
     """
     logger.info("Executing scheduled data refresh and prediction recalculation cycle...")
-    def run_full_refresh():
+    ing_db = SessionLocal()
+    try:
+        await DataIngestionService.fetch_and_ingest_from_api(ing_db, api_key=FOOTBALL_API_KEY)
+    except Exception as e:
+        logger.error(f"Error during scheduled API ingestion: {str(e)}")
+    finally:
+        ing_db.close()
+
+    def run_post_ingest():
         calc_db = SessionLocal()
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
-            finally:
-                loop.close()
-
             calculate_all_league_statistics(calc_db)
             calculate_all_team_statistics(calc_db)
             DataIngestionService.purge_school_and_youth_competitions(calc_db)
@@ -130,31 +202,52 @@ async def scheduled_data_refresh():
             PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db)
             logger.info("Scheduled data refresh completed successfully.")
         except Exception as e:
-            logger.error(f"Error during scheduled data refresh: {str(e)}")
+            logger.error(f"Error during scheduled post-ingest stats/predictions: {str(e)}")
         finally:
             calc_db.close()
 
-    await asyncio.to_thread(run_full_refresh)
+    await asyncio.to_thread(run_post_ingest)
     global LAST_SYNC_TIME
     LAST_SYNC_TIME = datetime.now(timezone.utc)
 
 
 async def scheduled_live_score_refresh():
     """
-    Automated background worker job executing every 60 seconds
-    to fetch real-time score updates, live clocks, and auto-settle finished matches.
+    Lightweight 60-second background job updating ONLY active/imminent fixtures via
+    LiveProviderAdapterService (decoupled from the full 34-league schedule sync).
     """
     def run_live_refresh():
+        import httpx
+        from services.live_provider_service import LiveProviderAdapterService
         calc_db = SessionLocal()
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(calc_db, api_key=FOOTBALL_API_KEY))
-            finally:
-                loop.close()
-            DataIngestionService.purge_school_and_youth_competitions(calc_db)
-            DataIngestionService.repair_and_canonicalize_fixture_leagues(calc_db)
+            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            win_start = now_naive - timedelta(hours=3)
+            win_end = now_naive + timedelta(minutes=15)
+            active_fixtures = (
+                calc_db.query(models.Fixture)
+                .filter(
+                    models.Fixture.external_id.isnot(None),
+                    (
+                        (models.Fixture.status == "LIVE")
+                        | (
+                            models.Fixture.status.in_(["SCHEDULED", "PRE_EVENT", "PRE"])
+                            & (models.Fixture.match_date >= win_start)
+                            & (models.Fixture.match_date <= win_end)
+                        )
+                    ),
+                )
+                .order_by(models.Fixture.match_date.asc())
+                .limit(40)
+                .all()
+            )
+            if active_fixtures:
+                with httpx.Client(timeout=6.0) as client:
+                    for fix in active_fixtures:
+                        try:
+                            LiveProviderAdapterService.fetch_live_summary(calc_db, fix.id, client=client)
+                        except Exception as item_ex:
+                            logger.debug(f"Live score poll skipped for fixture {fix.id}: {item_ex}")
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
         except Exception as e:
             logger.error(f"Error in scheduled live score refresh: {e}")
@@ -246,7 +339,7 @@ async def scheduled_telegram_daily_digest(
             .all()
         )
 
-        all_preds = {p.fixture_id: p for p in calc_db.query(models.Prediction).all()}
+        all_preds = _load_preds_for_fixtures(calc_db, [f.id for f in fixtures])
 
         # STEP 1: Process and broadcast Outcome Recap for previous window if results exist
         finished_fixtures = (
@@ -550,7 +643,7 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Key", "Accept"],
 )
 
 from fastapi.staticfiles import StaticFiles
@@ -559,6 +652,16 @@ from fastapi.responses import FileResponse
 FRONTEND_DIST = os.path.join(os.path.dirname(BACKEND_DIR), "frontend", "dist")
 if os.path.exists(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+
+for _static_name in ("manifest.json", "sw.js", "favicon.svg", "icons.svg"):
+    def _make_static_handler(filename: str):
+        async def _serve_static():
+            target_path = os.path.join(FRONTEND_DIST, filename)
+            if os.path.exists(target_path):
+                return FileResponse(target_path)
+            raise HTTPException(status_code=404, detail=f"{filename} not found")
+        return _serve_static
+    app.add_api_route(f"/{_static_name}", _make_static_handler(_static_name), methods=["GET"], include_in_schema=False)
 
 @app.get("/")
 @limiter.limit("60/minute")
@@ -607,7 +710,7 @@ def read_league_statistics(request: Request, league_id: int, db: Session = Depen
     return {"status": "ok", "data": stat}
 
 
-@app.post("/api/statistics/league/recalculate")
+@app.post("/api/statistics/league/recalculate", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def trigger_recalculate_league_statistics(request: Request, 
     league_id: Optional[int] = None,
@@ -637,7 +740,7 @@ def read_team_statistics(request: Request, team_id: int, db: Session = Depends(g
     return {"status": "ok", "data": stat}
 
 
-@app.post("/api/statistics/recalculate")
+@app.post("/api/statistics/recalculate", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def trigger_recalculate_statistics(request: Request, 
     team_id: Optional[int] = None,
@@ -658,7 +761,7 @@ def trigger_recalculate_statistics(request: Request,
         return {"status": "ok", "message": f"Recalculated statistics for {len(stats)} teams", "data": stats}
 
 
-@app.post("/api/ingest/sync")
+@app.post("/api/ingest/sync", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 async def sync_data(request: Request, db: Session = Depends(get_db)):
     """
@@ -685,7 +788,7 @@ async def sync_data(request: Request, db: Session = Depends(get_db)):
     return {"status": "ok", "message": "Real-time data ingestion sync initiated in background!"}
 
 
-@app.post("/api/ingest/leagues")
+@app.post("/api/ingest/leagues", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def ingest_leagues_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """Ingest a list of league/competition records with duplicate prevention."""
@@ -693,7 +796,7 @@ def ingest_leagues_endpoint(request: Request, payload: list[dict], db: Session =
     return {"status": "ok", "count": len(leagues), "data": leagues}
 
 
-@app.post("/api/ingest/teams")
+@app.post("/api/ingest/teams", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def ingest_teams_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """Ingest a list of team records with duplicate prevention."""
@@ -701,7 +804,7 @@ def ingest_teams_endpoint(request: Request, payload: list[dict], db: Session = D
     return {"status": "ok", "count": len(teams), "data": teams}
 
 
-@app.post("/api/ingest/fixtures")
+@app.post("/api/ingest/fixtures", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def ingest_fixtures_endpoint(request: Request, payload: list[dict], db: Session = Depends(get_db)):
     """
@@ -712,7 +815,7 @@ def ingest_fixtures_endpoint(request: Request, payload: list[dict], db: Session 
     return {"status": "ok", "count": len(fixtures), "data": fixtures}
 
 
-@app.post("/api/predictions/predict/{fixture_id}")
+@app.post("/api/predictions/predict/{fixture_id}", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def trigger_predict_fixture(request: Request, fixture_id: int, db: Session = Depends(get_db)):
     """Calculate Poisson prediction for a single fixture and store in database."""
@@ -722,7 +825,7 @@ def trigger_predict_fixture(request: Request, fixture_id: int, db: Session = Dep
     return {"status": "ok", "data": pred}
 
 
-@app.post("/api/predictions/predict-all")
+@app.post("/api/predictions/predict-all", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def trigger_predict_all_upcoming(request: Request, db: Session = Depends(get_db)):
     """Calculate Poisson predictions for all upcoming fixtures."""
@@ -1126,12 +1229,12 @@ def get_fixture_details(request: Request, fixture_id: int, db: Session = Depends
         "id": fixture.id,
         "fixture_id": fixture.id,
         "provider_fixture_id": fixture.external_id,
-        "kickoff_time": fixture.match_date.isoformat() if fixture.match_date else None,
-        "kickoff_utc": (fixture.match_date.isoformat() + "Z") if fixture.match_date else None,
+        "kickoff_time": (fixture.match_date.replace(tzinfo=timezone.utc).isoformat() if getattr(fixture.match_date, "tzinfo", None) is None else fixture.match_date.isoformat()) if fixture.match_date else None,
+        "kickoff_utc": (fixture.match_date.isoformat() + "Z") if (fixture.match_date and getattr(fixture.match_date, "tzinfo", None) is None) else (fixture.match_date.isoformat() if fixture.match_date else None),
         "data_status": "VERIFIED" if fixture.status in ["FINISHED", "FT", "AET", "PEN"] else ("LIVE" if fixture.status == "LIVE" else "AVAILABLE"),
-        "freshness": "FRESH",
-        "freshness_status": "FRESH",
-        "identity_status": "IDENTITY_VALID",
+        "freshness": _resolve_trust_flags(fixture, canon_comp, is_finished=(fixture.status in ["FINISHED", "FT", "AET", "PEN"]))[0],
+        "freshness_status": _resolve_trust_flags(fixture, canon_comp, is_finished=(fixture.status in ["FINISHED", "FT", "AET", "PEN"]))[0],
+        "identity_status": _resolve_trust_flags(fixture, canon_comp, is_finished=(fixture.status in ["FINISHED", "FT", "AET", "PEN"]))[1],
         "canonical_lifecycle": canon_lifecycle.value,
         "status_code": fixture.status,
         "match_status": fixture.status,
@@ -1346,7 +1449,7 @@ def get_data_quality_backfill_status(request: Request, db: Session = Depends(get
     return HistoricalDataService.get_backfill_status(db)
 
 
-@app.post("/api/data-quality/backfill-run")
+@app.post("/api/data-quality/backfill-run", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def run_data_quality_backfill(request: Request, batch_size: int = 50, db: Session = Depends(get_db)):
     """Triggers a controlled batch historical enrichment pass."""
@@ -1577,7 +1680,7 @@ def get_system_job_history(request: Request, job_name: str, limit: int = 20, db:
     return {"job_name": job_name, "history": JobOrchestratorService.get_job_history(db, job_name=job_name, limit=limit)}
 
 
-@app.post("/api/system/jobs/{job_name}/run")
+@app.post("/api/system/jobs/{job_name}/run", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def run_system_job(request: Request, job_name: str, db: Session = Depends(get_db)):
     """Manually triggers immediate execution of a production job."""
@@ -1593,7 +1696,7 @@ def get_system_alerts(request: Request, db: Session = Depends(get_db)):
     return {"status": "ok", "alerts": AlertService.get_active_alerts(db)}
 
 
-@app.post("/api/system/alerts/{alert_id}/resolve")
+@app.post("/api/system/alerts/{alert_id}/resolve", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def resolve_system_alert(request: Request, alert_id: str, db: Session = Depends(get_db)):
     """Marks an active system alert as resolved."""
@@ -1610,7 +1713,7 @@ def get_system_backups(request: Request):
     return {"status": "ok", "backups": BackupService.list_backups()}
 
 
-@app.post("/api/system/backups/run")
+@app.post("/api/system/backups/run", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def run_system_backup(request: Request):
     """Executes an online live SQLite backup and integrity verification."""
@@ -1665,12 +1768,23 @@ def get_data_conflicts(request: Request, status: Optional[str] = "CONFLICT", db:
     return {"status": "ok", "conflicts": DataReconciliationService.get_all_conflicts(db, status=status)}
 
 
-@app.post("/api/data-quality/conflicts/{conflict_id}/resolve")
+@app.post("/api/data-quality/conflicts/{conflict_id}/resolve", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
-def resolve_data_conflict(request: Request, conflict_id: int, resolved_value: str, notes: Optional[str] = None, db: Session = Depends(get_db)):
-    """Resolves an open data conflict with operator notes."""
+def resolve_data_conflict(
+    request: Request,
+    conflict_id: int,
+    resolved_value: Optional[str] = Query(None),
+    notes: Optional[str] = Query(None),
+    payload: Optional[ConflictResolveRequest] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """Resolves an open data conflict with operator notes via JSON body or query params."""
     from services.data_reconciliation_service import DataReconciliationService
-    success = DataReconciliationService.resolve_conflict(db, conflict_id, resolved_value, notes)
+    final_value = payload.resolved_value if (payload and payload.resolved_value is not None) else resolved_value
+    final_notes = payload.notes if (payload and payload.notes is not None) else notes
+    if final_value is None or not str(final_value).strip():
+        raise HTTPException(status_code=422, detail="resolved_value is required")
+    success = DataReconciliationService.resolve_conflict(db, conflict_id, str(final_value), final_notes)
     return {"status": "ok" if success else "error", "resolved": success}
 
 
@@ -1682,7 +1796,7 @@ def get_backfill_progress(request: Request, db: Session = Depends(get_db)):
     return HistoricalDataService.get_backfill_status(db)
 
 
-@app.post("/api/data-quality/backfill/start")
+@app.post("/api/data-quality/backfill/start", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def start_backfill(request: Request, db: Session = Depends(get_db)):
     """Starts or triggers an automated historical data backfill pass."""
@@ -1691,7 +1805,7 @@ def start_backfill(request: Request, db: Session = Depends(get_db)):
     return HistoricalDataService.discover_and_enrich_batch(db, batch_size=30)
 
 
-@app.post("/api/data-quality/backfill/pause")
+@app.post("/api/data-quality/backfill/pause", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def pause_backfill(request: Request):
     """Pauses historical data backfill."""
@@ -1699,7 +1813,7 @@ def pause_backfill(request: Request):
     return HistoricalDataService.pause_backfill()
 
 
-@app.post("/api/data-quality/backfill/resume")
+@app.post("/api/data-quality/backfill/resume", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def resume_backfill(request: Request):
     """Resumes historical data backfill."""
@@ -1707,7 +1821,7 @@ def resume_backfill(request: Request):
     return HistoricalDataService.resume_backfill()
 
 
-@app.post("/api/data-quality/backfill/retry")
+@app.post("/api/data-quality/backfill/retry", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
 def retry_backfill(request: Request, db: Session = Depends(get_db)):
     """Resets failed backfill items allowing them to be retried."""
@@ -1722,7 +1836,7 @@ def get_models_real_validation(request: Request, limit: int = 200, db: Session =
     from services.validation_dataset_service import ValidationDatasetService
     from services.production_validation_service import ProductionValidationService
 
-    ds = ValidationDatasetService.build_chronological_dataset(db, limit=limit)
+    ds = ValidationDatasetService.build_chronological_dataset(db, limit=limit, persist_missing=False)
     readiness = ProductionValidationService.get_all_models_readiness_report(db)
 
     return {
@@ -2119,7 +2233,10 @@ def get_all_active_decision_signals(request: Request,
             "signal_status": s.signal_status,
             "sample_size": s.sample_size,
             "is_live": s.is_live,
-            "created_at": s.created_at.isoformat() if s.created_at else None
+            "created_at": (
+                s.created_at.isoformat() + ("Z" if s.created_at.tzinfo is None else "")
+                if s.created_at else None
+            )
         }
         for s in snaps
     ]
@@ -2140,12 +2257,12 @@ def get_decision_engine_status(request: Request, db: Session = Depends(get_db)):
 
 
 
-@app.post("/api/notifications/telegram/test")
+@app.post("/api/notifications/telegram/test", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
-async def send_telegram_test_notification(request: Request, bot_token: Optional[str] = None, chat_id: Optional[str] = None, window: Optional[str] = "auto"):
+async def send_telegram_test_notification(request: Request, window: Optional[str] = "auto"):
     """Sends a live 3-Odds Accumulator Ticket test notification directly to Telegram."""
     try:
-        await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id, window_key=window)
+        await scheduled_telegram_daily_digest(window_key=window)
         return {
             "status": "ok",
             "message": f"Live 3-Odds Accumulator ticket dispatched to Telegram successfully! (Window: {window})"
@@ -2154,26 +2271,26 @@ async def send_telegram_test_notification(request: Request, bot_token: Optional[
         return {"status": "error", "message": f"Failed to dispatch Telegram message: {str(e)}"}
 
 
-@app.post("/api/notifications/whatsapp/test")
+@app.post("/api/notifications/whatsapp/test", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
-async def send_whatsapp_test_notification(request: Request, phone: Optional[str] = None, api_key: Optional[str] = None):
+async def send_whatsapp_test_notification(request: Request):
     """Sends a test WhatsApp notification message via CallMeBot API."""
     test_msg = (
         "⚽ *SOCCER GOAL PREDICTOR TEST NOTIFICATION*\n\n"
         "Your WhatsApp Bot connection is successfully configured!\n"
         "You will receive daily top prediction broadcasts on WhatsApp."
     )
-    success = await WhatsAppNotificationService.send_message(test_msg, phone=phone, api_key=api_key)
+    success = await WhatsAppNotificationService.send_message(test_msg)
     if success:
         return {"status": "ok", "message": "Test WhatsApp message sent successfully!"}
     return {"status": "error", "message": "Failed to send WhatsApp message. Please verify WHATSAPP_PHONE_NUMBER and WHATSAPP_API_KEY."}
 
 
-@app.post("/api/notifications/broadcast")
+@app.post("/api/notifications/broadcast", dependencies=[Depends(require_admin_auth)])
 @limiter.limit("10/minute")
-async def trigger_manual_broadcast(request: Request, bot_token: Optional[str] = None, chat_id: Optional[str] = None, window: Optional[str] = "auto"):
+async def trigger_manual_broadcast(request: Request, window: Optional[str] = "auto"):
     """Triggers immediate 3-Odds Accumulator broadcast to Telegram across Morning, Afternoon, or Evening window."""
-    await scheduled_telegram_daily_digest(bot_token=bot_token, chat_id=chat_id, window_key=window)
+    await scheduled_telegram_daily_digest(window_key=window)
     return {"status": "ok", "message": f"3-Odds Accumulator broadcast triggered successfully to Telegram (Window: {window})!"}
 
 
@@ -2188,8 +2305,9 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
     now = datetime.now(timezone.utc)
     now_cutoff = (now - timedelta(hours=2)).replace(tzinfo=None)
 
+    has_explicit_filters = bool(params.date or (params.league and params.league.strip().upper() != "ALL"))
     try:
-        fixtures = db.query(models.Fixture).join(models.League).options(
+        q = db.query(models.Fixture).join(models.League).options(
             joinedload(models.Fixture.league),
             joinedload(models.Fixture.home_team),
             joinedload(models.Fixture.away_team)
@@ -2201,11 +2319,17 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
             ~func.lower(models.League.name).like("%high school%"),
             ~func.lower(models.League.name).like("%varsity%"),
             ~func.lower(models.League.name).like("%university%"),
-        ).order_by(models.Fixture.match_date.asc()).all()
+        )
+        q = _apply_fixture_query_filters(q, params).order_by(models.Fixture.match_date.asc())
+        if params.limit:
+            q = q.limit(params.limit)
+        else:
+            q = q.limit(2000)
+        fixtures = q.all()
 
-        if not fixtures:
-            # Fallback query: fetch all non-finished fixtures regardless of match_date cutoff
-            fixtures = db.query(models.Fixture).join(models.League).options(
+        if not fixtures and not has_explicit_filters:
+            # Fallback query only when unfiltered: fetch non-finished fixtures regardless of cutoff
+            fb_q = db.query(models.Fixture).join(models.League).options(
                 joinedload(models.Fixture.league),
                 joinedload(models.Fixture.home_team),
                 joinedload(models.Fixture.away_team)
@@ -2216,32 +2340,40 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
                 ~func.lower(models.League.name).like("%high school%"),
                 ~func.lower(models.League.name).like("%varsity%"),
                 ~func.lower(models.League.name).like("%university%"),
-            ).order_by(models.Fixture.match_date.asc()).all()
+            ).order_by(models.Fixture.match_date.asc()).limit(params.limit or 2000)
+            fixtures = fb_q.all()
     except Exception as query_err:
         logger.error(f"Error querying upcoming fixtures: {query_err}")
         db.rollback()
         fixtures = []
 
-    if not fixtures:
+    if not fixtures and not has_explicit_filters:
         logger.info("No upcoming fixtures found in DB. Triggering non-blocking background ingestion fallback...")
-        def run_bg_sync():
+        async def run_bg_sync():
             bg_db = SessionLocal()
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY))
-                    PoissonPredictionEngine.predict_all_upcoming_fixtures(bg_db)
-                finally:
-                    loop.close()
+                await DataIngestionService.fetch_and_ingest_from_api(bg_db, api_key=FOOTBALL_API_KEY)
             except Exception as ing_err:
                 logger.error(f"Error during background ingestion fallback: {ing_err}")
+                return
             finally:
                 bg_db.close()
-        asyncio.create_task(asyncio.to_thread(run_bg_sync))
+
+            def _run_preds():
+                pred_db = SessionLocal()
+                try:
+                    PoissonPredictionEngine.predict_all_upcoming_fixtures(pred_db)
+                finally:
+                    pred_db.close()
+
+            try:
+                await asyncio.to_thread(_run_preds)
+            except Exception as pred_err:
+                logger.error(f"Error during background prediction generation: {pred_err}")
+        asyncio.create_task(run_bg_sync())
 
     try:
-        all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
+        all_preds = _load_preds_for_fixtures(db, [f.id for f in fixtures])
     except Exception as pred_err:
         logger.error(f"Error loading predictions: {pred_err}")
         db.rollback()
@@ -2314,47 +2446,20 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
         # Weather Context (Upgrade 5)
         weather_data = WeatherService.get_weather_for_venue(fix.venue)
 
-        # Value Bet Finder (Upgrade 9)
+        # Fair Model Odds (never synthesize +8% market odds without a real bookmaker feed)
         if o15 is not None and o15 > 0:
             model_odds = round(1.0 / max(0.01, o15), 2)
-            implied_market_odds = round(model_odds * 1.08, 2)
-            implied_market_prob = round(1.0 / max(1.01, implied_market_odds), 4)
-            value_edge_pct = round((o15 - implied_market_prob) * 100, 1)
-            is_value_bet = (o15 >= 0.78) and (value_edge_pct >= 4.0)
         else:
             model_odds = None
-            implied_market_odds = None
-            implied_market_prob = None
-            value_edge_pct = None
-            is_value_bet = False
+        implied_market_odds = None
+        value_edge_pct = None
+        is_value_bet = False
 
-        # Dynamic Status & Live Clock Evaluation:
-        # Guarantee matches that have kicked off never stay stuck on SCHEDULED
+        # Factual match status & clock from persisted provider telemetry
         eff_status = str(fix.status or "SCHEDULED").upper()
         eff_home_score = getattr(fix, "home_score", None)
         eff_away_score = getattr(fix, "away_score", None)
         eff_live_clock = getattr(fix, "live_clock", None)
-
-        if fix.match_date:
-            naive_m_date = fix.match_date.replace(tzinfo=None) if fix.match_date.tzinfo else fix.match_date
-            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-            if eff_status in ["SCHEDULED", "PRE_EVENT", "PRE"] and naive_m_date <= (now_utc_naive - timedelta(minutes=1)):
-                if naive_m_date >= (now_utc_naive - timedelta(hours=3)):
-                    eff_status = "LIVE"
-                    mins_elapsed = max(1, int((now_utc_naive - naive_m_date).total_seconds() / 60))
-                    if not eff_live_clock or eff_live_clock == "0'":
-                        if mins_elapsed <= 45:
-                            eff_live_clock = f"{mins_elapsed}'"
-                        elif mins_elapsed <= 60:
-                            eff_live_clock = "HT"
-                        elif mins_elapsed <= 105:
-                            eff_live_clock = f"{mins_elapsed - 15}'"
-                        else:
-                            eff_live_clock = "90+'"
-                elif naive_m_date < (now_utc_naive - timedelta(hours=3)):
-                    eff_status = "FINISHED"
-                    if not eff_live_clock:
-                        eff_live_clock = "FT"
 
         # Dynamic Canonical Competition & Country Resolution (Phase 13: provider-verified, zero team-name guessing)
         canon_ident = CanonicalCompetitionService.resolve_competition(
@@ -2419,9 +2524,9 @@ async def get_upcoming_fixtures(request: Request, params: FixtureQueryParams = D
             "match_date": match_date_str,
             "kickoff_utc": match_date_str,
             "data_status": "LIVE" if eff_status == "LIVE" else "AVAILABLE",
-            "freshness": "FRESH",
-            "freshness_status": "FRESH",
-            "identity_status": "IDENTITY_VALID",
+            "freshness": _resolve_trust_flags(fix, canon_ident, is_finished=(eff_status in ["FINISHED", "FT", "AET", "PEN"]))[0],
+            "freshness_status": _resolve_trust_flags(fix, canon_ident, is_finished=(eff_status in ["FINISHED", "FT", "AET", "PEN"]))[0],
+            "identity_status": _resolve_trust_flags(fix, canon_ident, is_finished=(eff_status in ["FINISHED", "FT", "AET", "PEN"]))[1],
             "status": eff_status,
             "venue": fix.venue,
             "weather": weather_data,
@@ -2498,19 +2603,11 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
             ~func.lower(models.League.name).like("%university%"),
         )
 
-        if date:
-            try:
-                parsed_dt = datetime.fromisoformat(date)
-                s_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 0, 0, 0)
-                e_dt = datetime(parsed_dt.year, parsed_dt.month, parsed_dt.day, 23, 59, 59)
-                query = query.filter(models.Fixture.match_date >= s_dt, models.Fixture.match_date <= e_dt)
-            except Exception as e:
-                logger.warning(f"Invalid date filter parameter '{date}': {e}")
-
-        fixtures = query.order_by(models.Fixture.match_date.desc()).all()
+        query = _apply_fixture_query_filters(query, params)
+        fixtures = query.order_by(models.Fixture.match_date.desc()).limit(params.limit or 500).all()
 
         try:
-            all_preds = {p.fixture_id: p for p in db.query(models.Prediction).all()}
+            all_preds = _load_preds_for_fixtures(db, [f.id for f in fixtures])
         except Exception:
             all_preds = {}
 
@@ -2639,10 +2736,10 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
                 "match_date": match_date_str,
                 "kickoff_utc": match_date_str,
                 "data_status": "VERIFIED",
-                "freshness": "FRESH",
-                "freshness_status": "FRESH",
-                "identity_status": "IDENTITY_VALID",
-                "status": "FINISHED",
+                "freshness": _resolve_trust_flags(fix, canon_ident, is_finished=True)[0],
+                "freshness_status": _resolve_trust_flags(fix, canon_ident, is_finished=True)[0],
+                "identity_status": _resolve_trust_flags(fix, canon_ident, is_finished=True)[1],
+                "status": fix.status or "FINISHED",
                 "venue": fix.venue,
                 "home_score": h_score,
                 "away_score": a_score,

@@ -243,7 +243,8 @@ class DataReconciliationService:
         provider: str = "espn",
         provider_record_id: Optional[str] = None,
         source_type: str = "OBSERVED",
-        confidence: float = 1.0
+        confidence: float = 1.0,
+        commit: bool = True
     ) -> Optional[DataProvenance]:
         """
         Creates or updates field-level data provenance record.
@@ -263,12 +264,16 @@ class DataReconciliationService:
             .first()
         )
 
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         if prov:
             prov.value = val_str
-            prov.retrieved_at = datetime.now(timezone.utc)
+            prov.retrieved_at = now_naive
             prov.source_type = source_type
             prov.confidence = confidence
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
             return prov
 
         prov = DataProvenance(
@@ -277,14 +282,17 @@ class DataReconciliationService:
             value=val_str,
             provider=provider,
             provider_record_id=provider_record_id,
-            retrieved_at=datetime.now(timezone.utc),
+            retrieved_at=now_naive,
             source_type=source_type,
             confidence=confidence,
             is_verified=True,
-            created_at=datetime.now(timezone.utc)
+            created_at=now_naive
         )
         db.add(prov)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return prov
 
     @classmethod
@@ -297,7 +305,7 @@ class DataReconciliationService:
                 "value": r.value,
                 "provider": r.provider,
                 "provider_record_id": r.provider_record_id,
-                "retrieved_at": r.retrieved_at.isoformat() if r.retrieved_at else None,
+                "retrieved_at": (r.retrieved_at.isoformat() + "Z") if (r.retrieved_at and r.retrieved_at.tzinfo is None) else (r.retrieved_at.isoformat() if r.retrieved_at else None),
                 "source_type": r.source_type,
                 "confidence": r.confidence,
                 "is_verified": r.is_verified
@@ -358,7 +366,7 @@ class DataReconciliationService:
             conflicting_provider=incoming_prov,
             conflicting_value=str(incoming_val),
             status="CONFLICT",
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
         db.add(conflict)
         db.commit()
@@ -393,7 +401,7 @@ class DataReconciliationService:
         conflict.status = "RESOLVED"
         conflict.resolved_value = resolved_value
         conflict.resolution_notes = notes
-        conflict.resolved_at = datetime.now(timezone.utc)
+        conflict.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         return True
 
@@ -416,7 +424,7 @@ class DataReconciliationService:
                 "conflicting_value": c.conflicting_value,
                 "status": c.status,
                 "resolved_value": c.resolved_value,
-                "created_at": c.created_at.isoformat() if c.created_at else None
+                "created_at": (c.created_at.isoformat() + "Z") if (c.created_at and c.created_at.tzinfo is None) else (c.created_at.isoformat() if c.created_at else None)
             }
             for c in records
         ]

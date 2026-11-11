@@ -116,7 +116,7 @@ class FeatureStoreService:
 
     @classmethod
     def get_competition_features(cls, db: Session, league_id: int) -> Dict[str, Any]:
-        """Extracts competition baseline rates and dispersion."""
+        """Extracts competition baseline rates and dispersion from LeagueStatistics & MatchStatistics."""
         l_stats = db.query(LeagueStatistics).filter(LeagueStatistics.league_id == league_id).first()
         if not l_stats:
             return {
@@ -128,12 +128,36 @@ class FeatureStoreService:
                 "source": "fallback"
             }
 
+        h_goals = l_stats.avg_home_goals if l_stats.avg_home_goals is not None else 1.45
+        a_goals = l_stats.avg_away_goals if l_stats.avg_away_goals is not None else 1.25
+        avg_goals = round(float(h_goals) + float(a_goals), 3)
+        home_adv = round(float(h_goals) - float(a_goals), 3)
+
+        stats_rows = (
+            db.query(MatchStatistics)
+            .join(Fixture, MatchStatistics.fixture_id == Fixture.id)
+            .filter(Fixture.league_id == league_id)
+            .all()
+        )
+        corn_vals = [
+            float(s.home_corners + s.away_corners)
+            for s in stats_rows
+            if s.home_corners is not None and s.away_corners is not None
+        ]
+        card_vals = [
+            float(s.total_cards)
+            if s.total_cards is not None
+            else float((s.home_yellow_cards or 0) + (s.away_yellow_cards or 0) + (s.home_red_cards or 0) + (s.away_red_cards or 0))
+            for s in stats_rows
+            if s.home_yellow_cards is not None and s.away_yellow_cards is not None
+        ]
+
         return {
-            "sample_size": l_stats.matches_analyzed,
-            "avg_goals": l_stats.avg_total_goals or 2.70,
-            "avg_corners": l_stats.avg_total_corners or 9.80,
-            "avg_cards": l_stats.avg_total_cards or 4.10,
-            "home_advantage": l_stats.home_advantage_xg or 0.25,
+            "sample_size": int(l_stats.total_matches_analyzed or 0),
+            "avg_goals": avg_goals,
+            "avg_corners": round(sum(corn_vals) / len(corn_vals), 2) if corn_vals else 9.80,
+            "avg_cards": round(sum(card_vals) / len(card_vals), 2) if card_vals else 4.10,
+            "home_advantage": home_adv,
             "source": "league_statistics"
         }
 
@@ -197,14 +221,15 @@ class FeatureStoreService:
         a_sample = payload.get("away_team", {}).get("rolling_features", {}).get("sample_size", 0)
         tot_sample = h_sample + a_sample
 
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         snap = FeatureSnapshot(
             fixture_id=fixture_id,
             model_version=model_version,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=now_naive,
             features_json=json.dumps(payload),
             feature_coverage=1.0 if tot_sample >= 10 else round(tot_sample / 10.0, 2),
             sample_size=tot_sample,
-            provenance_json=json.dumps({"source": "feature_store_service", "created_at": datetime.now(timezone.utc).isoformat()})
+            provenance_json=json.dumps({"source": "feature_store_service", "created_at": now_naive.isoformat() + "Z"})
         )
         db.add(snap)
         db.commit()

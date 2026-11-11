@@ -5,6 +5,10 @@ from typing import Optional
 from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean, Text, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
+def _utcnow_naive() -> datetime:
+    """Return naive UTC datetime consistent with SQLite DateTime storage."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
@@ -25,7 +29,7 @@ class League(Base):
     country: Mapped[str] = mapped_column(String, nullable=False)
     season: Mapped[str] = mapped_column(String, default="2025/2026")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixtures = relationship("Fixture", back_populates="league", cascade="all, delete-orphan")
@@ -43,7 +47,7 @@ class Team(Base):
     short_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     league_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("leagues.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     league = relationship("League", back_populates="teams")
@@ -69,7 +73,7 @@ class Fixture(Base):
     home_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     live_clock: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     league = relationship("League", back_populates="fixtures")
@@ -115,7 +119,7 @@ class HistoricalResult(Base):
     total_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_goals: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="historical_result")
@@ -134,7 +138,7 @@ class Referee(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     competition: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     referee_matches = relationship("RefereeMatchStatistics", back_populates="referee", cascade="all, delete-orphan")
@@ -156,7 +160,7 @@ class RefereeMatchStatistics(Base):
     fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data_source: Mapped[str] = mapped_column(String, default="observed")
     data_quality: Mapped[str] = mapped_column(String, default="verified")
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     referee = relationship("Referee", back_populates="referee_matches")
@@ -213,7 +217,7 @@ class MatchStatistics(Base):
     referee_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("referees.id"), nullable=True, index=True)
     data_source: Mapped[str] = mapped_column(String, default="observed")
     data_quality: Mapped[str] = mapped_column(String, default="verified")
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="match_statistics")
@@ -243,7 +247,7 @@ class Prediction(Base):
     top_scorelines_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     model_version: Mapped[Optional[str]] = mapped_column(String, default="v2_match_intelligence", nullable=True)
     raw_intelligence_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="predictions")
@@ -261,7 +265,7 @@ class CornerPredictionSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
     model_version: Mapped[str] = mapped_column(String, default="v1_corners_nb", index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     is_prematch: Mapped[bool] = mapped_column(Boolean, default=True)
 
     expected_home_corners: Mapped[float] = mapped_column(Float, nullable=False)
@@ -316,7 +320,7 @@ class CardPredictionSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
     model_version: Mapped[str] = mapped_column(String, default="v1_cards_nb", index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     is_prematch: Mapped[bool] = mapped_column(Boolean, default=True)
 
     expected_home_cards: Mapped[float] = mapped_column(Float, nullable=False)
@@ -391,7 +395,7 @@ class TeamStatistics(Base):
     home_defense_strength: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     away_attack_strength: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     away_defense_strength: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     # Relationships
     team = relationship("Team", back_populates="statistics")
@@ -406,7 +410,7 @@ class LeagueStatistics(Base):
     total_matches_analyzed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     avg_home_goals: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     avg_away_goals: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     # Relationships
     league = relationship("League", back_populates="statistics")
@@ -425,7 +429,7 @@ class EloRating(Base):
     draws: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     goals_scored: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     goals_conceded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     # Relationships
     team = relationship("Team", back_populates="elo_rating")
@@ -444,7 +448,7 @@ class TeamFormStreak(Base):
     goals_conceded_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     clean_sheets_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_to_score_last_5: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     # Relationships
     team = relationship("Team", back_populates="form_streak")
@@ -489,7 +493,7 @@ class LiveMatchState(Base):
     home_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     away_red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
     data_source: Mapped[str] = mapped_column(String, default="live_feed")
     data_quality: Mapped[str] = mapped_column(String, default="verified")
 
@@ -510,7 +514,7 @@ class LivePredictionSnapshot(Base):
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
     model_version: Mapped[str] = mapped_column(String, default="v1_live_intelligence", index=True)
 
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     match_minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     period: Mapped[str] = mapped_column(String, default="1H")
 
@@ -525,7 +529,7 @@ class LivePredictionSnapshot(Base):
     confidence: Mapped[int] = mapped_column(Integer, default=50)
     data_quality: Mapped[int] = mapped_column(Integer, default=50)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="live_snapshots")
@@ -561,14 +565,14 @@ class ModelEvaluation(Base):
 
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     verified: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    verified_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    verified_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Precalculated atomic metric components
     brier_component: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # (p - y)^2
     log_loss_component: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # -(y*log(p) + (1-y)*log(1-p))
     absolute_error: Mapped[Optional[float]] = mapped_column(Float, nullable=True) # |p - y|
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="evaluations")
@@ -591,7 +595,7 @@ class DataQualitySnapshot(Base):
     missing_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     coverage_ratio: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     
-    calculated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class ProviderHealth(Base):
@@ -603,7 +607,7 @@ class ProviderHealth(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     provider: Mapped[str] = mapped_column(String, nullable=False, index=True) # espn, football_data, api_football
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     
     request_count: Mapped[int] = mapped_column(Integer, default=0)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -633,7 +637,7 @@ class FeatureSnapshot(Base):
     sample_size: Mapped[int] = mapped_column(Integer, default=0)
     provenance_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="feature_snapshots")
@@ -657,7 +661,7 @@ class HistoricalEnrichmentStatus(Base):
     is_complete: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     retry_eligible: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="enrichment_status")
@@ -675,7 +679,7 @@ class JobExecution(Base):
     job_name: Mapped[str] = mapped_column(String, nullable=False, index=True) # fixture_ingestion, historical_enrichment, prematch_prediction, live_match_poll, post_match_verification, model_evaluation, provider_health, system_maintenance
     execution_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String, default="RUNNING", index=True) # RUNNING, SUCCESS, PARTIAL, FAILED, SKIPPED
     
@@ -687,7 +691,7 @@ class JobExecution(Base):
     duration_ms: Mapped[float] = mapped_column(Float, default=0.0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
 
 class SystemAlert(Base):
@@ -709,7 +713,7 @@ class SystemAlert(Base):
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class DataProvenance(Base):
@@ -726,11 +730,11 @@ class DataProvenance(Base):
     value: Mapped[str] = mapped_column(String, nullable=False)
     provider: Mapped[str] = mapped_column(String, nullable=False, index=True) # espn, football_data, manual
     provider_record_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     source_type: Mapped[str] = mapped_column(String, default="OBSERVED") # OBSERVED, VERIFIED, RECONCILED
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive)
 
 
 class DataConflict(Base):
@@ -751,7 +755,7 @@ class DataConflict(Base):
     status: Mapped[str] = mapped_column(String, default="CONFLICT", index=True) # CONFLICT, RESOLVED, IGNORED
     resolved_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     resolution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
@@ -773,7 +777,7 @@ class UnifiedMatchIntelligenceSnapshot(Base):
     cross_market_consistency_score: Mapped[float] = mapped_column(Float, default=1.0)
     
     intelligence_payload: Mapped[str] = mapped_column(Text, nullable=False) # Complete serialized JSON payload
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class ShotPredictionSnapshot(Base):
@@ -787,7 +791,7 @@ class ShotPredictionSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
     model_version: Mapped[str] = mapped_column(String, default="v1_shots_nb", index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
@@ -806,7 +810,7 @@ class ShotPredictionSnapshot(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.50)
     data_quality: Mapped[float] = mapped_column(Float, default=0.50)
     diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class MatchStatisticsPredictionSnapshot(Base):
@@ -820,7 +824,7 @@ class MatchStatisticsPredictionSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False, index=True)
     model_version: Mapped[str] = mapped_column(String, default="v1_match_stats_nb", index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
@@ -860,7 +864,7 @@ class MatchStatisticsPredictionSnapshot(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.50)
     data_quality: Mapped[float] = mapped_column(Float, default=0.50)
     diagnostics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class PredictionDecisionSnapshot(Base):
@@ -901,8 +905,8 @@ class PredictionDecisionSnapshot(Base):
 
     match_minute: Mapped[int] = mapped_column(Integer, default=0, index=True)
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
 
 class FixtureProviderMapping(Base):
@@ -925,7 +929,7 @@ class FixtureProviderMapping(Base):
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     validation_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="provider_mappings")
@@ -941,7 +945,7 @@ class LiveObservedSnapshot(Base):
     provider_event_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, index=True)
     observed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
     match_state: Mapped[str] = mapped_column(String, default="SCHEDULED", index=True)
     minute: Mapped[int] = mapped_column(Integer, default=0)
     home_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -951,7 +955,7 @@ class LiveObservedSnapshot(Base):
     data_quality: Mapped[str] = mapped_column(String, default="AVAILABLE")  # AVAILABLE, PARTIAL, UNAVAILABLE, STALE
     freshness: Mapped[str] = mapped_column(String, default="FRESH")  # FRESH, DELAYED, STALE, VERY_STALE, UNAVAILABLE
     snapshot_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
 
     # Relationships
     fixture = relationship("Fixture", back_populates="observed_snapshots")

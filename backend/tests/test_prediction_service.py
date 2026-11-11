@@ -61,10 +61,15 @@ class TestPredictionService(unittest.TestCase):
         tau_22 = DixonColesPredictionEngine._dixon_coles_tau(2, 2, lambda_h, lambda_a, rho)
 
         self.assertAlmostEqual(tau_00, 1.0 - (1.5 * 1.2 * -0.11), places=4)
-        self.assertAlmostEqual(tau_10, 1.0 + (1.5 * -0.11), places=4)
-        self.assertAlmostEqual(tau_01, 1.0 + (1.2 * -0.11), places=4)
+        self.assertAlmostEqual(tau_10, 1.0 + (1.2 * -0.11), places=4)
+        self.assertAlmostEqual(tau_01, 1.0 + (1.5 * -0.11), places=4)
         self.assertAlmostEqual(tau_11, 1.0 - (-0.11), places=4)
         self.assertEqual(tau_22, 1.0)
+
+        # Verify joint 1X2 probabilities remain normalized and positive under tau adjustment
+        probs = DixonColesPredictionEngine.calculate_poisson_probabilities(lambda_home=1.5, lambda_away=1.2, rho=rho)
+        total_1x2 = probs["home_win_probability"] + probs["draw_probability"] + probs["away_win_probability"]
+        self.assertAlmostEqual(total_1x2, 1.0, places=3)
 
     def test_calculate_poisson_probabilities_dixon_coles(self):
         # Test calculation with home lambda = 2.1, away lambda = 1.2

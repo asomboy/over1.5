@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import asyncio
+import concurrent.futures
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -76,7 +78,7 @@ class JobOrchestratorService:
             return {"error": f"Unknown job: {job_name}", "available_jobs": cls.AVAILABLE_JOBS}
 
         exec_id = f"exec_{job_name}_{uuid.uuid4().hex[:8]}"
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(timezone.utc).replace(tzinfo=None)
         start_ts = time.time()
 
         job_record = JobExecution(
@@ -117,7 +119,7 @@ class JobOrchestratorService:
                 res = {"processed": 0, "created": 0, "updated": 0, "skipped": 0}
 
             duration_ms = round((time.time() - start_ts) * 1000.0, 2)
-            job_record.completed_at = datetime.now(timezone.utc)
+            job_record.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
             job_record.status = "SUCCESS"
             job_record.duration_ms = duration_ms
             job_record.records_processed = res.get("processed", 0)
@@ -140,12 +142,19 @@ class JobOrchestratorService:
             }
         except Exception as ex:
             duration_ms = round((time.time() - start_ts) * 1000.0, 2)
-            job_record.completed_at = datetime.now(timezone.utc)
-            job_record.status = "FAILED"
-            job_record.duration_ms = duration_ms
-            job_record.error_count = 1
-            job_record.error_message = str(ex)
-            db.commit()
+            db.rollback()
+            try:
+                failed_record = db.query(JobExecution).filter(JobExecution.execution_id == exec_id).first()
+                if failed_record:
+                    failed_record.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    failed_record.status = "FAILED"
+                    failed_record.duration_ms = duration_ms
+                    failed_record.error_count = 1
+                    failed_record.error_message = str(ex)
+                    db.commit()
+            except Exception as commit_ex:
+                logger.warning(f"Failed to persist FAILED status for job {exec_id}: {commit_ex}")
+                db.rollback()
 
             AlertService.emit_alert(
                 db, category="JOB_FAILURE",
@@ -173,10 +182,46 @@ class JobOrchestratorService:
 
     @classmethod
     def _run_fixture_ingestion(cls, db: Session) -> Dict[str, Any]:
-        """Discovers scheduled matches and updates fixture calendar."""
-        # Refresh upcoming scheduled matches
-        upcoming = db.query(Fixture).filter(Fixture.status == "SCHEDULED").count()
-        return {"processed": upcoming, "created": 0, "updated": upcoming, "skipped": 0}
+        """Discovers scheduled matches, runs ingestion sync, and refreshes upcoming predictions."""
+        try:
+            from services.ingestion_service import DataIngestionService
+            from config import FOOTBALL_API_KEY
+        except ImportError:
+            from .ingestion_service import DataIngestionService
+            from ..config import FOOTBALL_API_KEY
+
+        ingest_res: Dict[str, Any] = {}
+        try:
+            asyncio.get_running_loop()
+            # Active event loop in caller thread: run async ingestion on an isolated thread & bound session
+            from sqlalchemy.orm import sessionmaker
+            BoundSession = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+
+            def _worker() -> Dict[str, Any]:
+                local_db = BoundSession()
+                try:
+                    return asyncio.run(DataIngestionService.fetch_and_ingest_from_api(local_db, api_key=FOOTBALL_API_KEY))
+                finally:
+                    local_db.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                ingest_res = pool.submit(_worker).result()
+        except RuntimeError:
+            # No running loop in this thread: run directly against current session
+            ingest_res = asyncio.run(DataIngestionService.fetch_and_ingest_from_api(db, api_key=FOOTBALL_API_KEY))
+
+        upcoming_count = db.query(Fixture).filter(Fixture.status == "SCHEDULED").count()
+        ingested_count = int(
+            (ingest_res or {}).get("fixtures_ingested")
+            or (ingest_res or {}).get("total_fixtures_ingested")
+            or 0
+        )
+        return {
+            "processed": upcoming_count,
+            "created": 0,
+            "updated": ingested_count,
+            "skipped": 0,
+        }
 
     @classmethod
     def _run_historical_enrichment(cls, db: Session) -> Dict[str, Any]:
@@ -248,9 +293,35 @@ class JobOrchestratorService:
 
     @classmethod
     def _run_model_evaluation(cls, db: Session) -> Dict[str, Any]:
-        """Refreshes global model evaluation metrics and calibration coverage."""
+        """Evaluates newly finished fixtures and refreshes global model evaluation coverage."""
+        evaluated_ids_subq = db.query(ModelEvaluation.fixture_id).distinct()
+        unevaluated = (
+            db.query(Fixture)
+            .filter(
+                Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                Fixture.home_score.isnot(None),
+                Fixture.away_score.isnot(None),
+                ~Fixture.id.in_(evaluated_ids_subq),
+            )
+            .limit(50)
+            .all()
+        )
+        created = 0
+        skipped = 0
+        for fix in unevaluated:
+            try:
+                created += ModelEvaluationService.evaluate_finished_fixture(db, fix.id)
+            except Exception as ex:
+                skipped += 1
+                logger.debug(f"Evaluation skip for fixture {fix.id}: {ex}")
+
         cov = DataQualityService.calculate_global_coverage(db, persist=True)
-        return {"processed": cov.get("eligible_completed_matches", 0), "created": 5, "updated": 0, "skipped": 0}
+        return {
+            "processed": len(unevaluated) or cov.get("eligible_completed_matches", 0),
+            "created": created,
+            "updated": 1,
+            "skipped": skipped,
+        }
 
     @classmethod
     def _run_provider_health(cls, db: Session) -> Dict[str, Any]:
@@ -299,8 +370,14 @@ class JobOrchestratorService:
                 "job_name": r.job_name,
                 "execution_id": r.execution_id,
                 "status": r.status,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "started_at": (
+                    r.started_at.isoformat() + ("Z" if r.started_at.tzinfo is None else "")
+                    if r.started_at else None
+                ),
+                "completed_at": (
+                    r.completed_at.isoformat() + ("Z" if r.completed_at.tzinfo is None else "")
+                    if r.completed_at else None
+                ),
                 "duration_ms": r.duration_ms,
                 "records_processed": r.records_processed,
                 "records_created": r.records_created,

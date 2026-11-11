@@ -26,8 +26,9 @@ THRESHOLD_VALIDATING = 300
 MAX_VALIDATED_ECE = 0.07
 
 ALL_EVALUATION_MARKETS = [
-    # Goals
-    "over_0_5_goals", "over_1_5_goals", "over_2_5_goals", "over_3_5_goals", "over_4_5_goals", "btts", "home_win", "away_win", "draw",
+    # Goals & 1X2
+    "over_0_5_goals", "over_1_5_goals", "over_2_5_goals", "over_3_5_goals", "over_4_5_goals",
+    "btts_yes", "1x2_home", "1x2_away", "1x2_draw",
     # Corners
     "over_7_5_corners", "over_8_5_corners", "over_9_5_corners", "over_10_5_corners", "over_11_5_corners",
     # Cards
@@ -99,7 +100,11 @@ class ProductionValidationService:
         markets_report = []
 
         for mkt in ALL_EVALUATION_MARKETS:
-            evals = db.query(ModelEvaluation).filter(ModelEvaluation.market == mkt).all()
+            evals = (
+                db.query(ModelEvaluation)
+                .filter(ModelEvaluation.market == mkt, ModelEvaluation.verified == True)
+                .all()
+            )
             n = len(evals)
 
             if n > 0:
@@ -108,9 +113,8 @@ class ProductionValidationService:
                 avg_log_loss = (sum(log_losses) / len(log_losses)) if log_losses else None
 
                 # Calculate ECE for market
-                preds = [e.predicted_probability for e in evals]
-                outcomes = [e.actual_outcome for e in evals]
-                cal = CalibrationService.calculate_calibration_curve(preds, outcomes)
+                pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
+                cal = CalibrationService.compute_calibration_curve(pairs)
                 ece = cal.get("ece")
             else:
                 brier = None
@@ -184,17 +188,24 @@ class ProductionValidationService:
         Clearly labels data source and readiness state.
         """
         models = [
-            {"model_key": "league_baseline", "model_name": "Historical League Baseline", "type": "baseline"},
-            {"model_key": "poisson_v1", "model_name": "Independent Poisson Model", "type": "poisson"},
-            {"model_key": "dixon_coles_v2", "model_name": "Dixon-Coles Modified Poisson", "type": "goals"},
-            {"model_key": "corners_negbin_v2", "model_name": "Negative Binomial Corners", "type": "corners"},
-            {"model_key": "cards_referee_v2", "model_name": "Disciplinary & Referee Model", "type": "cards"},
-            {"model_key": "adaptive_ensemble_v1", "model_name": "Adaptive Calibrated Ensemble", "type": "ensemble"}
+            {"model_key": "v2_match_intelligence", "model_name": "Dixon-Coles Modified Poisson Goals", "type": "goals"},
+            {"model_key": "v1_corners_nb", "model_name": "Negative Binomial Corners", "type": "corners"},
+            {"model_key": "v1_cards_nb", "model_name": "Disciplinary & Referee Cards", "type": "cards"},
+            {"model_key": "v1_shots_nb", "model_name": "Negative Binomial Shots & SoT", "type": "shots"},
+            {"model_key": "v1_match_stats_nb", "model_name": "Match Statistics Profile Model", "type": "match_statistics"},
+            {"model_key": "v1_live_intelligence", "model_name": "Dynamic Live In-Play Engine", "type": "live_goals"},
         ]
 
         leaderboard = []
         for m in models:
-            evals = db.query(ModelEvaluation).filter(ModelEvaluation.model_version.contains(m["model_key"])).all()
+            evals = (
+                db.query(ModelEvaluation)
+                .filter(
+                    ModelEvaluation.verified == True,
+                    ModelEvaluation.model_version.contains(m["model_key"]),
+                )
+                .all()
+            )
             n = len(evals)
 
             if n > 0:

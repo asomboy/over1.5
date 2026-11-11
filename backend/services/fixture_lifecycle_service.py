@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import logging
 from enum import Enum
 from datetime import datetime, timezone, timedelta
@@ -72,62 +73,62 @@ class FixtureLifecycleService:
 
         s = str(status).strip().upper()
         c = str(clock or "").strip().upper()
+        tokens = set(re.split(r'[^A-Z0-9]+', s)) - {""}
+        c_tokens = set(re.split(r'[^A-Z0-9]+', c)) - {""}
 
         # 1. Cancelled / Abandoned / Suspended / Postponed
-        if any(x in s for x in ["CANCEL", "CANC"]):
+        if "CANCEL" in s or "CANC" in tokens:
             return CanonicalLifecycleState.CANCELLED
-        if any(x in s for x in ["ABANDON", "ABD"]):
+        if "ABANDON" in s or "ABD" in tokens:
             return CanonicalLifecycleState.ABANDONED
-        if any(x in s for x in ["SUSPEND", "SUSP", "INTERRUPT"]):
+        if "SUSPEND" in s or "INTERRUPT" in s or "SUSP" in tokens:
             return CanonicalLifecycleState.SUSPENDED
-        if any(x in s for x in ["POSTPONE", "PPD", "P-P", "DELAYED_START"]):
+        if "POSTPONE" in s or "P-P" in s or "DELAYED_START" in s or "PPD" in tokens:
             return CanonicalLifecycleState.POSTPONED
 
-        # 2. Finished
-        if any(x in s for x in ["FINISHED", "FINAL", "FT", "FULL_TIME", "ENDED"]):
-            return CanonicalLifecycleState.FINISHED
-
-        # 3. Shootout / Penalties
-        if any(x in s for x in ["SHOOTOUT", "PENALTIES", "PK", "PEN"]):
+        # 2. Shootout / Extra Time (must precede generic FULL/FINAL token matching when explicit)
+        if "SHOOTOUT" in s or "PENALTIES" in s or bool(tokens & {"PK", "PEN"}):
             return CanonicalLifecycleState.PENALTY_SHOOTOUT
-
-        # 4. Extra Time
-        if any(x in s for x in ["EXTRA_TIME", "AET", "ET", "1ET", "2ET"]):
+        if "EXTRA_TIME" in s or bool(tokens & {"AET", "ET", "1ET", "2ET"}):
             return CanonicalLifecycleState.EXTRA_TIME
 
-        # 5. Halftime
-        if any(x in s for x in ["HALFTIME", "HALF_TIME", "HT", "MID"]):
+        # 3. Finished
+        if any(x in s for x in ["FINISHED", "FULL_TIME", "ENDED"]) or bool(tokens & {"FINAL", "FT"}):
+            return CanonicalLifecycleState.FINISHED
+
+        # 4. Halftime
+        if any(x in s for x in ["HALFTIME", "HALF_TIME"]) or bool(tokens & {"HT", "MID"}):
             return CanonicalLifecycleState.HALFTIME
-        if "HT" in c or "HALF" in c:
+        if "HALF" in c or "HT" in c_tokens:
             return CanonicalLifecycleState.HALFTIME
 
-        # 6. Live Second Half
-        if any(x in s for x in ["SECOND_HALF", "2H"]):
+        # 5. Live Second Half
+        is_live_tok = ("IN_PROGRESS" in s or "IN_PLAY" in s or bool(tokens & {"LIVE", "INPROGRESS", "INPLAY"}))
+        if "SECOND_HALF" in s or "2H" in tokens:
             return CanonicalLifecycleState.LIVE_2H
-        if minute is not None and minute > 45 and any(x in s for x in ["IN_PROGRESS", "LIVE", "IN_PLAY"]):
+        if minute is not None and minute > 45 and is_live_tok:
             return CanonicalLifecycleState.LIVE_2H
 
-        # 7. Live First Half / Generic Live
-        if any(x in s for x in ["FIRST_HALF", "1H"]):
-            return CanonicalLifecycleState.LIVE
-        if any(x in s for x in ["LIVE", "IN_PROGRESS", "IN_PLAY"]):
+        # 6. Live First Half / Generic Live
+        if "FIRST_HALF" in s or "1H" in tokens or is_live_tok:
             return CanonicalLifecycleState.LIVE
 
-        # 8. Pre-match
+        # 7. Pre-match
+        is_sched_tok = ("NOT_STARTED" in s or bool(tokens & {"SCHEDULED", "TIMED", "NS"}))
         if any(x in s for x in ["PRE_MATCH", "WARMUP", "LINEUPS"]):
             return CanonicalLifecycleState.PRE_MATCH
-        if kickoff:
+        if kickoff and is_sched_tok:
             try:
                 now_utc = datetime.now(timezone.utc)
                 k_utc = kickoff.replace(tzinfo=timezone.utc) if kickoff.tzinfo is None else kickoff
                 diff_sec = (k_utc - now_utc).total_seconds()
-                if 0 <= diff_sec <= 1800 and any(x in s for x in ["SCHEDULED", "TIMED", "NS"]):
+                if 0 <= diff_sec <= 1800:
                     return CanonicalLifecycleState.PRE_MATCH
             except Exception:
                 pass
 
-        # 9. Scheduled
-        if any(x in s for x in ["SCHEDULED", "TIMED", "NS", "PRE", "NOT_STARTED"]):
+        # 8. Scheduled
+        if is_sched_tok or "PRE" in tokens or "PRE_EVENT" in s:
             return CanonicalLifecycleState.SCHEDULED
 
         return CanonicalLifecycleState.UNKNOWN
@@ -174,7 +175,7 @@ class FixtureLifecycleService:
 
         return {
             "fixture_id": fixture.id,
-            "match_date": fixture.match_date.isoformat(),
+            "match_date": (fixture.match_date.isoformat() + "Z") if (fixture.match_date and fixture.match_date.tzinfo is None) else (fixture.match_date.isoformat() if fixture.match_date else None),
             "raw_status": raw_status,
             "lifecycle_state": state,
             "canonical_lifecycle": canonical_state.value,

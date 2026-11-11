@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { 
   Activity, 
@@ -6,11 +6,8 @@ import {
   RefreshCw, 
   Search, 
   Calendar, 
-  MapPin, 
-  Target, 
   BarChart2, 
   Zap, 
-  Sparkles, 
   ChevronRight, 
   ChevronDown,
   ChevronUp,
@@ -22,15 +19,12 @@ import {
   AlertCircle,
   List,
   Grid,
-  Shield,
   CheckCircle2,
-  Award,
   Flame,
   ArrowUpRight,
   Trophy,
   Clock,
   Crown,
-  Split,
   Radio
 } from 'lucide-react';
 import AccumulatorModal from './components/AccumulatorModal';
@@ -65,32 +59,40 @@ const apiRequest = async (method, path, data = null, options = {}) => {
 
   const candidates = isRender
     ? [
-        `${API_BASE_URL}${path}`,
+        API_BASE_URL ? `${API_BASE_URL}${path}` : null,
         `https://soccer-goal-predictor-api.onrender.com${path}`,
       ]
     : [
         path,
-        `${API_BASE_URL}${path}`,
+        API_BASE_URL ? `${API_BASE_URL}${path}` : null,
         `http://127.0.0.1:8000${path}`,
         `http://localhost:8000${path}`,
-        `https://soccer-goal-predictor-api.onrender.com${path}`,
       ];
 
   const urls = candidates.filter((v, i, a) => v && a.indexOf(v) === i);
 
   let lastErr = null;
   const timeoutMs = options.timeout || 60000;
+  const adminKey =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ADMIN_API_KEY) ||
+    (typeof window !== 'undefined' ? window.localStorage?.getItem('sgp_admin_key') : '') ||
+    '';
+  const mergedHeaders = {
+    ...(options.headers || {}),
+    ...(method === 'post' && adminKey ? { 'X-Admin-Key': adminKey } : {}),
+  };
 
   for (const url of urls) {
     try {
+      const reqOptions = { timeout: timeoutMs, ...options, headers: mergedHeaders };
       let res;
       if (method === 'get') {
-        res = await axios.get(url, { timeout: timeoutMs, ...options });
+        res = await axios.get(url, reqOptions);
       } else if (method === 'post') {
-        res = await axios.post(url, data, { timeout: timeoutMs, ...options });
+        res = await axios.post(url, data, reqOptions);
       }
       // Ensure valid JSON API payload object (rejects HTML fallback strings from static server rewrites)
-      if (res && res.data) {
+      if (res && res.data !== undefined && res.data !== null) {
         if (typeof res.data === 'string' && (res.data.trim().startsWith('<!') || res.data.includes('<html'))) {
           lastErr = new Error(`Endpoint ${path} returned HTML instead of JSON`);
           continue;
@@ -104,6 +106,10 @@ const apiRequest = async (method, path, data = null, options = {}) => {
       if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.name === 'AbortError') {
         throw err;
       }
+      // Re-throw real backend HTTP errors (4xx/5xx) immediately instead of retrying fallback hosts
+      if (err?.response) {
+        throw err;
+      }
     }
   }
   throw lastErr || new Error('Unable to connect to FastAPI backend server');
@@ -114,7 +120,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
-  const [selectedFixture, setSelectedFixture] = useState(null);
+  const pollAbortRef = useRef(null);
 
   // Layout View Mode (Default: Compact Table/List View)
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
@@ -206,30 +212,20 @@ export default function App() {
     }, 0);
   };
 
-  const closeAllMatchModals = () => {
-    setShowDetailModal(false);
-    setActiveDetailFixtureId(null);
-    setShowLiveModal(false);
-    setActiveLiveFixtureId(null);
-  };
-
   // Accuracy Dashboard & Confidence state
   const [accuracyStats, setAccuracyStats] = useState(null);
-  const [loadingAccuracy, setLoadingAccuracy] = useState(false);
 
-  const fetchAccuracyStats = async () => {
-    setLoadingAccuracy(true);
+  const fetchAccuracyStats = useCallback(async (signal = undefined) => {
     try {
-      const response = await apiRequest('get', '/api/predictions/accuracy');
+      const response = await apiRequest('get', '/api/predictions/accuracy', null, signal ? { signal } : {});
       if (response.data?.status === 'ok') {
         setAccuracyStats(response.data);
       }
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
       console.error('Failed to fetch prediction accuracy stats:', err);
-    } finally {
-      setLoadingAccuracy(false);
     }
-  };
+  }, []);
 
   const renderConfidenceBadge = (score) => {
     const s = score ?? 0.50;
@@ -277,11 +273,13 @@ export default function App() {
   });
 
   // Check Backend Health with retry and multi-URL candidates
-  const checkHealth = async (retries = 3) => {
+  const checkHealth = useCallback(async (retries = 3, signal = undefined) => {
     const startTime = performance.now();
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (signal?.aborted) return;
       try {
-        const res = await apiRequest('get', '/health', null, { timeout: 30000 });
+        const reqOpts = signal ? { timeout: 30000, signal } : { timeout: 30000 };
+        const res = await apiRequest('get', '/health', null, reqOpts);
         const endTime = performance.now();
         if (res.data?.status === 'ok') {
           setBackendHealth({
@@ -291,7 +289,8 @@ export default function App() {
           });
           return;
         }
-      } catch {
+      } catch (err) {
+        if (err?.name === 'CanceledError' || err?.name === 'AbortError' || signal?.aborted) return;
         if (attempt === retries) {
           setBackendHealth(prev => ({ ...prev, online: false }));
         } else {
@@ -299,40 +298,44 @@ export default function App() {
         }
       }
     }
-  };
+  }, []);
 
   // Fetch upcoming fixtures from FastAPI with multi-URL fallback
-  const fetchUpcomingFixtures = async (isSilent = false) => {
+  const fetchUpcomingFixtures = useCallback(async (isSilent = false, signal = undefined) => {
     if (!isSilent) setLoading(true);
-    setError(null);
+    if (!isSilent) setError(null);
     try {
-      const response = await apiRequest('get', '/api/fixtures/upcoming');
+      const response = await apiRequest('get', '/api/fixtures/upcoming', null, signal ? { signal } : {});
+      if (signal?.aborted) return;
       if (response.data?.status === 'ok') {
         setFixtures(response.data.data || []);
-      } else {
-        if (!isSilent) setError('Failed to fetch upcoming match predictions');
+      } else if (!isSilent) {
+        setError('Failed to fetch upcoming match predictions');
       }
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError' || signal?.aborted) return;
       if (!isSilent) setError(err.message || 'Unable to connect to FastAPI backend server. Ensure backend is running.');
     } finally {
-      if (!isSilent) setLoading(false);
+      if (!isSilent && !signal?.aborted) setLoading(false);
     }
-  };
+  }, []);
 
   // Fetch completed match results from FastAPI
-  const fetchFinishedFixtures = async () => {
-    setLoadingFinished(true);
+  const fetchFinishedFixtures = useCallback(async (isSilent = false, signal = undefined) => {
+    if (!isSilent) setLoadingFinished(true);
     try {
-      const response = await apiRequest('get', '/api/fixtures/finished');
+      const response = await apiRequest('get', '/api/fixtures/finished', null, signal ? { signal } : {});
+      if (signal?.aborted) return;
       if (response.data?.status === 'ok') {
         setFinishedFixtures(response.data.data || []);
       }
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError' || signal?.aborted) return;
       console.error('Failed to fetch finished match results:', err);
     } finally {
-      setLoadingFinished(false);
+      if (!isSilent && !signal?.aborted) setLoadingFinished(false);
     }
-  };
+  }, []);
 
   // Trigger automated data sync & recalculation
   const handleSyncData = async () => {
@@ -342,7 +345,7 @@ export default function App() {
       await apiRequest('post', '/api/ingest/sync');
       await apiRequest('post', '/api/predictions/predict-all');
       await fetchUpcomingFixtures(true);
-      await fetchFinishedFixtures();
+      await fetchFinishedFixtures(true);
       setNotification({ type: 'success', message: 'Live global fixtures & predictions refreshed successfully!' });
     } catch (err) {
       console.error('Sync failed:', err);
@@ -354,18 +357,27 @@ export default function App() {
   };
 
   useEffect(() => {
-    checkHealth();
-    fetchUpcomingFixtures(false);
-    fetchFinishedFixtures();
-    fetchAccuracyStats();
-    // Auto refresh live scores & finished matches silently every 20 seconds
+    const initController = new AbortController();
+    checkHealth(3, initController.signal);
+    fetchUpcomingFixtures(false, initController.signal);
+    fetchFinishedFixtures(false, initController.signal);
+    fetchAccuracyStats(initController.signal);
+    // Auto refresh live scores & finished matches silently every 20 seconds when tab is visible
     const interval = setInterval(() => {
-      checkHealth();
-      fetchUpcomingFixtures(true);
-      fetchFinishedFixtures();
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (pollAbortRef.current) pollAbortRef.current.abort();
+      const pollCtrl = new AbortController();
+      pollAbortRef.current = pollCtrl;
+      checkHealth(1, pollCtrl.signal);
+      fetchUpcomingFixtures(true, pollCtrl.signal);
+      fetchFinishedFixtures(true, pollCtrl.signal);
     }, 20000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      clearInterval(interval);
+      initController.abort();
+      if (pollAbortRef.current) pollAbortRef.current.abort();
+    };
+  }, [checkHealth, fetchUpcomingFixtures, fetchFinishedFixtures, fetchAccuracyStats]);
 
   // Helper to test if match is currently live
   const isMatchLive = (fix) => {
@@ -710,6 +722,27 @@ export default function App() {
     return Math.ceil(filteredFixtures.length / size) || 1;
   }, [filteredFixtures, pageSize]);
 
+  // Finished Results Pagination State (Default: 50 matches per page)
+  const [finishedPage, setFinishedPage] = useState(1);
+  const [finishedPageSize, setFinishedPageSize] = useState('50');
+
+  useEffect(() => {
+    setFinishedPage(1);
+  }, [searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
+
+  const paginatedFinishedFixtures = useMemo(() => {
+    if (finishedPageSize === 'ALL') return filteredFinishedFixtures;
+    const size = Number(finishedPageSize) || 50;
+    const startIndex = (finishedPage - 1) * size;
+    return filteredFinishedFixtures.slice(startIndex, startIndex + size);
+  }, [filteredFinishedFixtures, finishedPage, finishedPageSize]);
+
+  const totalFinishedPages = useMemo(() => {
+    if (finishedPageSize === 'ALL') return 1;
+    const size = Number(finishedPageSize) || 50;
+    return Math.ceil(filteredFinishedFixtures.length / size) || 1;
+  }, [filteredFinishedFixtures, finishedPageSize]);
+
   // Summary metrics calculated for the currently selected match day & active/upcoming matches
   const summaryStats = useMemo(() => {
     const total = filteredFixtures.length;
@@ -727,48 +760,8 @@ export default function App() {
   const dayUpcomingFixturesCount = filteredFixtures.length;
   const dayFinishedFixturesCount = filteredFinishedFixtures.length;
 
-  // Helper for outcome badges
-  const getBestOutcome = (pred) => {
-    if (!pred) return { label: 'Over 1.5 Goals', pct: 0, level: 'low' };
-    const o15 = Math.round((pred.over_1_5_probability || 0) * 100);
-    const homeWin = Math.round((pred.home_win_probability || 0) * 100);
-    const awayWin = Math.round((pred.away_win_probability || 0) * 100);
-
-    if (o15 >= 75) {
-      return { 
-        label: 'Over 1.5 Goals', 
-        pct: o15, 
-        badge: 'Hot Pick', 
-        level: 'very-high', 
-        colorClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
-      };
-    }
-    if (homeWin >= 60) {
-      return { 
-        label: 'Home Win (1)', 
-        pct: homeWin, 
-        badge: 'Home Fav', 
-        level: 'high', 
-        colorClass: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' 
-      };
-    }
-    if (awayWin >= 60) {
-      return { 
-        label: 'Away Win (2)', 
-        pct: awayWin, 
-        badge: 'Away Fav', 
-        level: 'high', 
-        colorClass: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30' 
-      };
-    }
-    return { 
-      label: 'Over 1.5 Goals', 
-      pct: o15, 
-      badge: 'Moderate', 
-      level: 'moderate', 
-      colorClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30' 
-    };
-  };
+  const formatFixed = (val, decimals = 2, fallback = '0.00') =>
+    typeof val === 'number' && Number.isFinite(val) ? val.toFixed(decimals) : fallback;
 
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 relative overflow-x-hidden w-full max-w-full ${
@@ -1321,10 +1314,10 @@ export default function App() {
 
                 <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
                   <span className="text-xs font-semibold text-slate-400">
-                    Showing <strong className="text-emerald-400">{filteredFinishedFixtures.length}</strong> results
+                    Showing <strong className="text-emerald-400">{paginatedFinishedFixtures.length}</strong> of {filteredFinishedFixtures.length} results
                   </span>
                   <button
-                    onClick={fetchFinishedFixtures}
+                    onClick={() => fetchFinishedFixtures(false)}
                     className="p-2 rounded-xl border bg-slate-900 border-slate-800 text-slate-300 hover:text-white"
                     title="Refresh Finished Results"
                   >
@@ -1384,7 +1377,7 @@ export default function App() {
                 }`}>
                   {/* Mobile Accordion View (< sm) */}
                   <div className="block sm:hidden p-2 space-y-2">
-                    {filteredFinishedFixtures.map(fix => {
+                    {paginatedFinishedFixtures.map(fix => {
                       const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
                       const isExpanded = expandedMobileRows.has(`finished-${fix.id}`);
 
@@ -1480,7 +1473,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
-                        {filteredFinishedFixtures.map(fix => {
+                        {paginatedFinishedFixtures.map(fix => {
                           const over15Pct = Math.round((fix.prediction?.over_1_5_probability || 0) * 100);
 
                           return (
@@ -1545,6 +1538,47 @@ export default function App() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* Finished Results Pagination Footer Bar */}
+                  <div className="p-4 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span>Results per page:</span>
+                      <select
+                        value={finishedPageSize}
+                        onChange={(e) => { setFinishedPageSize(e.target.value); setFinishedPage(1); }}
+                        className={`border px-2.5 py-1 rounded-lg text-xs font-bold focus:outline-none ${
+                          darkMode ? 'bg-slate-950 border-slate-800 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-800'
+                        }`}
+                      >
+                        <option value="25" className={darkMode ? 'bg-slate-900' : 'bg-white'}>25</option>
+                        <option value="50" className={darkMode ? 'bg-slate-900' : 'bg-white'}>50</option>
+                        <option value="100" className={darkMode ? 'bg-slate-900' : 'bg-white'}>100</option>
+                        <option value="ALL" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All</option>
+                      </select>
+                    </div>
+
+                    {finishedPageSize !== 'ALL' && totalFinishedPages > 1 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setFinishedPage(prev => Math.max(prev - 1, 1))}
+                          disabled={finishedPage === 1}
+                          className="px-3 py-1.5 text-xs font-bold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
+                        >
+                          Previous
+                        </button>
+                        <span className="text-xs font-extrabold text-slate-300 px-3 py-1 rounded-lg bg-slate-950 border border-slate-800">
+                          {finishedPage} / {totalFinishedPages}
+                        </span>
+                        <button
+                          onClick={() => setFinishedPage(prev => Math.min(prev + 1, totalFinishedPages))}
+                          disabled={finishedPage === totalFinishedPages}
+                          className="px-3 py-1.5 text-xs font-bold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1758,7 +1792,7 @@ export default function App() {
                             <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
                               <span className="text-slate-400 font-semibold text-[10px]">Total Expected Goals (xG)</span>
                               <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">
-                                {fix.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
+                                {formatFixed(fix.prediction?.expected_goals_xg, 2)}
                               </span>
                             </div>
                           </div>
@@ -1923,7 +1957,7 @@ export default function App() {
 
                           {/* Total xG */}
                           <td className="py-3 px-3 text-center font-mono font-bold text-slate-300">
-                            {fix.prediction?.expected_goals_xg?.toFixed(2) || '0.00'}
+                            {formatFixed(fix.prediction?.expected_goals_xg, 2)}
                           </td>
 
                           {/* Detail Link */}
@@ -2068,7 +2102,7 @@ export default function App() {
                     : darkMode ? 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white' : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <span>💎 Value Bets</span>
+                <span title="Fixtures with ≥78% Over 1.5 probability or verified value edge">💎 High Prob ≥78%</span>
               </button>
 
               {/* Clear Filters */}
@@ -2102,7 +2136,7 @@ export default function App() {
             <h3 className="text-lg font-bold">Unable to Load Match Predictions</h3>
             <p className="text-xs opacity-90">{error}</p>
             <button
-              onClick={fetchUpcomingFixtures}
+              onClick={() => fetchUpcomingFixtures(false)}
               className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-semibold shadow"
             >
               Retry Connection
@@ -2222,7 +2256,7 @@ export default function App() {
                           <div className="p-2 rounded-lg bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center">
                             <span className="text-slate-400 font-semibold text-[10px]">Expected Goals (xG)</span>
                             <span className="font-mono font-bold text-slate-200 text-xs mt-0.5">
-                              {pred.predicted_home_score?.toFixed(2) || '0.00'} - {pred.predicted_away_score?.toFixed(2) || '0.00'} (xG: {pred.expected_goals_xg?.toFixed(2) || '0.00'})
+                              {formatFixed(pred.predicted_home_score, 2)} - {formatFixed(pred.predicted_away_score, 2)} (xG: {formatFixed(pred.expected_goals_xg, 2)})
                             </span>
                           </div>
                         </div>
@@ -2301,10 +2335,10 @@ export default function App() {
                             <span className={`text-[11px] font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                               {formatDateGMT1(fix.match_date)}
                             </span>
-                            {fix.weather && (
+                            {fix.weather && fix.weather.available && (
                               <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
-                                <span>{fix.weather.icon || '☀️'}</span>
-                                <span>{fix.weather.condition || 'Clear'} {fix.weather.temp_c ? `${fix.weather.temp_c}°C` : ''}</span>
+                                <span>{fix.weather.icon || '🌤️'}</span>
+                                <span>{fix.weather.condition} {fix.weather.temp_c !== null && fix.weather.temp_c !== undefined ? `${fix.weather.temp_c}°C` : ''}</span>
                               </span>
                             )}
                           </div>
@@ -2378,11 +2412,15 @@ export default function App() {
                               <Flame className="w-3 h-3 fill-current" />
                               <span>Over 1.5: {over15Pct}%</span>
                             </span>
-                            {(fix.value_bet?.is_value_bet || over15Pct >= 78) && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet?.value_edge_pct || 4.5}%`}>
-                                💎 Value ({fix.value_bet?.model_odds || (100 / Math.max(1, over15Pct)).toFixed(2)})
+                            {fix.value_bet?.is_value_bet && fix.value_bet?.value_edge_pct != null ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet.value_edge_pct}%`}>
+                                💎 Value ({fix.value_bet.model_odds})
                               </span>
-                            )}
+                            ) : (over15Pct >= 78 && fix.value_bet?.model_odds != null && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800/70 text-cyan-300 border border-slate-700 inline-flex items-center gap-1" title="Implied fair model odds (no external bookmaker margin)">
+                                Fair Odds: {fix.value_bet.model_odds}
+                              </span>
+                            ))}
                           </div>
                         </td>
 
@@ -2390,9 +2428,9 @@ export default function App() {
                         <td className="py-3 px-4 text-center">
                           <div className="flex flex-col items-center">
                             <span className="font-mono font-black text-xs text-slate-200">
-                              {pred.predicted_home_score?.toFixed(2) || '0.00'} - {pred.predicted_away_score?.toFixed(2) || '0.00'}
+                              {formatFixed(pred.predicted_home_score, 2)} - {formatFixed(pred.predicted_away_score, 2)}
                             </span>
-                            <span className="text-[10px] text-slate-400">Total: {pred.expected_goals_xg?.toFixed(2) || '0.00'}</span>
+                            <span className="text-[10px] text-slate-400">Total: {formatFixed(pred.expected_goals_xg, 2)}</span>
                           </div>
                         </td>
 
@@ -2478,8 +2516,9 @@ export default function App() {
         ) : (
           
           /* GRID VIEW MODE */
+          <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredFixtures.map(fix => {
+            {paginatedFixtures.map(fix => {
               const pred = fix.prediction || {};
               const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
               const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
@@ -2601,7 +2640,7 @@ export default function App() {
 
                   {/* Footer */}
                   <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-                    <span>xG: {pred.expected_goals_xg?.toFixed(2) || '0.00'}</span>
+                    <span>xG: {formatFixed(pred.expected_goals_xg, 2)}</span>
                     <span className="text-emerald-400 font-semibold flex items-center gap-1">
                       Full Details <ChevronRight className="w-3.5 h-3.5" />
                     </span>
@@ -2609,6 +2648,48 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+
+          {/* Grid View Pagination Footer Bar */}
+          <div className={`p-4 rounded-2xl border flex flex-col sm:flex-row items-center justify-between gap-4 ${darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>Matches per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(e.target.value); setCurrentPage(1); }}
+                className={`border px-2.5 py-1 rounded-lg text-xs font-bold focus:outline-none ${
+                  darkMode ? 'bg-slate-950 border-slate-800 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-800'
+                }`}
+              >
+                <option value="25" className={darkMode ? 'bg-slate-900' : 'bg-white'}>25</option>
+                <option value="50" className={darkMode ? 'bg-slate-900' : 'bg-white'}>50</option>
+                <option value="100" className={darkMode ? 'bg-slate-900' : 'bg-white'}>100</option>
+                <option value="ALL" className={darkMode ? 'bg-slate-900' : 'bg-white'}>All</option>
+              </select>
+            </div>
+
+            {pageSize !== 'ALL' && totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1.5 text-xs font-bold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
+                >
+                  Previous
+                </button>
+                <span className="text-xs font-extrabold text-slate-300 px-3 py-1 rounded-lg bg-slate-950 border border-slate-800">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1.5 text-xs font-bold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-slate-900 border-slate-800 text-slate-200 hover:bg-slate-800"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
           </div>
         )}
           </>

@@ -1,32 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X,
   Activity,
   BarChart2,
-  TrendingUp,
   Shield,
   Award,
-  Clock,
-  Layers,
   RefreshCw,
-  AlertTriangle,
   CheckCircle2,
-  HelpCircle,
-  Percent,
-  Sliders,
-  ChevronRight,
-  Filter,
-  Database,
-  Server,
   Play,
   Pause,
   RotateCcw,
-  Bell,
   HardDrive,
-  Cpu,
-  FileCheck,
-  GitPullRequest
+  FileCheck
 } from 'lucide-react';
+
+const formatFixed = (value, decimals = 3, fallback = '—') =>
+  typeof value === 'number' && Number.isFinite(value) ? value.toFixed(decimals) : fallback;
+
+const formatPct = (value, decimals = 1, fallback = '—') =>
+  typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(decimals)}%` : fallback;
 
 export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest, darkMode }) {
   const [activeTab, setActiveTab] = useState('real_validation'); // 'real_validation' | 'provenance' | 'overview' | 'jobs' | 'alerts' | 'coverage' | 'readiness' | 'markets' | 'calibration' | 'backfill' | 'live'
@@ -53,71 +45,130 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
   const [conflictsData, setConflictsData] = useState([]);
   const [marketReadiness, setMarketReadiness] = useState([]);
   const [realLeaderboard, setRealLeaderboard] = useState([]);
-  const [realValidation, setRealValidation] = useState(null);
 
   // Phase 12 states
   const [decisionStatus, setDecisionStatus] = useState(null);
   const [decisionSignals, setDecisionSignals] = useState([]);
 
-  useEffect(() => {
-    if (isOpen) {
-      fetchAllData();
-    }
-  }, [isOpen]);
+  const loadedGroupsRef = useRef(new Set());
+  const abortControllerRef = useRef(null);
+  const requestIdRef = useRef(0);
 
-  const fetchAllData = async () => {
+  const fetchGroup = useCallback(async (groupName, force = false) => {
+    if (!force && loadedGroupsRef.current.has(groupName)) return;
+    const currentReqId = ++requestIdRef.current;
+    if (abortControllerRef.current && force) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const opts = { signal: controller.signal };
+    const safeGet = (url) => apiRequest('get', url, null, opts).catch((err) => {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return null;
+      return null;
+    });
+
     setLoading(true);
     try {
-      const [
-        stRes, covRes, compRes, readRes, lbRes, calRes, lvRes, bfRes, provRes, jbRes, altRes, bkRes,
-        provAudRes, confRes, mktReadRes, realLbRes, realValRes, decStatRes, decSigRes
-      ] = await Promise.all([
-        apiRequest('get', '/api/system/status'),
-        apiRequest('get', '/api/data-quality/overview'),
-        apiRequest('get', '/api/data-quality/competitions'),
-        apiRequest('get', '/api/models/readiness'),
-        apiRequest('get', '/api/models/leaderboard'),
-        apiRequest('get', '/api/models/calibration'),
-        apiRequest('get', '/api/live/performance'),
-        apiRequest('get', '/api/data-quality/backfill-status'),
-        apiRequest('get', '/api/system/providers'),
-        apiRequest('get', '/api/system/jobs'),
-        apiRequest('get', '/api/system/alerts'),
-        apiRequest('get', '/api/system/backups'),
-        apiRequest('get', '/api/data-quality/provenance'),
-        apiRequest('get', '/api/data-quality/conflicts'),
-        apiRequest('get', '/api/models/market-readiness'),
-        apiRequest('get', '/api/models/real-leaderboard'),
-        apiRequest('get', '/api/models/real-validation'),
-        apiRequest('get', '/api/decision/status'),
-        apiRequest('get', '/api/decision/signals')
-      ]);
-
-      if (stRes?.data) setSystemStatus(stRes.data);
-      if (covRes?.data) setCoverageData(covRes.data);
-      if (compRes?.data?.competitions) setCompetitionsCoverage(compRes.data.competitions);
-      if (readRes?.data) setReadinessData(readRes.data);
-      if (lbRes?.data?.leaderboard) setLeaderboard(lbRes.data.leaderboard);
-      if (calRes?.data) setCalibrationData(calRes.data);
-      if (lvRes?.data) setLiveData(lvRes.data);
-      if (bfRes?.data) setBackfillStatus(bfRes.data);
-      if (provRes?.data?.providers) setProvidersData(provRes.data.providers);
-      if (jbRes?.data) setJobsData(jbRes.data);
-      if (altRes?.data?.alerts) setAlertsData(altRes.data.alerts);
-      if (bkRes?.data?.backups) setBackupsData(bkRes.data.backups);
-      if (provAudRes?.data?.provenance) setProvenanceData(provAudRes.data.provenance);
-      if (confRes?.data?.conflicts) setConflictsData(confRes.data.conflicts);
-      if (mktReadRes?.data?.markets) setMarketReadiness(mktReadRes.data.markets);
-      if (realLbRes?.data?.leaderboard) setRealLeaderboard(realLbRes.data.leaderboard);
-      if (realValRes?.data) setRealValidation(realValRes.data);
-      if (decStatRes?.data) setDecisionStatus(decStatRes.data);
-      if (decSigRes?.data && Array.isArray(decSigRes.data)) setDecisionSignals(decSigRes.data);
+      if (groupName === 'core') {
+        const [stRes, covRes, mktReadRes, realLbRes, decStatRes, decSigRes, altRes] = await Promise.all([
+          safeGet('/api/system/status'),
+          safeGet('/api/data-quality/overview'),
+          safeGet('/api/models/market-readiness'),
+          safeGet('/api/models/real-leaderboard'),
+          safeGet('/api/decision/status'),
+          safeGet('/api/decision/signals'),
+          safeGet('/api/system/alerts'),
+        ]);
+        if (controller.signal.aborted || currentReqId !== requestIdRef.current) return;
+        if (stRes?.data) setSystemStatus(stRes.data);
+        if (covRes?.data) setCoverageData(covRes.data);
+        if (mktReadRes?.data?.markets) setMarketReadiness(mktReadRes.data.markets);
+        if (realLbRes?.data?.leaderboard) setRealLeaderboard(realLbRes.data.leaderboard);
+        if (decStatRes?.data) setDecisionStatus(decStatRes.data);
+        if (decSigRes?.data && Array.isArray(decSigRes.data)) setDecisionSignals(decSigRes.data);
+        if (altRes?.data?.alerts) setAlertsData(altRes.data.alerts);
+        loadedGroupsRef.current.add('core');
+      } else if (groupName === 'provenance') {
+        const [provAudRes, confRes] = await Promise.all([
+          safeGet('/api/data-quality/provenance'),
+          safeGet('/api/data-quality/conflicts'),
+        ]);
+        if (controller.signal.aborted) return;
+        if (provAudRes?.data?.provenance) setProvenanceData(provAudRes.data.provenance);
+        if (confRes?.data?.conflicts) setConflictsData(confRes.data.conflicts);
+        loadedGroupsRef.current.add('provenance');
+      } else if (groupName === 'coverage') {
+        const compRes = await safeGet('/api/data-quality/competitions');
+        if (controller.signal.aborted) return;
+        if (compRes?.data?.competitions) setCompetitionsCoverage(compRes.data.competitions);
+        loadedGroupsRef.current.add('coverage');
+      } else if (groupName === 'models') {
+        const [readRes, lbRes, calRes] = await Promise.all([
+          safeGet('/api/models/readiness'),
+          safeGet('/api/models/leaderboard'),
+          safeGet('/api/models/calibration'),
+        ]);
+        if (controller.signal.aborted) return;
+        if (readRes?.data) setReadinessData(readRes.data);
+        if (lbRes?.data?.leaderboard) setLeaderboard(lbRes.data.leaderboard);
+        if (calRes?.data) setCalibrationData(calRes.data);
+        loadedGroupsRef.current.add('models');
+      } else if (groupName === 'operations') {
+        const [jbRes, bfRes, provRes, bkRes, lvRes] = await Promise.all([
+          safeGet('/api/system/jobs'),
+          safeGet('/api/data-quality/backfill-status'),
+          safeGet('/api/system/providers'),
+          safeGet('/api/system/backups'),
+          safeGet('/api/live/performance'),
+        ]);
+        if (controller.signal.aborted) return;
+        if (jbRes?.data) setJobsData(jbRes.data);
+        if (bfRes?.data) setBackfillStatus(bfRes.data);
+        if (provRes?.data?.providers) setProvidersData(provRes.data.providers);
+        if (bkRes?.data?.backups) setBackupsData(bkRes.data.backups);
+        if (lvRes?.data) setLiveData(lvRes.data);
+        loadedGroupsRef.current.add('operations');
+      }
     } catch (err) {
       console.error('Error fetching production operations intelligence:', err);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
+  }, [apiRequest]);
+
+  const getGroupForTab = (tabId) => {
+    if (tabId === 'provenance') return 'provenance';
+    if (tabId === 'coverage' || tabId === 'overview') return 'coverage';
+    if (tabId === 'readiness' || tabId === 'markets' || tabId === 'calibration') return 'models';
+    if (tabId === 'jobs' || tabId === 'backfill' || tabId === 'live') return 'operations';
+    return null;
   };
+
+  const fetchAllData = useCallback(async () => {
+    loadedGroupsRef.current.clear();
+    await fetchGroup('core', true);
+    const tabGroup = getGroupForTab(activeTab);
+    if (tabGroup) {
+      await fetchGroup(tabGroup, true);
+    }
+  }, [activeTab, fetchGroup]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      loadedGroupsRef.current.clear();
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchGroup('core', false);
+      const tabGroup = getGroupForTab(activeTab);
+      if (tabGroup) fetchGroup(tabGroup, false);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [isOpen, activeTab, fetchGroup]);
 
   const handleRunJob = async (jobName) => {
     setRunningJob(jobName);
@@ -466,10 +517,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               </td>
                               <td className="py-2.5 px-2 text-center text-white font-semibold">{m.sample_size}</td>
                               <td className="py-2.5 px-2 text-center font-black text-cyan-400">
-                                {m.brier_score !== null ? m.brier_score.toFixed(3) : '—'}
+                                {formatFixed(m.brier_score, 3)}
                               </td>
                               <td className="py-2.5 px-2 text-center text-slate-300">
-                                {m.log_loss !== null ? m.log_loss.toFixed(3) : '—'}
+                                {formatFixed(m.log_loss, 3)}
                               </td>
                               <td className="py-2.5 px-2 text-center">
                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(m.readiness_state)}`}>
@@ -510,13 +561,13 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               <td className="py-2 px-2 font-bold text-slate-200 capitalize">{m.market.replace(/_/g, ' ')}</td>
                               <td className="py-2 px-2 text-center text-white font-semibold">{m.sample_size}</td>
                               <td className="py-2 px-2 text-center font-bold text-cyan-400">
-                                {m.brier_score !== null ? m.brier_score.toFixed(3) : '—'}
+                                {formatFixed(m.brier_score, 3)}
                               </td>
                               <td className="py-2 px-2 text-center text-slate-300">
-                                {m.log_loss !== null ? m.log_loss.toFixed(3) : '—'}
+                                {formatFixed(m.log_loss, 3)}
                               </td>
                               <td className="py-2 px-2 text-center text-emerald-400">
-                                {m.ece !== null ? `${(m.ece * 100).toFixed(1)}%` : '—'}
+                                {formatPct(m.ece, 1)}
                               </td>
                               <td className="py-2 px-2 text-center">
                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(m.readiness?.readiness_state)}`}>
@@ -676,7 +727,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                       { title: 'Cards Coverage', data: coverageData?.cards_coverage, icon: Shield },
                       { title: 'Referee Coverage', data: coverageData?.referee_coverage, icon: Award }
                     ].map((kpi, idx) => {
-                      const covPct = kpi.data?.coverage_ratio ? (kpi.data.coverage_ratio * 100).toFixed(1) : '0.0';
+                      const covPct = formatFixed(typeof kpi.data?.coverage_ratio === 'number' ? kpi.data.coverage_ratio * 100 : 0, 1, '0.0');
                       return (
                         <div key={idx} className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
                           <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold">
@@ -839,7 +890,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                             {backupsData.map((bk, idx) => (
                               <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
                                 <td className="py-2 px-2 font-bold text-slate-200">{bk.filename}</td>
-                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{(bk.size_bytes / 1024).toFixed(0)} KB</td>
+                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{typeof bk.size_bytes === 'number' ? `${formatFixed(bk.size_bytes / 1024, 0, '0')} KB` : '—'}</td>
                                 <td className="py-2 px-2 text-right text-[10px] text-slate-500">
                                   {new Date(bk.created_at).toLocaleString()}
                                 </td>
@@ -881,10 +932,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
                                 <td className="py-2.5 px-2 font-bold text-slate-200">{comp.competition}</td>
                                 <td className="py-2.5 px-2 text-center font-semibold text-white">{comp.eligible_matches}</td>
-                                <td className="py-2.5 px-2 text-center text-cyan-400 font-bold">{(comp.goals_coverage * 100).toFixed(0)}%</td>
-                                <td className="py-2.5 px-2 text-center text-emerald-400 font-bold">{(comp.corners_coverage * 100).toFixed(0)}%</td>
-                                <td className="py-2.5 px-2 text-center text-amber-400 font-bold">{(comp.cards_coverage * 100).toFixed(0)}%</td>
-                                <td className="py-2.5 px-2 text-center text-indigo-400 font-bold">{(comp.referee_coverage * 100).toFixed(0)}%</td>
+                                <td className="py-2.5 px-2 text-center text-cyan-400 font-bold">{formatPct(comp.goals_coverage, 0)}</td>
+                                <td className="py-2.5 px-2 text-center text-emerald-400 font-bold">{formatPct(comp.corners_coverage, 0)}</td>
+                                <td className="py-2.5 px-2 text-center text-amber-400 font-bold">{formatPct(comp.cards_coverage, 0)}</td>
+                                <td className="py-2.5 px-2 text-center text-indigo-400 font-bold">{formatPct(comp.referee_coverage, 0)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -922,18 +973,18 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                             </div>
                             <div>
                               <span className="text-slate-500 text-[10px] block">Brier</span>
-                              <strong className="text-cyan-400">{m.brier_score !== null ? m.brier_score.toFixed(3) : '—'}</strong>
+                              <strong className="text-cyan-400">{formatFixed(m.brier_score, 3)}</strong>
                             </div>
                             <div>
                               <span className="text-slate-500 text-[10px] block">ECE</span>
-                              <strong className="text-emerald-400">{m.ece !== null ? `${(m.ece * 100).toFixed(1)}%` : '—'}</strong>
+                              <strong className="text-emerald-400">{formatPct(m.ece, 1)}</strong>
                             </div>
                           </div>
 
                           <div className="text-[10px] text-slate-400 pt-1 flex justify-between border-t border-slate-800/80">
                             <span>Ensemble Activation:</span>
                             <strong className={m.readiness?.can_activate_ensemble ? 'text-emerald-400' : 'text-slate-500'}>
-                              {m.readiness?.can_activate_ensemble ? 'ELIGIBLE' : 'GATED (Sample < 100)'}
+                              {m.readiness?.can_activate_ensemble ? 'ELIGIBLE' : (m.readiness?.readiness_state || 'GATED')}
                             </strong>
                           </div>
                         </div>
@@ -976,10 +1027,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                                 <td className="py-2.5 px-2 text-slate-400 text-[11px]">{item.model_version}</td>
                                 <td className="py-2.5 px-2 text-center font-semibold text-white">{item.sample_size}</td>
                                 <td className="py-2.5 px-2 text-center font-black text-cyan-400">
-                                  {item.brier_score !== null ? item.brier_score.toFixed(3) : '—'}
+                                  {formatFixed(item.brier_score, 3)}
                                 </td>
                                 <td className="py-2.5 px-2 text-center text-slate-300">
-                                  {item.ece !== null ? `${(item.ece * 100).toFixed(1)}%` : '—'}
+                                  {formatPct(item.ece, 1)}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">
                                   <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(item.validation_status)}`}>
@@ -1005,7 +1056,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                     <div>
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Expected Calibration Error (ECE)</span>
                       <span className="text-2xl font-black text-white">
-                        {calibrationData?.ece !== null ? `${(calibrationData?.ece * 100).toFixed(1)}%` : 'N/A'}
+                        {formatPct(calibrationData?.ece, 1, 'N/A')}
                       </span>
                     </div>
                     <div className="text-right">
@@ -1039,9 +1090,9 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
                                 <td className="py-2 px-2 font-bold text-slate-200">{b.bucket_range}</td>
                                 <td className="py-2 px-2 text-center text-slate-300 font-semibold">{b.predictions_count}</td>
-                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{(b.avg_predicted_prob * 100).toFixed(1)}%</td>
-                                <td className="py-2 px-2 text-center text-emerald-400 font-bold">{(b.actual_event_rate * 100).toFixed(1)}%</td>
-                                <td className="py-2 px-2 text-center text-slate-400">{(b.calibration_error * 100).toFixed(1)}%</td>
+                                <td className="py-2 px-2 text-center text-cyan-400 font-bold">{formatPct(b.avg_predicted_prob, 1)}</td>
+                                <td className="py-2 px-2 text-center text-emerald-400 font-bold">{formatPct(b.actual_event_rate, 1)}</td>
+                                <td className="py-2 px-2 text-center text-slate-400">{formatPct(b.calibration_error, 1)}</td>
                                 <td className="py-2 px-2 text-center">
                                   <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(b.status)}`}>
                                     {b.status}
@@ -1087,7 +1138,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                           <div className="text-[10px] text-slate-400 flex justify-between">
                             <span>Success Rate:</span>
                             <strong className="text-emerald-400">
-                              {pr.request_count > 0 ? `${((pr.success_count / pr.request_count) * 100).toFixed(0)}%` : '100%'}
+                              {pr.request_count > 0 ? formatPct(pr.success_count / pr.request_count, 0, '100%') : '100%'}
                             </strong>
                           </div>
                           <div className="text-[10px] text-slate-400 flex justify-between">
@@ -1127,10 +1178,10 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                                 <td className="py-2.5 px-2 font-bold text-slate-200">{b.minute_bucket}</td>
                                 <td className="py-2.5 px-2 text-center text-white font-semibold">{b.sample_size}</td>
                                 <td className="py-2.5 px-2 text-center text-cyan-400 font-black">
-                                  {b.brier_score !== null ? b.brier_score.toFixed(3) : '—'}
+                                  {formatFixed(b.brier_score, 3)}
                                 </td>
                                 <td className="py-2.5 px-2 text-center text-slate-300">
-                                  {b.log_loss !== null ? b.log_loss.toFixed(3) : '—'}
+                                  {formatFixed(b.log_loss, 3)}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">
                                   <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${getStatusBadge(b.status)}`}>

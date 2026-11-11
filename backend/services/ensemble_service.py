@@ -28,7 +28,13 @@ class AdaptiveEnsembleService:
     based on empirical Brier scores, calibration reliability, and sample size safeguards.
     """
 
-    DEFAULT_MODELS = ["poisson_v1", "dixon_coles_v2", "corners_negbin_v2", "cards_referee_v2"]
+    DEFAULT_MODELS = [
+        "v2_match_intelligence",
+        "v1_corners_nb",
+        "v1_cards_nb",
+        "v1_shots_nb",
+        "v1_match_stats_nb",
+    ]
 
     @classmethod
     def calculate_ensemble_weights(

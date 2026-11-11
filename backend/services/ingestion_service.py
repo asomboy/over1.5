@@ -181,27 +181,45 @@ class DataIngestionService:
         affected_team_ids = set()
         affected_league_ids = set()
 
+        # Preload lookup caches for team/league names and external_ids to minimize per-fixture SELECTs
+        need_team_names = {
+            name
+            for f in fixtures_data
+            for name in (f.get("home_team_name"), f.get("away_team_name"))
+            if name
+        }
+        team_by_name = (
+            {t.name: t.id for t in db.query(Team).filter(Team.name.in_(need_team_names)).all()}
+            if need_team_names else {}
+        )
+        need_league_names = {f.get("league_name") for f in fixtures_data if f.get("league_name")}
+        league_by_name = (
+            {l.name: l.id for l in db.query(League).filter(League.name.in_(need_league_names)).all()}
+            if need_league_names else {}
+        )
+        all_ext_ids = [str(f["external_id"]) for f in fixtures_data if f.get("external_id") is not None]
+        fixtures_by_ext = {}
+        for i in range(0, len(all_ext_ids), 500):
+            chunk = all_ext_ids[i:i + 500]
+            for existing in db.query(Fixture).filter(Fixture.external_id.in_(chunk)).all():
+                if existing.external_id:
+                    fixtures_by_ext[existing.external_id] = existing
+
         for f_data in fixtures_data:
             ext_id = str(f_data.get("external_id")) if f_data.get("external_id") is not None else None
             league_id = f_data.get("league_id")
             home_team_id = f_data.get("home_team_id")
             away_team_id = f_data.get("away_team_id")
 
-            # Resolve team names if IDs not provided directly
+            # Resolve team/league names from preloaded caches
             if not home_team_id and f_data.get("home_team_name"):
-                home_team = db.query(Team).filter(Team.name == f_data["home_team_name"]).first()
-                if home_team:
-                    home_team_id = home_team.id
+                home_team_id = team_by_name.get(f_data["home_team_name"])
 
             if not away_team_id and f_data.get("away_team_name"):
-                away_team = db.query(Team).filter(Team.name == f_data["away_team_name"]).first()
-                if away_team:
-                    away_team_id = away_team.id
+                away_team_id = team_by_name.get(f_data["away_team_name"])
 
             if not league_id and f_data.get("league_name"):
-                league = db.query(League).filter(League.name == f_data["league_name"]).first()
-                if league:
-                    league_id = league.id
+                league_id = league_by_name.get(f_data["league_name"])
 
             match_date_raw = f_data.get("match_date")
             if isinstance(match_date_raw, str):
@@ -224,9 +242,7 @@ class DataIngestionService:
             if not league_id or not home_team_id or not away_team_id:
                 continue
 
-            fixture = None
-            if ext_id:
-                fixture = db.query(Fixture).filter(Fixture.external_id == ext_id).first()
+            fixture = fixtures_by_ext.get(ext_id) if ext_id else None
 
             if not fixture:
                 fixture = (
@@ -275,11 +291,9 @@ class DataIngestionService:
                 )
                 db.add(fixture)
 
-            if commit:
-                db.commit()
-                db.refresh(fixture)
-            else:
-                db.flush()
+            db.flush()
+            if ext_id:
+                fixtures_by_ext[ext_id] = fixture
 
             # Ingest/update historical scores if status is FINISHED and scores are provided
             home_score = f_data.get("home_score")
@@ -454,10 +468,7 @@ class DataIngestionService:
                     logger.debug(f"Model evaluation hook error: {eval_ex}")
 
                 fixture.status = "FINISHED"
-                if commit:
-                    db.commit()
-                else:
-                    db.flush()
+                db.flush()
 
                 affected_team_ids.add(home_team_id)
                 affected_team_ids.add(away_team_id)
@@ -465,12 +476,17 @@ class DataIngestionService:
 
             ingested_fixtures.append(fixture)
 
-        # Trigger statistics recalculation for affected leagues & teams
+        if commit:
+            db.commit()
+
+        # Trigger statistics recalculation for affected leagues & teams cleanly with batched commits
         for l_id in affected_league_ids:
-            calculate_league_statistics(db, l_id, commit=commit)
+            calculate_league_statistics(db, l_id, commit=False)
 
         for t_id in affected_team_ids:
-            calculate_team_statistics(db, t_id, commit=commit)
+            calculate_team_statistics(db, t_id, commit=False)
+        if commit and (affected_league_ids or affected_team_ids):
+            db.commit()
 
         # Keep Elo ratings and form streaks fresh (the prediction model reads them).
         # recalculate_all_elo is deterministic and idempotent (resets, then replays all
@@ -707,38 +723,11 @@ class DataIngestionService:
                             parsed_h_score = None
                             parsed_a_score = None
                         else:
-                            # Fallback: Infer status from match kickoff time
-                            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-                            # If match kicked off 1+ minutes ago and within 3-hour window
-                            if match_date <= (now_utc_naive - timedelta(minutes=1)) and match_date >= (now_utc_naive - timedelta(hours=3)):
-                                status = "LIVE"
-                                mins_elapsed = max(1, int((now_utc_naive - match_date).total_seconds() / 60))
-                                if not live_clock or live_clock == "0'":
-                                    if mins_elapsed <= 45:
-                                        live_clock = f"{mins_elapsed}'"
-                                    elif mins_elapsed <= 60:
-                                        live_clock = "HT"
-                                    elif mins_elapsed <= 105:
-                                        live_clock = f"{mins_elapsed - 15}'"
-                                    else:
-                                        live_clock = "90+'"
-                                # Default scores to 0-0 if ESPN hasn't reported yet
-                                if parsed_h_score is None:
-                                    parsed_h_score = 0
-                                if parsed_a_score is None:
-                                    parsed_a_score = 0
-                            elif match_date > (now_utc_naive - timedelta(hours=3, minutes=30)) and match_date <= (now_utc_naive - timedelta(hours=3)):
-                                # Match likely finished but ESPN didn't report - mark as finished
-                                status = "FINISHED"
-                                if parsed_h_score is None:
-                                    parsed_h_score = 0
-                                if parsed_a_score is None:
-                                    parsed_a_score = 0
-                                live_clock = "FT"
-                            else:
-                                status = "SCHEDULED"
-                                parsed_h_score = None
-                                parsed_a_score = None
+                            # Keep pre-match/unreported ESPN state factual without inventing scores or fake clocks
+                            status = "SCHEDULED"
+                            parsed_h_score = None
+                            parsed_a_score = None
+                            live_clock = None
 
                         all_espn_payloads.append({
                             "external_id": f"ESPN-FIX-{ev.get('id')}",
@@ -1126,16 +1115,18 @@ class DataIngestionService:
 
         resolved_count = 0
         for fix in stale_fixtures:
-            # If match was marked LIVE or was SCHEDULED with score or past cutoff, auto-resolve to FINISHED
-            if fix.status == "LIVE" or (fix.status == "SCHEDULED" and (fix.home_score is not None or fix.match_date < cutoff_time)):
+            # Only resolve to FINISHED when authoritative final scores actually exist (never invent 0-0)
+            if fix.home_score is not None and fix.away_score is not None:
                 fix.status = "FINISHED"
                 fix.live_clock = "FT"
-                if fix.home_score is None:
-                    fix.home_score = 0
-                if fix.away_score is None:
-                    fix.away_score = 0
                 resolved_count += 1
-                logger.info(f"Auto-resolved stale fixture #{fix.id} ({fix.external_id}) to FINISHED.")
+                logger.info(f"Resolved expired fixture #{fix.id} ({fix.external_id}) with observed scores to FINISHED.")
+            elif fix.status == "LIVE":
+                # Expired live status without verified score: revert to POSTPONED without fabricating 0-0 scores
+                fix.status = "POSTPONED"
+                fix.live_clock = None
+                resolved_count += 1
+                logger.warning(f"Cleared expired LIVE state without verified scores on fixture #{fix.id} ({fix.external_id}).")
 
         if resolved_count > 0:
             db.commit()

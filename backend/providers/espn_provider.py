@@ -69,18 +69,18 @@ class ESPNProvider(BaseProvider):
                 data_quality="unavailable"
             )
 
-    def fetch_upcoming_fixtures(self, days_ahead: int = 7) -> ProviderResult:
+    def fetch_upcoming_fixtures(self, days_ahead: int = 7, league_slug: str = "all") -> ProviderResult:
         """Fetches scoreboard across major soccer leagues."""
-        return self._execute_request("scoreboards")
+        return self._execute_request(f"{league_slug}/scoreboard")
 
-    def fetch_historical_results(self, date_str: str) -> ProviderResult:
+    def fetch_historical_results(self, date_str: str, league_slug: str = "all") -> ProviderResult:
         """Fetches scoreboard for a specific date (YYYYMMDD)."""
-        return self._execute_request("scoreboards", params={"dates": date_str})
+        return self._execute_request(f"{league_slug}/scoreboard", params={"dates": date_str})
 
-    def fetch_match_statistics(self, match_external_id: str) -> ProviderResult:
+    def fetch_match_statistics(self, match_external_id: str, league_slug: str = "all") -> ProviderResult:
         """Fetches match summary boxscore containing corners, shots, fouls, cards, and referee."""
-        return self._execute_request(f"summary", params={"event": match_external_id})
+        return self._execute_request(f"{league_slug}/summary", params={"event": match_external_id})
 
-    def fetch_live_match_state(self, match_external_id: str) -> ProviderResult:
+    def fetch_live_match_state(self, match_external_id: str, league_slug: str = "all") -> ProviderResult:
         """Fetches live match state and summary."""
-        return self._execute_request(f"summary", params={"event": match_external_id})
+        return self._execute_request(f"{league_slug}/summary", params={"event": match_external_id})

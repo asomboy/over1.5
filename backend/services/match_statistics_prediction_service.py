@@ -76,12 +76,33 @@ def _negative_binomial_pmf(k: int, mu: float, r: float) -> float:
         return 0.0
 
 
+def _normalized_nb_pmf(mu: float, r: float, grid_size: int = MAX_COUNT_GRID) -> List[float]:
+    """Builds a Negative Binomial PMF over [0, grid_size - 1] normalized cleanly to sum 1.0."""
+    pmf = [_negative_binomial_pmf(k, mu, r) for k in range(grid_size)]
+    tot = sum(pmf)
+    return [p / tot for p in pmf] if tot > 0 else [1.0] + [0.0] * (grid_size - 1)
+
+
+def _convolve_nb_totals(lambda_h: float, lambda_a: float, r: float, grid_size: int = MAX_COUNT_GRID) -> List[float]:
+    """Computes full discrete convolution PMF for home + away counts without truncating total grid."""
+    h_pmf = _normalized_nb_pmf(lambda_h, r, grid_size)
+    a_pmf = _normalized_nb_pmf(lambda_a, r, grid_size)
+    total = [0.0] * (2 * grid_size - 1)
+    for i, ph in enumerate(h_pmf):
+        for j, pa in enumerate(a_pmf):
+            total[i + j] += ph * pa
+    tot = sum(total)
+    return [p / tot for p in total] if tot > 0 else total
+
+
 def _derive_monotonic_markets(pmf: List[float], lines: List[float]) -> Dict[str, float]:
-    """Generates strictly monotonic Over/Under probabilities from discrete PMF."""
+    """Generates strictly monotonic Over/Under probabilities from a normalized discrete PMF."""
+    tot = sum(pmf)
+    norm_pmf = [p / tot for p in pmf] if tot > 0 else pmf
     markets = {}
     for line in lines:
         cutoff = int(math.ceil(line))
-        over_p = sum(pmf[k] for k in range(cutoff, len(pmf)))
+        over_p = sum(norm_pmf[k] for k in range(cutoff, len(norm_pmf)))
         k_over = f"over_{str(line).replace('.', '_')}"
         k_under = f"under_{str(line).replace('.', '_')}"
         markets[k_over] = round(max(0.01, min(0.99, over_p)), 4)
@@ -204,7 +225,8 @@ class MatchStatisticsPredictionEngine:
         if not fixture:
             return {"error": f"Fixture {fixture_id} not found"}
 
-        now = fixture.match_date or datetime.now(timezone.utc)
+        _raw_now = fixture.match_date or datetime.now(timezone.utc)
+        now = _raw_now.astimezone(timezone.utc).replace(tzinfo=None) if getattr(_raw_now, 'tzinfo', None) else _raw_now
         h_team_id = fixture.home_team_id
         a_team_id = fixture.away_team_id
 
@@ -234,13 +256,7 @@ class MatchStatisticsPredictionEngine:
         lambda_a_fouls = max(4.0, (a_feat["avg_fouls_committed"] + h_feat["avg_fouls_drawn"]) / 2.0 * ref_strictness)
         lambda_tot_fouls = lambda_h_fouls + lambda_a_fouls
 
-        h_fouls_pmf = [_negative_binomial_pmf(k, lambda_h_fouls, DEFAULT_FOULS_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-        a_fouls_pmf = [_negative_binomial_pmf(k, lambda_a_fouls, DEFAULT_FOULS_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-
-        tot_fouls_pmf = [0.0] * MAX_COUNT_GRID
-        for i in range(MAX_COUNT_GRID):
-            for j in range(MAX_COUNT_GRID - i):
-                tot_fouls_pmf[i + j] += h_fouls_pmf[i] * a_fouls_pmf[j]
+        tot_fouls_pmf = _convolve_nb_totals(lambda_h_fouls, lambda_a_fouls, DEFAULT_FOULS_DISPERSION_R)
 
         foul_lines = [19.5, 21.5, 23.5, 25.5, 27.5]
         fouls_payload = {
@@ -256,13 +272,7 @@ class MatchStatisticsPredictionEngine:
         lambda_a_off = max(0.5, a_feat["avg_offsides"])
         lambda_tot_off = lambda_h_off + lambda_a_off
 
-        h_off_pmf = [_negative_binomial_pmf(k, lambda_h_off, DEFAULT_OFFSIDES_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-        a_off_pmf = [_negative_binomial_pmf(k, lambda_a_off, DEFAULT_OFFSIDES_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-
-        tot_off_pmf = [0.0] * MAX_COUNT_GRID
-        for i in range(MAX_COUNT_GRID):
-            for j in range(MAX_COUNT_GRID - i):
-                tot_off_pmf[i + j] += h_off_pmf[i] * a_off_pmf[j]
+        tot_off_pmf = _convolve_nb_totals(lambda_h_off, lambda_a_off, DEFAULT_OFFSIDES_DISPERSION_R)
 
         offside_lines = [1.5, 2.5, 3.5, 4.5]
         offsides_payload = {
@@ -282,13 +292,7 @@ class MatchStatisticsPredictionEngine:
         lambda_a_saves = max(0.8, exp_h_sot * 0.70)
         lambda_tot_saves = lambda_h_saves + lambda_a_saves
 
-        h_save_pmf = [_negative_binomial_pmf(k, lambda_h_saves, DEFAULT_SAVES_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-        a_save_pmf = [_negative_binomial_pmf(k, lambda_a_saves, DEFAULT_SAVES_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-
-        tot_save_pmf = [0.0] * MAX_COUNT_GRID
-        for i in range(MAX_COUNT_GRID):
-            for j in range(MAX_COUNT_GRID - i):
-                tot_save_pmf[i + j] += h_save_pmf[i] * a_save_pmf[j]
+        tot_save_pmf = _convolve_nb_totals(lambda_h_saves, lambda_a_saves, DEFAULT_SAVES_DISPERSION_R)
 
         save_lines = [2.5, 3.5, 4.5, 5.5]
         saves_payload = {
@@ -307,13 +311,7 @@ class MatchStatisticsPredictionEngine:
         lambda_a_blocked = min(exp_a_shots * 0.40, max(0.5, exp_a_shots * 0.22))
         lambda_tot_blocked = lambda_h_blocked + lambda_a_blocked
 
-        h_blk_pmf = [_negative_binomial_pmf(k, lambda_h_blocked, DEFAULT_BLOCKED_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-        a_blk_pmf = [_negative_binomial_pmf(k, lambda_a_blocked, DEFAULT_BLOCKED_DISPERSION_R) for k in range(MAX_COUNT_GRID)]
-
-        tot_blk_pmf = [0.0] * MAX_COUNT_GRID
-        for i in range(MAX_COUNT_GRID):
-            for j in range(MAX_COUNT_GRID - i):
-                tot_blk_pmf[i + j] += h_blk_pmf[i] * a_blk_pmf[j]
+        tot_blk_pmf = _convolve_nb_totals(lambda_h_blocked, lambda_a_blocked, DEFAULT_BLOCKED_DISPERSION_R)
 
         block_lines = [1.5, 2.5, 3.5, 4.5, 5.5]
         blocked_payload = {
@@ -500,7 +498,7 @@ class MatchStatisticsPredictionEngine:
         snapshot = MatchStatisticsPredictionSnapshot(
             fixture_id=fixture_id,
             model_version=MATCH_STATS_MODEL_VERSION,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             match_minute=0,
             is_live=False,
             expected_home_possession=pred["possession"]["expected_home_possession"],
@@ -531,7 +529,7 @@ class MatchStatisticsPredictionEngine:
             confidence=pred["confidence"],
             data_quality=pred["data_quality"],
             diagnostics_json=json.dumps(pred["attacking_pressure"]),
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
         db.add(snapshot)
         db.commit()

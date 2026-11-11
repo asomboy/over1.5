@@ -3,6 +3,10 @@ import sys
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 from sqlalchemy.orm import Session, joinedload
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +30,24 @@ class AccumulatorGeneratorService:
     Constructs high-probability, diversified betting accumulators (slips)
     from upcoming fixture goal predictions while enforcing cross-league diversification.
     """
+
+    @staticmethod
+    def _london_day_key(dt: Optional[datetime]) -> str:
+        if not dt:
+            return ""
+        dt_utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        try:
+            tz = ZoneInfo("Europe/London") if ZoneInfo is not None else timezone(timedelta(hours=1))
+        except Exception:
+            tz = timezone(timedelta(hours=1))
+        return dt_utc.astimezone(tz).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _iso_utc_z(dt: Optional[datetime]) -> str:
+        if not dt:
+            return ""
+        dt_utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        return dt_utc.replace(tzinfo=None).isoformat() + "Z"
 
     @classmethod
     def generate_accumulators(cls, db: Session, match_day: Optional[str] = None) -> Dict[str, Any]:
@@ -66,15 +88,21 @@ class AccumulatorGeneratorService:
             if not pred:
                 continue
 
-            o15 = float(pred.over_1_5_probability or 0.0)
-            o25 = float(pred.over_2_5_probability or 0.0)
-            btts = float(pred.btts_probability or 0.0)
-            conf = float(pred.confidence_score or 0.50)
-            h_xg = float(pred.predicted_home_score or 1.45)
-            a_xg = float(pred.predicted_away_score or 1.15)
+            if (
+                pred.over_1_5_probability is None
+                or pred.predicted_home_score is None
+                or pred.predicted_away_score is None
+            ):
+                continue
+            o15 = float(pred.over_1_5_probability)
+            o25 = float(pred.over_2_5_probability) if pred.over_2_5_probability is not None else 0.0
+            btts = float(pred.btts_probability) if pred.btts_probability is not None else 0.0
+            conf = float(pred.confidence_score) if pred.confidence_score is not None else 0.50
+            h_xg = float(pred.predicted_home_score)
+            a_xg = float(pred.predicted_away_score)
             tot_xg = round(h_xg + a_xg, 2)
 
-            match_date_str = fix.match_date.strftime("%Y-%m-%d") if fix.match_date else ""
+            match_date_str = cls._london_day_key(fix.match_date)
 
             candidates.append({
                 "fixture_id": fix.id,
@@ -82,7 +110,7 @@ class AccumulatorGeneratorService:
                 "away_team": fix.away_team.name if fix.away_team else "Away Team",
                 "league": fix.league.name if fix.league else "League",
                 "league_id": fix.league_id,
-                "match_date": fix.match_date.isoformat() if fix.match_date else "",
+                "match_date": cls._iso_utc_z(fix.match_date),
                 "match_date_key": match_date_str,
                 "over_1_5_prob": o15,
                 "over_2_5_prob": o25,

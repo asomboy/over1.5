@@ -523,7 +523,7 @@ class CornersPredictionEngine:
                 "recent_5_against": round(r5_against, 2),
                 "recent_10_for": round(r10_for, 2),
                 "recent_10_against": round(r10_against, 2),
-                "sample_size": len(venue_records),
+                "sample_size": len(records_to_use),
                 "total_sample_size": len(all_records),
                 "variance_for": round(var_for, 2),
                 "variance_against": round(var_against, 2)
@@ -908,7 +908,7 @@ class CornerSnapshotService:
         snapshot = CornerPredictionSnapshot(
             fixture_id=fixture_id,
             model_version=CORNER_MODEL_VERSION,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             is_prematch=is_prematch,
             expected_home_corners=exp["home"],
             expected_away_corners=exp["away"],
@@ -970,7 +970,7 @@ class CornerSnapshotService:
             snapshot.actual_away_corners = actual_away
             snapshot.actual_total_corners = actual_total
             snapshot.is_verified = True
-            snapshot.verified_at = datetime.now(timezone.utc)
+            snapshot.verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
             db.commit()
 
         return snapshot

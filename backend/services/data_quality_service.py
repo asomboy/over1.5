@@ -149,7 +149,7 @@ class DataQualityService:
                     observed_count=item["observed"],
                     missing_count=item["missing"],
                     coverage_ratio=item["coverage_ratio"],
-                    calculated_at=datetime.now(timezone.utc)
+                    calculated_at=datetime.now(timezone.utc).replace(tzinfo=None)
                 )
                 db.add(snap)
             db.commit()

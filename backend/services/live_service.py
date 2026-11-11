@@ -800,10 +800,8 @@ class LiveMatchIntelligenceService:
         if not fixture:
             return None
 
-        # 0. Fetch real verified live state from provider adapter
-        live_prov = LiveProviderAdapterService.fetch_live_summary(db, fixture_id)
-
-        # Look up previous snapshot for factual change detection
+        # Capture previous observed statistics & score BEFORE fetch_live_summary mutates LiveMatchState
+        prev_live_db = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture_id).first()
         prev_snap = (
             db.query(LivePredictionSnapshot)
             .filter(LivePredictionSnapshot.fixture_id == fixture_id)
@@ -811,15 +809,31 @@ class LiveMatchIntelligenceService:
             .first()
         )
         prev_state = None
-        if prev_snap:
-            try:
-                prev_state = {
-                    "minute": prev_snap.match_minute,
-                    "score": {"home": prev_snap.home_score, "away": prev_snap.away_score},
-                    "statistics": {}
-                }
-            except Exception:
-                pass
+        if prev_live_db:
+            prev_state = {
+                "minute": prev_live_db.minute,
+                "score": {"home": prev_live_db.home_score, "away": prev_live_db.away_score},
+                "statistics": {
+                    "shots": {"home": prev_live_db.home_shots, "away": prev_live_db.away_shots},
+                    "shots_on_target": {"home": prev_live_db.home_shots_on_target, "away": prev_live_db.away_shots_on_target},
+                    "corners": {"home": prev_live_db.home_corners, "away": prev_live_db.away_corners},
+                    "cards": {
+                        "home_yellow": prev_live_db.home_yellow_cards,
+                        "away_yellow": prev_live_db.away_yellow_cards,
+                        "home_red": prev_live_db.home_red_cards,
+                        "away_red": prev_live_db.away_red_cards,
+                    },
+                },
+            }
+        elif prev_snap:
+            prev_state = {
+                "minute": prev_snap.match_minute,
+                "score": {"home": prev_snap.home_score, "away": prev_snap.away_score},
+                "statistics": {}
+            }
+
+        # 0. Fetch real verified live state from provider adapter
+        live_prov = LiveProviderAdapterService.fetch_live_summary(db, fixture_id)
 
         # Fetch latest LiveMatchState record
         live_state_obj = db.query(LiveMatchState).filter(LiveMatchState.fixture_id == fixture_id).first()
@@ -858,7 +872,7 @@ class LiveMatchIntelligenceService:
             away_yellow_cards=live_state_obj.away_yellow_cards,
             home_red_cards=live_state_obj.home_red_cards,
             away_red_cards=live_state_obj.away_red_cards,
-            last_updated=live_state_obj.last_updated.isoformat() if live_state_obj.last_updated else None,
+            last_updated=(live_state_obj.last_updated.isoformat() + "Z") if (live_state_obj.last_updated and live_state_obj.last_updated.tzinfo is None) else (live_state_obj.last_updated.isoformat() if live_state_obj.last_updated else None),
             data_source=live_state_obj.data_source or "espn_live_summary",
             data_quality=live_state_obj.data_quality or "verified"
         )
@@ -983,9 +997,9 @@ class LiveMatchIntelligenceService:
             "observed": live_prov.get("statistics", {}),
             "events": live_prov.get("events", []),
             "narrative": narrative_items,
-            "data_status": live_prov.get("data_status", "FRESH"),
-            "freshness": live_prov.get("freshness", "FRESH"),
-            "freshness_status": live_prov.get("freshness_status", "FRESH"),
+            "data_status": live_prov.get("data_status", "UNAVAILABLE"),
+            "freshness": live_prov.get("freshness", "UNAVAILABLE"),
+            "freshness_status": live_prov.get("freshness_status", "UNAVAILABLE"),
             "age_seconds": live_prov.get("age_seconds", 0),
             "identity_status": live_prov.get("identity_status", "IDENTITY_VALID"),
             "snapshot_version": live_prov.get("snapshot_version", 1),
@@ -1131,7 +1145,7 @@ class LivePredictionSnapshotService:
         snap = LivePredictionSnapshot(
             fixture_id=fixture_id,
             model_version=LIVE_MODEL_VERSION,
-            prediction_timestamp=datetime.now(timezone.utc),
+            prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             match_minute=state.minute,
             period=state.period,
             home_score=state.home_score,

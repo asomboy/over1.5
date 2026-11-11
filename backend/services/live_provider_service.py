@@ -321,20 +321,32 @@ class LiveProviderAdapterService:
         elif state_type == "pre":
             period_label = "PRE"
 
-        # Calculate minute from clock
-        raw_clock = status_info.get("clock", 0.0)
-        clock_min = int(raw_clock // 60) if raw_clock > 120 else int(raw_clock)
-        if clock_min == 0 and "'" in display_clock:
-            try:
-                clock_min = int(display_clock.replace("'", "").split("+")[0].strip())
-            except Exception:
-                clock_min = 0
-
+        # Calculate minute prioritizing structured display_clock before raw clock seconds/minutes
+        clock_min: Optional[int] = None
         if state_type == "pre":
             clock_min = None
             display_clock = "PRE"
+        else:
+            dc_upper = str(display_clock or "").strip().upper()
+            if dc_upper == "HT":
+                clock_min = 45
+            elif dc_upper in {"FT", "AET", "PEN"}:
+                clock_min = 90
+            elif "'" in dc_upper or "+" in dc_upper:
+                try:
+                    parts = [int(p.strip().replace("'", "")) for p in dc_upper.split("+") if p.strip().replace("'", "").isdigit()]
+                    if parts:
+                        clock_min = sum(parts)
+                except Exception:
+                    clock_min = None
+            if clock_min is None:
+                raw_clock = float(status_info.get("clock") or 0.0)
+                if raw_clock > 120:
+                    clock_min = int(raw_clock // 60)
+                elif raw_clock > 0:
+                    clock_min = int(raw_clock)
 
-        # Competitors Score
+        # Competitors Score (preserve missing scores as None instead of fabricating 0-0)
         competitors = comp.get("competitors", [])
         h_comp = next((c for c in competitors if c.get("homeAway") == "home"), (competitors[0] if len(competitors) > 0 else {}))
         a_comp = next((c for c in competitors if c.get("homeAway") == "away"), (competitors[1] if len(competitors) > 1 else {}))
@@ -343,14 +355,14 @@ class LiveProviderAdapterService:
         a_score_raw = a_comp.get("score")
 
         try:
-            h_score = int(h_score_raw) if h_score_raw is not None else (0 if state_type in ("in", "post") else None)
+            h_score = int(h_score_raw) if (h_score_raw is not None and str(h_score_raw).strip() != "") else None
         except Exception:
-            h_score = 0 if state_type in ("in", "post") else None
+            h_score = None
 
         try:
-            a_score = int(a_score_raw) if a_score_raw is not None else (0 if state_type in ("in", "post") else None)
+            a_score = int(a_score_raw) if (a_score_raw is not None and str(a_score_raw).strip() != "") else None
         except Exception:
-            a_score = 0 if state_type in ("in", "post") else None
+            a_score = None
 
         # 3. Extract Observed Boxscore Statistics (NULL if not returned)
         box = payload.get("boxscore", {})
@@ -443,8 +455,10 @@ class LiveProviderAdapterService:
         # If match completed, persist to Fixture and MatchStatistics
         if is_completed:
             fixture.status = "FINISHED"
-            fixture.home_score = h_score
-            fixture.away_score = a_score
+            if h_score is not None:
+                fixture.home_score = h_score
+            if a_score is not None:
+                fixture.away_score = a_score
 
             stats_row = db.query(MatchStatistics).filter(MatchStatistics.fixture_id == fixture_id).first()
             if not stats_row:

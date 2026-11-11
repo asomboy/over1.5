@@ -1,27 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   X, 
-  Activity, 
   Shield, 
-  Trophy, 
   RefreshCw, 
-  ChevronRight, 
-  BarChart2, 
   Zap, 
-  Layers, 
-  Sparkles, 
-  TrendingUp, 
   Flame,
-  CheckCircle2,
-  Clock,
-  Award,
   Flag,
   Square,
-  UserCheck,
   AlertTriangle,
   AlertCircle,
   Info
 } from 'lucide-react';
+
+const formatFixed = (val, decimals = 1, fallback = '—') =>
+  typeof val === 'number' && Number.isFinite(val) ? val.toFixed(decimals) : fallback;
 
 export default function MatchDetailModal({ 
   fixtureId, 
@@ -72,77 +64,31 @@ export default function MatchDetailModal({
     setShotsState({ loading: true, error: null, data: null });
     setStatsState({ loading: true, error: null, data: null });
 
-    // 1. Fetch Fixture Details (Canonical Identity & Core Prediction)
-    try {
-      const res = await apiRequest('get', `/api/fixtures/${targetFixtureId}/details`, null, { signal });
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      if (res?.data?.status === 'ok' || res?.data?.id) {
-        setDetailsState({ loading: false, error: null, data: res.data });
-      } else {
-        const errMsg = res?.data?.message || 'Fixture details unavailable';
-        setDetailsState({ loading: false, error: errMsg, data: null });
-      }
-    } catch (err) {
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      const errMsg = err?.response?.data?.message || err?.message || 'Unable to retrieve fixture details';
-      setDetailsState({ loading: false, error: errMsg, data: null });
-    }
+    const isActive = () => !signal.aborted && currentRequestId === requestIdRef.current;
 
-    // 2. Fetch Phase 12 Decision Intelligence
-    try {
-      const decRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/decision`, null, { signal });
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      if (decRes?.data && !decRes.data.error) {
-        setDecisionState({ loading: false, error: null, data: decRes.data });
-      } else {
-        setDecisionState({ loading: false, error: decRes?.data?.error || 'Decision summary unavailable', data: null });
+    const loadSlice = async (path, setState, defaultError, isValidData = (d) => Boolean(d && !d.error)) => {
+      try {
+        const res = await apiRequest('get', path, null, { signal });
+        if (!isActive()) return;
+        if (isValidData(res?.data)) {
+          setState({ loading: false, error: null, data: res.data });
+        } else {
+          setState({ loading: false, error: res?.data?.message || res?.data?.error || defaultError, data: null });
+        }
+      } catch (err) {
+        if (!isActive()) return;
+        const errMsg = err?.response?.data?.message || err?.message || defaultError;
+        setState({ loading: false, error: errMsg, data: null });
       }
-    } catch (err) {
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      setDecisionState({ loading: false, error: err?.message || 'Unable to load decision intelligence', data: null });
-    }
+    };
 
-    // 3. Fetch Phase 9 Unified Match Intelligence
-    try {
-      const intelRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-intelligence`, null, { signal });
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      if (intelRes?.data && !intelRes.data.error) {
-        setIntelState({ loading: false, error: null, data: intelRes.data });
-      } else {
-        setIntelState({ loading: false, error: intelRes?.data?.error || 'Match intelligence unavailable', data: null });
-      }
-    } catch (err) {
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      setIntelState({ loading: false, error: err?.message || 'Unable to load match intelligence', data: null });
-    }
-
-    // 4. Fetch Phase 10 Shots & SoT
-    try {
-      const shotsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/shots`, null, { signal });
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      if (shotsRes?.data && !shotsRes.data.error) {
-        setShotsState({ loading: false, error: null, data: shotsRes.data });
-      } else {
-        setShotsState({ loading: false, error: shotsRes?.data?.error || 'Shots prediction unavailable', data: null });
-      }
-    } catch (err) {
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      setShotsState({ loading: false, error: err?.message || 'Unable to load shots prediction', data: null });
-    }
-
-    // 5. Fetch Phase 11 Match Statistics
-    try {
-      const statsRes = await apiRequest('get', `/api/fixtures/${targetFixtureId}/match-statistics`, null, { signal });
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      if (statsRes?.data && !statsRes.data.error) {
-        setStatsState({ loading: false, error: null, data: statsRes.data });
-      } else {
-        setStatsState({ loading: false, error: statsRes?.data?.error || 'Match statistics unavailable', data: null });
-      }
-    } catch (err) {
-      if (signal.aborted || currentRequestId !== requestIdRef.current) return;
-      setStatsState({ loading: false, error: err?.message || 'Unable to load match statistics', data: null });
-    }
+    await Promise.allSettled([
+      loadSlice(`/api/fixtures/${targetFixtureId}/details`, setDetailsState, 'Fixture details unavailable', (d) => Boolean(d?.status === 'ok' || d?.id)),
+      loadSlice(`/api/fixtures/${targetFixtureId}/decision`, setDecisionState, 'Decision summary unavailable'),
+      loadSlice(`/api/fixtures/${targetFixtureId}/match-intelligence`, setIntelState, 'Match intelligence unavailable'),
+      loadSlice(`/api/fixtures/${targetFixtureId}/shots`, setShotsState, 'Shots prediction unavailable'),
+      loadSlice(`/api/fixtures/${targetFixtureId}/match-statistics`, setStatsState, 'Match statistics unavailable'),
+    ]);
   }, [apiRequest]);
 
   // Trigger data load when modal opens, clear and abort when it closes
@@ -1322,7 +1268,7 @@ export default function MatchDetailModal({
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Fouls Expectations & Markets</span>
                       <span className="text-[10px] text-slate-400">
-                        Total Expected: <strong className="text-amber-400">{matchStatsData.fouls?.expected_total_fouls?.toFixed(1) || '—'}</strong> ({matchStatsData.fouls?.expected_home_fouls?.toFixed(1)} vs {matchStatsData.fouls?.expected_away_fouls?.toFixed(1)})
+                        Total Expected: <strong className="text-amber-400">{formatFixed(matchStatsData.fouls?.expected_total_fouls)}</strong> ({formatFixed(matchStatsData.fouls?.expected_home_fouls)} vs {formatFixed(matchStatsData.fouls?.expected_away_fouls)})
                       </span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -1344,8 +1290,8 @@ export default function MatchDetailModal({
                     <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Offsides</span>
                       <div className="flex items-baseline justify-between">
-                        <span className="text-xl font-black text-white">{matchStatsData.offsides?.expected_total_offsides?.toFixed(1) || '—'}</span>
-                        <span className="text-xs text-slate-400">{matchStatsData.offsides?.expected_home_offsides?.toFixed(1)} - {matchStatsData.offsides?.expected_away_offsides?.toFixed(1)}</span>
+                        <span className="text-xl font-black text-white">{formatFixed(matchStatsData.offsides?.expected_total_offsides)}</span>
+                        <span className="text-xs text-slate-400">{formatFixed(matchStatsData.offsides?.expected_home_offsides)} - {formatFixed(matchStatsData.offsides?.expected_away_offsides)}</span>
                       </div>
                       <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
                         <span>Over 2.5 Offsides:</span>
@@ -1356,8 +1302,8 @@ export default function MatchDetailModal({
                     <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Goalkeeper Saves</span>
                       <div className="flex items-baseline justify-between">
-                        <span className="text-xl font-black text-white">{matchStatsData.saves?.expected_total_saves?.toFixed(1) || '—'}</span>
-                        <span className="text-xs text-slate-400">{matchStatsData.saves?.expected_home_saves?.toFixed(1)} - {matchStatsData.saves?.expected_away_saves?.toFixed(1)}</span>
+                        <span className="text-xl font-black text-white">{formatFixed(matchStatsData.saves?.expected_total_saves)}</span>
+                        <span className="text-xs text-slate-400">{formatFixed(matchStatsData.saves?.expected_home_saves)} - {formatFixed(matchStatsData.saves?.expected_away_saves)}</span>
                       </div>
                       <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
                         <span>Over 4.5 Saves:</span>
@@ -1368,8 +1314,8 @@ export default function MatchDetailModal({
                     <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Blocked Shots</span>
                       <div className="flex items-baseline justify-between">
-                        <span className="text-xl font-black text-white">{matchStatsData.blocked_shots?.expected_total_blocked_shots?.toFixed(1) || '—'}</span>
-                        <span className="text-xs text-slate-400">{matchStatsData.blocked_shots?.expected_home_blocked_shots?.toFixed(1)} - {matchStatsData.blocked_shots?.expected_away_blocked_shots?.toFixed(1)}</span>
+                        <span className="text-xl font-black text-white">{formatFixed(matchStatsData.blocked_shots?.expected_total_blocked_shots)}</span>
+                        <span className="text-xs text-slate-400">{formatFixed(matchStatsData.blocked_shots?.expected_home_blocked_shots)} - {formatFixed(matchStatsData.blocked_shots?.expected_away_blocked_shots)}</span>
                       </div>
                       <div className="pt-1 text-[11px] text-slate-300 flex items-center justify-between">
                         <span>Over 3.5 Blocked:</span>
@@ -1436,17 +1382,17 @@ export default function MatchDetailModal({
                     <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Expected Goals (xG) Forecast</span>
-                        <span className="text-xs font-black text-cyan-400">Total xG: {xgTotal.toFixed(2)}</span>
+                        <span className="text-xs font-black text-cyan-400">Total xG: {formatFixed(xgTotal, 2)}</span>
                       </div>
                       <div className="grid grid-cols-2 gap-3 text-center">
                         <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
                           <span className="text-xs font-black text-white block truncate">{home?.name || 'Home'}</span>
-                          <span className="text-xl font-black text-emerald-400 mt-1 block">{xgHome != null ? xgHome.toFixed(2) : '—'}</span>
+                          <span className="text-xl font-black text-emerald-400 mt-1 block">{formatFixed(xgHome, 2)}</span>
                           <span className="text-[10px] text-slate-500">Projected Goals</span>
                         </div>
                         <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
                           <span className="text-xs font-black text-white block truncate">{away?.name || 'Away'}</span>
-                          <span className="text-xl font-black text-cyan-400 mt-1 block">{xgAway != null ? xgAway.toFixed(2) : '—'}</span>
+                          <span className="text-xl font-black text-cyan-400 mt-1 block">{formatFixed(xgAway, 2)}</span>
                           <span className="text-[10px] text-slate-500">Projected Goals</span>
                         </div>
                       </div>
@@ -1790,15 +1736,15 @@ export default function MatchDetailModal({
                     <div className="grid grid-cols-3 gap-2 text-center pt-1">
                       <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
                         <span className="text-[10px] font-bold text-slate-400 uppercase block">Home ({home?.name?.slice(0, 10) || 'Home'})</span>
-                        <span className="text-lg font-black text-white">{corners.expected?.home?.toFixed(1) || '—'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(corners.expected?.home)}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40">
                         <span className="text-[10px] font-black text-emerald-400 uppercase block">Total Corners</span>
-                        <span className="text-xl font-black text-emerald-400">{corners.expected?.total?.toFixed(1) || '—'}</span>
+                        <span className="text-xl font-black text-emerald-400">{formatFixed(corners.expected?.total)}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
                         <span className="text-[10px] font-bold text-slate-400 uppercase block">Away ({away?.name?.slice(0, 10) || 'Away'})</span>
-                        <span className="text-lg font-black text-white">{corners.expected?.away?.toFixed(1) || '—'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(corners.expected?.away)}</span>
                       </div>
                     </div>
                   </div>
@@ -1867,15 +1813,15 @@ export default function MatchDetailModal({
                     <div className="grid grid-cols-3 gap-2 text-center pt-1">
                       <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
                         <span className="text-[10px] font-bold text-slate-400 uppercase block">Home ({home?.name?.slice(0, 10) || 'Home'})</span>
-                        <span className="text-lg font-black text-white">{cards.expected?.home?.toFixed(1) || '—'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(cards.expected?.home)}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-amber-950/40 border border-amber-500/40">
                         <span className="text-[10px] font-black text-amber-400 uppercase block">Total Cards</span>
-                        <span className="text-xl font-black text-amber-400">{cards.expected?.total?.toFixed(1) || '—'}</span>
+                        <span className="text-xl font-black text-amber-400">{formatFixed(cards.expected?.total)}</span>
                       </div>
                       <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
                         <span className="text-[10px] font-bold text-slate-400 uppercase block">Away ({away?.name?.slice(0, 10) || 'Away'})</span>
-                        <span className="text-lg font-black text-white">{cards.expected?.away?.toFixed(1) || '—'}</span>
+                        <span className="text-lg font-black text-white">{formatFixed(cards.expected?.away)}</span>
                       </div>
                     </div>
                   </div>

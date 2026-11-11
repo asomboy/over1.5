@@ -404,9 +404,9 @@ class DixonColesPredictionEngine:
         if x == 0 and y == 0:
             return max(0.001, 1.0 - (lambda_h * lambda_a * safe_rho))
         elif x == 1 and y == 0:
-            return max(0.001, 1.0 + (lambda_h * safe_rho))
-        elif x == 0 and y == 1:
             return max(0.001, 1.0 + (lambda_a * safe_rho))
+        elif x == 0 and y == 1:
+            return max(0.001, 1.0 + (lambda_h * safe_rho))
         elif x == 1 and y == 1:
             return max(0.001, 1.0 - safe_rho)
         return 1.0
@@ -579,17 +579,17 @@ class DixonColesPredictionEngine:
         n_home_m = int(home_stats.matches_analyzed_home) if home_stats else 0
         n_away_a = int(away_stats.matches_analyzed_away) if away_stats else 0
 
-        if n_home_m < 2:
+        if n_home_m < 3:
             def_h_att = _clamp(def_h_att, 0.95, 1.05)
             def_h_def = _clamp(def_h_def, 0.95, 1.05)
-        if n_away_a < 2:
+        if n_away_a < 3:
             def_a_att = _clamp(def_a_att, 0.95, 1.05)
             def_a_def = _clamp(def_a_def, 0.95, 1.05)
 
-        w_h_att = min(1.0, n_home_m / 5.0)
-        w_h_def = min(1.0, n_home_m / 5.0)
-        w_a_att = min(1.0, n_away_a / 5.0)
-        w_a_def = min(1.0, n_away_a / 5.0)
+        w_h_att = 0.0 if n_home_m < 3 else min(1.0, n_home_m / 5.0)
+        w_h_def = 0.0 if n_home_m < 3 else min(1.0, n_home_m / 5.0)
+        w_a_att = 0.0 if n_away_a < 3 else min(1.0, n_away_a / 5.0)
+        w_a_def = 0.0 if n_away_a < 3 else min(1.0, n_away_a / 5.0)
 
         home_attack = _shrink_to_prior(cast(float, home_stats.home_attack_strength) if home_stats else 1.0, def_h_att, w_h_att)
         home_defense = _shrink_to_prior(cast(float, home_stats.home_defense_strength) if home_stats else 1.0, def_h_def, w_h_def)
@@ -1149,7 +1149,7 @@ class DixonColesPredictionEngine:
         prediction.top_scorelines_json = json.dumps(probs["top_5_scorelines"])
         prediction.model_version = MODEL_VERSION
         prediction.raw_intelligence_json = json.dumps(full_intelligence)
-        prediction.created_at = datetime.now(timezone.utc)
+        prediction.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         if commit:
             db.commit()

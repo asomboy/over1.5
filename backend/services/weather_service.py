@@ -30,13 +30,15 @@ CITY_COORDINATES: Dict[str, Dict[str, Any]] = {
 class WeatherService:
     """
     Environmental & Weather context service for fixture goal expectations.
+    Uses live OpenWeather telemetry when configured, and otherwise returns
+    neutral/unavailable metadata without synthetic random fabrication.
     """
 
     @classmethod
     def get_weather_for_venue(cls, venue: Optional[str] = None, city_hint: Optional[str] = None) -> Dict[str, Any]:
         """
-        Retrieves weather condition, temperature, and xG adjustment multiplier
-        for a given venue or city.
+        Retrieves real weather telemetry if configured for known venues/cities.
+        When unavailable, returns neutral xG multiplier (1.0) and available=False.
         """
         key = (venue or city_hint or "").lower()
         matched_city = None
@@ -45,37 +47,46 @@ class WeatherService:
                 matched_city = name
                 break
 
-        # Deterministic default weather fallback based on venue string hash
-        hash_seed = sum(ord(c) for c in (venue or "Standard Venue"))
-        temp = 12 + (hash_seed % 14)  # 12°C to 25°C
-        mod_type = hash_seed % 4
-
-        if mod_type == 0:
-            cond = "Clear"
-            icon = "☀️"
-            xg_mod = 1.0
-            desc = f"{temp}°C, Clear Skies"
-        elif mod_type == 1:
-            cond = "Overcast"
-            icon = "⛅"
-            xg_mod = 1.0
-            desc = f"{temp}°C, Overcast"
-        elif mod_type == 2:
-            cond = "Light Rain"
-            icon = "🌧️"
-            xg_mod = 1.03  # Wet pitch increases chance of goals from errors & speed
-            desc = f"{temp - 2}°C, Light Rain & Wet Pitch (+3% xG)"
-        else:
-            cond = "Mild Wind"
-            icon = "💨"
-            xg_mod = 1.01
-            desc = f"{temp}°C, Mild Breeze"
+        api_key = (os.getenv("OPENWEATHER_API_KEY", "") or OPENWEATHER_API_KEY).strip()
+        if api_key and matched_city:
+            coords = CITY_COORDINATES[matched_city]
+            try:
+                resp = httpx.get(
+                    "https://api.openweathermap.org/data/2.5/weather",
+                    params={"lat": coords["lat"], "lon": coords["lon"], "appid": api_key, "units": "metric"},
+                    timeout=2.5,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    main_info = data.get("main", {})
+                    weather_list = data.get("weather") or [{}]
+                    cond = str(weather_list[0].get("main") or "Observed")
+                    temp_raw = main_info.get("temp")
+                    temp = round(float(temp_raw), 1) if temp_raw is not None else None
+                    is_wet = cond.lower() in {"rain", "drizzle", "thunderstorm"}
+                    xg_mod = 1.02 if is_wet else 1.0
+                    icon = "🌧️" if is_wet else ("⛅" if "cloud" in cond.lower() else "☀️")
+                    temp_str = f"{temp}°C, " if temp is not None else ""
+                    return {
+                        "available": True,
+                        "source": "openweathermap",
+                        "venue": venue or coords["city"],
+                        "condition": cond,
+                        "temp_c": temp,
+                        "icon": icon,
+                        "xg_modifier": xg_mod,
+                        "description": f"{temp_str}{cond}",
+                    }
+            except Exception as ex:
+                logger.debug(f"OpenWeather lookup failed for {matched_city}: {ex}")
 
         return {
+            "available": False,
+            "source": "unavailable",
             "venue": venue or "Match Venue",
-            "condition": cond,
-            "temp_c": temp,
-            "icon": icon,
-            "xg_modifier": xg_mod,
-            "description": desc
+            "condition": "Unavailable",
+            "temp_c": None,
+            "icon": "🏟️",
+            "xg_modifier": 1.0,
+            "description": "Live weather feed unavailable (neutral xG applied)",
         }

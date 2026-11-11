@@ -90,7 +90,10 @@ class DecisionIntelligenceService:
         def _get_market_eval(market_key: str) -> Dict[str, Any]:
             evals = (
                 db.query(ModelEvaluation)
-                .filter(ModelEvaluation.market.contains(market_key))
+                .filter(
+                    ModelEvaluation.verified == True,
+                    ModelEvaluation.market.contains(market_key),
+                )
                 .order_by(ModelEvaluation.prediction_timestamp.desc())
                 .limit(300)
                 .all()
@@ -108,14 +111,16 @@ class DecisionIntelligenceService:
             pairs = [(e.predicted_probability, e.actual_outcome) for e in evals]
             cal = CalibrationService.compute_calibration_curve(pairs)
             agg = CalibrationService.calculate_aggregate_metrics(pairs)
-            readiness = "VALIDATED" if (n >= 300 and cal.get("ece", 1.0) <= 0.07) else ("VALIDATING" if n >= 100 else "INSUFFICIENT_DATA")
+            ece_val = cal.get("ece")
+            safe_ece = ece_val if ece_val is not None else 1.0
+            readiness = "VALIDATED" if (n >= 300 and safe_ece <= 0.07) else ("VALIDATING" if n >= 100 else "INSUFFICIENT_DATA")
 
             return {
                 "sample_size": n,
                 "readiness_status": readiness,
-                "brier_score": agg.get("brier_score"),
-                "log_loss": agg.get("log_loss"),
-                "ece": cal.get("ece"),
+                "brier_score": agg.get("mean_brier"),
+                "log_loss": agg.get("mean_log_loss"),
+                "ece": ece_val,
                 "mce": cal.get("mce")
             }
 
@@ -140,8 +145,8 @@ class DecisionIntelligenceService:
 
         g_eval = _get_market_eval("over_1_5")
 
-        h_win_p = g_probs.get("home_win") or goals_data.get("home_win_probability")
-        a_win_p = g_probs.get("away_win") or goals_data.get("away_win_probability")
+        h_win_p = g_probs.get("home_win") if g_probs.get("home_win") is not None else goals_data.get("home_win_probability")
+        a_win_p = g_probs.get("away_win") if g_probs.get("away_win") is not None else goals_data.get("away_win_probability")
         btts_p = g_probs.get("btts")
 
         goal_lines = [
@@ -157,7 +162,7 @@ class DecisionIntelligenceService:
 
         for m_name, sel, p, ev_key in goal_lines:
             if p is not None and p > 0.0:
-                ev = g_eval if "1_5" in ev_key else _get_market_eval(ev_key)
+                ev = g_eval if ev_key == "over_1_5" else _get_market_eval(ev_key)
                 cand = cls._build_normalized_decision(
                     fixture_id=fixture_id,
                     market=m_name,
@@ -391,9 +396,9 @@ class DecisionIntelligenceService:
         provider_factor = 0.60 if provider_status in ["DEGRADED", "CIRCUIT_BREAKER_OPEN"] else 1.0
 
         # 2. Decision Score Formulation
-        # DecisionScore = Probability * Cal * Rel * DQ * Consistency * Drift * Readiness
+        # DecisionScore = Probability * Cal * Rel * DQ * Consistency * Drift * Readiness * Provider
         decision_score = round(
-            probability * cal_factor * rel_factor * data_quality * consistency_score * drift_factor * readiness_factor,
+            probability * cal_factor * rel_factor * data_quality * consistency_score * drift_factor * readiness_factor * provider_factor,
             4
         )
         decision_score = max(0.01, min(0.99, decision_score))
@@ -567,7 +572,7 @@ class DecisionIntelligenceService:
                     PredictionDecisionSnapshot.market == d["market"],
                     PredictionDecisionSnapshot.selection == d["selection"],
                     PredictionDecisionSnapshot.is_live == d.get("is_live", False),
-                    PredictionDecisionSnapshot.created_at >= datetime.now(timezone.utc) - timedelta(minutes=5)
+                    PredictionDecisionSnapshot.created_at >= datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)
                 )
                 .first()
             )
@@ -597,8 +602,8 @@ class DecisionIntelligenceService:
                 diagnostics_json=json.dumps({"match_minute": d.get("match_minute", 0)}),
                 match_minute=d.get("match_minute", 0),
                 is_live=d.get("is_live", False),
-                prediction_timestamp=datetime.now(timezone.utc),
-                created_at=datetime.now(timezone.utc)
+                prediction_timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
+                created_at=datetime.now(timezone.utc).replace(tzinfo=None)
             )
             db.add(snap)
             saved_snapshots.append(snap)

@@ -118,7 +118,7 @@ class ModelEvaluationService:
                 existing.log_loss_component = ll
                 existing.absolute_error = abs_err
                 existing.verified = True
-                existing.verified_at = datetime.now(timezone.utc)
+                existing.verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
             else:
                 new_eval = ModelEvaluation(
                     fixture_id=fixture_id,
@@ -136,7 +136,7 @@ class ModelEvaluationService:
                     data_quality=dq,
                     is_live=is_live,
                     verified=True,
-                    verified_at=datetime.now(timezone.utc),
+                    verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     brier_component=brier,
                     log_loss_component=ll,
                     absolute_error=abs_err
@@ -149,17 +149,26 @@ class ModelEvaluationService:
         pred = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if pred:
             pred_time = pred.created_at or fixture.match_date
-            c_score = getattr(pred, "confidence_score", None) or 0.70
+            c_score = getattr(pred, "confidence_score", None)
+            if c_score is None:
+                c_score = 0.70
             conf_val = int(round(c_score * 100)) if c_score <= 1.0 else int(round(c_score))
 
-            o05 = getattr(pred, "over_0_5_probability", None) or getattr(pred, "over_0_5_prob", None)
-            o15 = getattr(pred, "over_1_5_probability", None) or getattr(pred, "over_1_5_prob", None)
-            o25 = getattr(pred, "over_2_5_probability", None) or getattr(pred, "over_2_5_prob", None)
-            o35 = getattr(pred, "over_3_5_probability", None) or getattr(pred, "over_3_5_prob", None)
-            btts = getattr(pred, "btts_probability", None) or getattr(pred, "btts_yes_prob", None)
-            hw = getattr(pred, "home_win_probability", None) or getattr(pred, "home_win_prob", None)
-            dr = getattr(pred, "draw_probability", None) or getattr(pred, "draw_prob", None)
-            aw = getattr(pred, "away_win_probability", None) or getattr(pred, "away_win_prob", None)
+            def _first_present(obj: Any, *attrs: str) -> Optional[float]:
+                for attr in attrs:
+                    val = getattr(obj, attr, None)
+                    if val is not None:
+                        return float(val)
+                return None
+
+            o05 = _first_present(pred, "over_0_5_probability", "over_0_5_prob")
+            o15 = _first_present(pred, "over_1_5_probability", "over_1_5_prob")
+            o25 = _first_present(pred, "over_2_5_probability", "over_2_5_prob")
+            o35 = _first_present(pred, "over_3_5_probability", "over_3_5_prob")
+            btts = _first_present(pred, "btts_probability", "btts_yes_prob")
+            hw = _first_present(pred, "home_win_probability", "home_win_prob")
+            dr = _first_present(pred, "draw_probability", "draw_prob")
+            aw = _first_present(pred, "away_win_probability", "away_win_prob")
 
             if o05 is not None:
                 _upsert_eval("goals", "over_0_5_goals", "v2_match_intelligence", pred_time, o05, pred.id, conf_val)
@@ -261,7 +270,7 @@ class ModelEvaluationService:
                                     data_quality=ls.data_quality,
                                     is_live=True,
                                     verified=True,
-                                    verified_at=datetime.now(timezone.utc),
+                                    verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
                                     brier_component=brier,
                                     log_loss_component=ll,
                                     absolute_error=abs(p_val - actual_1_more)
@@ -380,6 +389,27 @@ class ModelEvaluationService:
         return CalibrationService.compute_calibration_curve(pairs)
 
     @classmethod
+    def get_calibration_report(
+        cls,
+        db: Session,
+        prediction_type: Optional[str] = None,
+        market: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Returns calibration curve metrics optionally filtered by prediction_type or market."""
+        q = db.query(ModelEvaluation).filter(ModelEvaluation.verified == True)
+        if prediction_type:
+            q = q.filter(ModelEvaluation.prediction_type == prediction_type)
+        if market:
+            q = q.filter(ModelEvaluation.market == market)
+
+        recs = q.all()
+        pairs = [(r.predicted_probability, r.actual_outcome) for r in recs]
+        report = CalibrationService.compute_calibration_curve(pairs)
+        report["prediction_type"] = prediction_type or "ALL"
+        report["market"] = market or "ALL"
+        return report
+
+    @classmethod
     def get_model_drift_analysis(
         cls, db: Session, window_size: int = 100, baseline_size: int = 300
     ) -> Dict[str, Any]:
@@ -408,14 +438,29 @@ class ModelEvaluationService:
         recent_cal = CalibrationService.compute_calibration_curve(recent_pairs)
 
         hist_pairs = [(r.predicted_probability, r.actual_outcome) for r in recs[window_size:window_size + baseline_size]]
-        if not hist_pairs:
-            hist_pairs = recent_pairs
+        if len(hist_pairs) < 20:
+            return {
+                "status": "INSUFFICIENT_BASELINE",
+                "message": (
+                    f"Only {len(hist_pairs)} baseline evaluations recorded beyond the recent window "
+                    f"({window_size}). Minimum 20 baseline evaluations required for drift detection."
+                ),
+                "total_evaluations": n,
+                "window_size": window_size,
+                "baseline_evaluations": len(hist_pairs),
+                "recent_metrics": {
+                    "mean_brier": recent_agg["mean_brier"],
+                    "mean_log_loss": recent_agg["mean_log_loss"],
+                    "accuracy": recent_agg["accuracy"],
+                    "ece": recent_cal["ece"]
+                }
+            }
 
         hist_agg = CalibrationService.calculate_aggregate_metrics(hist_pairs)
         hist_cal = CalibrationService.compute_calibration_curve(hist_pairs)
 
-        r_brier = recent_agg["mean_brier"] or 0.20
-        h_brier = hist_agg["mean_brier"] or 0.20
+        r_brier = recent_agg["mean_brier"] if recent_agg["mean_brier"] is not None else 0.20
+        h_brier = hist_agg["mean_brier"] if hist_agg["mean_brier"] is not None else 0.20
         brier_diff_pct = round(((r_brier - h_brier) / max(0.01, h_brier)) * 100.0, 1)
 
         r_ece = recent_cal["ece"] or 0.05

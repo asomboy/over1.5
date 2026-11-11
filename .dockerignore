@@ -1,11 +1,29 @@
-**/__pycache__
-**/*.pyc
-**/*.pyo
-**/*.pyd
-.pytest_cache
-frontend/node_modules
-frontend/dist
-.git
-.gitignore
+# Dependencies & Environments
+node_modules/
+backend/venv/
+venv/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.oxlintcache
+
+# Secrets & Local Databases
 .env
-backend/venv
+**/.env
+**/.env.*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backend/backups/
+backend/tests/fixtures/*.db
+
+# Built Assets & Logs
+frontend/dist/
+build/
+.output/
+*.log

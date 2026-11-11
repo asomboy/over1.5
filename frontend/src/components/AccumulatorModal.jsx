@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Zap, X, Copy, Check, ShieldCheck, Flame, TrendingUp, RefreshCw } from 'lucide-react';
 
 export default function AccumulatorModal({ isOpen, onClose, apiRequest, selectedPickDay, darkMode }) {
@@ -6,26 +6,43 @@ export default function AccumulatorModal({ isOpen, onClose, apiRequest, selected
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('safe_double'); // 'safe_double' | 'over_1_5_5fold' | 'high_yield_3fold'
   const [copied, setCopied] = useState(false);
+  const abortControllerRef = useRef(null);
 
-  useEffect(() => {
-    if (isOpen) {
-      fetchAccas();
+  const fetchAccas = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
-  }, [isOpen, selectedPickDay]);
-
-  const fetchAccas = async () => {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setLoading(true);
     try {
-      const res = await apiRequest('get', `/api/accumulators/generate?day=${selectedPickDay || 'ALL_DAYS'}`);
+      const res = await apiRequest('get', `/api/accumulators/generate?day=${selectedPickDay || 'ALL_DAYS'}`, null, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (res.data?.status === 'ok') {
         setAccumulators(res.data.accumulators);
       }
     } catch (err) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
       console.error('Error fetching accumulators:', err);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  };
+  }, [apiRequest, selectedPickDay]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchAccas();
+    } else if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [isOpen, fetchAccas]);
 
   if (!isOpen) return null;
 

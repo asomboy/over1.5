@@ -15,8 +15,12 @@ except ImportError:
     from ..models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
 
 
+FINISHED_STATUSES = ["FINISHED", "FT", "AET", "PEN"]
+
+
 def calculate_team_statistics(
-    db: Session, team_id: int, last_n_matches: int = 10, commit: bool = True
+    db: Session, team_id: int, last_n_matches: int = 10, commit: bool = True,
+    league_stats: Optional[LeagueStatistics] = None
 ) -> Optional[TeamStatistics]:
     """
     Calculates average home/away goals scored and conceded for a team based on its
@@ -31,7 +35,7 @@ def calculate_team_statistics(
     home_results = (
         db.query(HistoricalResult)
         .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-        .filter(Fixture.home_team_id == team_id)
+        .filter(Fixture.home_team_id == team_id, Fixture.status.in_(FINISHED_STATUSES))
         .order_by(Fixture.match_date.desc())
         .limit(last_n_matches)
         .all()
@@ -41,7 +45,7 @@ def calculate_team_statistics(
     away_results = (
         db.query(HistoricalResult)
         .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-        .filter(Fixture.away_team_id == team_id)
+        .filter(Fixture.away_team_id == team_id, Fixture.status.in_(FINISHED_STATUSES))
         .order_by(Fixture.match_date.desc())
         .limit(last_n_matches)
         .all()
@@ -95,7 +99,7 @@ def calculate_team_statistics(
     league_avg_home = 0.0
     league_avg_away = 0.0
     if team.league_id:
-        l_stats = calculate_league_statistics(db, cast(int, team.league_id))
+        l_stats = league_stats if league_stats is not None else calculate_league_statistics(db, cast(int, team.league_id), commit=commit)
         if l_stats:
             league_avg_home = cast(float, l_stats.avg_home_goals)
             league_avg_away = cast(float, l_stats.avg_away_goals)
@@ -121,7 +125,7 @@ def calculate_team_statistics(
     stats.home_defense_strength = home_defense_strength
     stats.away_attack_strength = away_attack_strength
     stats.away_defense_strength = away_defense_strength
-    stats.updated_at = datetime.now(timezone.utc)
+    stats.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     if commit:
         db.commit()
@@ -135,14 +139,23 @@ def calculate_all_team_statistics(
     db: Session, last_n_matches: int = 10
 ) -> List[TeamStatistics]:
     """
-    Calculates and saves team statistics for all teams in the database.
+    Calculates and saves team statistics for all teams in the database using a shared commit.
     """
+    league_stats_map = {ls.league_id: ls for ls in db.query(LeagueStatistics).all()}
     teams = db.query(Team).all()
     calculated_stats = []
     for team in teams:
-        stat = calculate_team_statistics(db, cast(int, team.id), last_n_matches=last_n_matches)
+        l_stat = league_stats_map.get(team.league_id) if team.league_id else None
+        if team.league_id and l_stat is None:
+            l_stat = calculate_league_statistics(db, cast(int, team.league_id), commit=False)
+            if l_stat:
+                league_stats_map[team.league_id] = l_stat
+        stat = calculate_team_statistics(
+            db, cast(int, team.id), last_n_matches=last_n_matches, commit=False, league_stats=l_stat
+        )
         if stat:
             calculated_stats.append(stat)
+    db.commit()
     return calculated_stats
 
 
@@ -173,7 +186,7 @@ def calculate_league_statistics(db: Session, league_id: int, commit: bool = True
     completed_results = (
         db.query(HistoricalResult)
         .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-        .filter(Fixture.league_id == league_id)
+        .filter(Fixture.league_id == league_id, Fixture.status.in_(FINISHED_STATUSES))
         .all()
     )
 
@@ -194,7 +207,7 @@ def calculate_league_statistics(db: Session, league_id: int, commit: bool = True
     stats.total_matches_analyzed = total_matches
     stats.avg_home_goals = avg_home_goals
     stats.avg_away_goals = avg_away_goals
-    stats.updated_at = datetime.now(timezone.utc)
+    stats.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     if commit:
         db.commit()

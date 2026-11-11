@@ -23,10 +23,10 @@ except Exception:
     pass
 
 def get_telegram_token() -> str:
-    return os.getenv("TELEGRAM_BOT_TOKEN", "8917826403:AAHNxYEicw76o_lPljmb6yy0LRGI8sC0S7Q")
+    return os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 def get_telegram_chat_id() -> str:
-    return os.getenv("TELEGRAM_CHAT_ID", "568393640")
+    return os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 class TelegramNotificationService:

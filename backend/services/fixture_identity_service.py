@@ -61,37 +61,56 @@ class FixtureIdentityService:
     or candidate objects against database records to prevent cross-contamination.
     """
 
-    @staticmethod
-    def clean_team_name(name: Optional[str]) -> str:
-        """
-        Normalizes a team name by stripping accents, common club affixes,
-        and punctuation to enable robust, fuzz-tolerant matching.
-        """
+    _CLUB_AFFIXES_RE = re.compile(r'\b(fc|cf|sc|cd|afc|fk|vfb|ac|club|de|sv|sk|bsc|spfl|as|ss)\b')
+    _AMBIGUOUS_SINGLE_TOKENS = {
+        "manchester", "bristol", "sheffield", "real", "inter", "sporting",
+        "atletico", "athletic", "united", "city", "royal", "dynamo",
+        "dinamo", "olympique", "racing", "stade", "saint", "san"
+    }
+
+    @classmethod
+    def _clean_team_tokens(cls, name: Optional[str]) -> list[str]:
         if not name:
-            return ""
-        # Strip accents
+            return []
         n = unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
-        # Strip common soccer prefixes / suffixes
-        n = re.sub(r'\b(fc|cf|sc|cd|afc|fk|vfb|ac|club|de|united|city|sv|sk|bsc|spfl)\b', '', n)
-        # Remove non-alphanumeric chars
-        n = re.sub(r'[^a-z0-9]', '', n)
-        return n.strip()
+        n = cls._CLUB_AFFIXES_RE.sub(' ', n)
+        return [tok for tok in re.findall(r'[a-z0-9]+', n) if tok]
+
+    @classmethod
+    def clean_team_name(cls, name: Optional[str]) -> str:
+        """
+        Normalizes a team name by stripping accents and neutral club affixes while
+        preserving distinguishing identity words such as 'united' and 'city'.
+        """
+        return "".join(cls._clean_team_tokens(name))
 
     @classmethod
     def names_match(cls, name_a: Optional[str], name_b: Optional[str]) -> bool:
         """
-        Returns True if two cleaned team names represent the same club.
+        Returns True if two cleaned team names represent the same club without
+        collapsing 'Manchester United' into 'Manchester City' or 'Real Madrid' into 'Real Betis'.
         """
-        c_a = cls.clean_team_name(name_a)
-        c_b = cls.clean_team_name(name_b)
-        if not c_a or not c_b:
+        tokens_a = cls._clean_team_tokens(name_a)
+        tokens_b = cls._clean_team_tokens(name_b)
+        if not tokens_a or not tokens_b:
             return False
+
+        c_a = "".join(tokens_a)
+        c_b = "".join(tokens_b)
         if c_a == c_b:
             return True
-        if c_a in c_b or c_b in c_a:
-            return True
-        # Prefix match for truncated names of >= 4 letters
-        if len(c_a) >= 4 and len(c_b) >= 4 and (c_a[:4] == c_b[:4]):
+
+        # Allow abbreviated single/subset name only when all tokens of shorter appear in longer
+        # and the shorter name is not solely an ambiguous city/modifier token
+        shorter_t, longer_t = (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+        if len(shorter_t) < len(longer_t) and all(t in longer_t for t in shorter_t):
+            non_generic = [t for t in shorter_t if t not in cls._AMBIGUOUS_SINGLE_TOKENS]
+            if non_generic and len("".join(shorter_t)) >= 4:
+                return True
+
+        # Guarded high-overlap substring containment (e.g., hyphen/space truncation)
+        shorter_c, longer_c = (c_a, c_b) if len(c_a) <= len(c_b) else (c_b, c_a)
+        if len(shorter_c) >= 6 and shorter_c in longer_c and (len(shorter_c) / len(longer_c)) >= 0.72:
             return True
         return False
 

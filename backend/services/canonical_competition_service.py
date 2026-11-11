@@ -231,13 +231,18 @@ class CanonicalCompetitionService:
         (r"\b(ncaa|college soccer|collegiate)\b", "USA", "US", "NCAA Soccer", "NCAA Soccer", False),
 
         # 3. Country-Specific Tournaments & Distinct League Names
-        # Scotland (Must precede generic 'Premier League')
+        # Scotland & Country-Qualified 'Premier League' / 'Bundesliga' / 'Serie A' (Must precede generic league names)
         (r"\b(scottish premiership|spfl premiership)\b", "Scotland", "GB-SCT", "Scottish Premiership", "Scottish Premiership", False),
         (r"\b(spfl championship)\b", "Scotland", "GB-SCT", "SPFL Championship", "SPFL Championship", False),
         (r"\b(spfl challenge cup)\b", "Scotland", "GB-SCT", "SPFL Challenge Cup", "SPFL Challenge Cup", False),
         (r"\b(scottish cup)\b", "Scotland", "GB-SCT", "Scottish Cup", "Scottish Cup", False),
         (r"\b(scottish league cup)\b", "Scotland", "GB-SCT", "Scottish League Cup", "Scottish League Cup", False),
         (r"\b(scottish|spfl)\b", "Scotland", "GB-SCT", "Scottish Football", "Scottish Football", False),
+        (r"\b(canadian premier league|northern super league)\b", "Canada", "CA", "Canadian Premier League", "Canadian Premier League", False),
+        (r"\b(south african premier|psl|betway premiership|nedbank cup)\b", "South Africa", "ZA", "South African Premier", "Premiership", False),
+        (r"\b(admiral bundesliga|austrian bundesliga|austria bundesliga)\b", "Austria", "AT", "Austrian Bundesliga", "Austrian Bundesliga", False),
+        (r"\b(brasileir[aã]o|brazilian serie a|s[ée]rie a brazil)\b", "Brazil", "BR", "Brazilian Serie A", "Brasileirão Série A", False),
+        (r"\b(brazilian serie b|s[ée]rie b brazil)\b", "Brazil", "BR", "Brazilian Serie B", "Brasileirão Série B", False),
 
         # England
         (r"\b(english premier league|premier league|epl)\b", "England", "GB-ENG", "English Premier League", "Premier League", False),
@@ -282,8 +287,6 @@ class CanonicalCompetitionService:
         (r"\b(ta[cç]a de portugal|ta[cç]a da liga)\b", "Portugal", "PT", "Taça de Portugal", "Taça de Portugal", False),
 
         # Brazil
-        (r"\b(brasileir[aã]o|brazilian serie a|s[ée]rie a brazil)\b", "Brazil", "BR", "Brazilian Serie A", "Brasileirão Série A", False),
-        (r"\b(brazilian serie b|s[ée]rie b brazil)\b", "Brazil", "BR", "Brazilian Serie B", "Brasileirão Série B", False),
         (r"\b(copa do bra[sz]il|paulista|carioca)\b", "Brazil", "BR", "Copa do Brasil", "Copa do Brasil", False),
 
         # Argentina
@@ -303,7 +306,6 @@ class CanonicalCompetitionService:
         (r"\b(nwsl)\b", "USA", "US", "NWSL", "NWSL", False),
 
         # Austria
-        (r"\b(admiral bundesliga|austrian bundesliga|austria bundesliga)\b", "Austria", "AT", "Austrian Bundesliga", "Austrian Bundesliga", False),
 
         # Switzerland
         (r"\b(credit suisse super league|swiss super league)\b", "Switzerland", "CH", "Swiss Super League", "Swiss Super League", False),
@@ -327,7 +329,6 @@ class CanonicalCompetitionService:
         (r"\b(danish superliga|superligaen|dbu pokalen)\b", "Denmark", "DK", "Danish Superliga", "Superliga", False),
 
         # South Africa
-        (r"\b(south african premier|psl|betway premiership|nedbank cup)\b", "South Africa", "ZA", "South African Premier", "Premiership", False),
 
         # Greece
         (r"\b(greek super league|super league greece|greek cup)\b", "Greece", "GR", "Greek Super League", "Super League Greece", False),
@@ -372,7 +373,6 @@ class CanonicalCompetitionService:
         (r"\b(salvadoran primera|primera divisi[oó]n el salvador)\b", "El Salvador", "SV", "Salvadoran Primera", "Primera División El Salvador", False),
 
         # Canada
-        (r"\b(canadian premier league|northern super league)\b", "Canada", "CA", "Canadian Premier League", "Canadian Premier League", False),
     ]
 
     @staticmethod
@@ -434,21 +434,26 @@ class CanonicalCompetitionService:
         if norm_provided_country in cls.COUNTRY_SYNONYMS:
             canonical_prov_country, canonical_prov_code = cls.COUNTRY_SYNONYMS[norm_provided_country]
 
-        # Step 3: Match competition / alt_note against authoritative pattern rules
-        # Exclude generic stage strings
-        generic_stages = [
-            "regular-season", "league-phase", "group-stage", "first-round", "second-round",
+        # Step 3: Match competition / alt_note / descriptive season_slug against authoritative pattern rules
+        generic_stages = {
+            "regular-season", "regular season", "league-phase", "league phase",
+            "group-stage", "group stage", "first-round", "second-round",
             "third-round", "quarterfinals", "semifinals", "final", "finals", "playoffs"
-        ]
+        }
         filtered_league_name = league_name if (league_name and league_name.lower() not in ["global matches & cup competitions", "all"]) else None
-        
-        # Test candidate texts in order of specificity: alt_note, filtered_league_name, notes
-        search_candidates = [c for c in [alt_note, filtered_league_name, notes] if c and c.strip()]
+        filtered_alt_note = alt_note if (alt_note and alt_note.strip().lower().replace("_", "-") not in generic_stages) else None
+        slug_candidate = None
+        if season_slug:
+            slug_norm = re.sub(r'[-_]+', ' ', str(season_slug)).strip()
+            if slug_norm.lower() not in generic_stages and re.search(r'[a-zA-Z]{4,}', slug_norm):
+                slug_candidate = slug_norm
+
+        # Test candidate texts in order of specificity: descriptive season_slug / alt_note, league_name, notes
+        search_candidates = [c for c in [filtered_alt_note, slug_candidate, filtered_league_name, notes] if c and c.strip()]
         for cand in search_candidates:
             clean_cand = cand.strip()
             for pattern, c_country, c_code, c_name, c_disp, is_intl in cls.PATTERN_RULES:
                 if re.search(pattern, clean_cand, re.IGNORECASE):
-                    # Derive stable slug ID
                     clean_slug = re.sub(r'[^a-zA-Z0-9]+', '-', c_disp.lower()).strip('-')
                     prov_id = f"ESPN-{code_key}" if (code_key and code_key != "all") else f"COMP-{clean_slug}"
                     return CompetitionIdentity(

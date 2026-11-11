@@ -35,7 +35,93 @@ class MarketResolutionService:
         Determines binary (1.0 / 0.0) or count outcome for any standard football prediction market.
         Returns None if required statistical data is absent.
         """
-        # 1. Goals Markets (requires home_score & away_score)
+        # 1. Domain-specific markets evaluated FIRST so ambiguous short aliases (e.g. "over_4_5")
+        # or explicit card/corner/half-time markets never misroute into Goals.
+        is_card_market = (
+            market.endswith("_cards")
+            or market in ["any_red_card", "red_card", "expected_cards_total"]
+        )
+        is_corner_market = market.endswith("_corners") or market == "expected_corners_total"
+        is_ht_market = market.startswith("ht_")
+
+        # Half-Time Goals Markets (requires ht_home & ht_away)
+        if ht_home_score is not None and ht_away_score is not None:
+            ht_tot = ht_home_score + ht_away_score
+            if market in ["ht_over_0_5", "ht_over_0_5_goals"]:
+                return 1.0 if ht_tot >= 1 else 0.0
+            elif market in ["ht_over_1_5", "ht_over_1_5_goals"]:
+                return 1.0 if ht_tot >= 2 else 0.0
+            elif market in ["ht_under_1_5", "ht_under_1_5_goals"]:
+                return 1.0 if ht_tot <= 1 else 0.0
+        if is_ht_market:
+            return None
+
+        # Corners Markets (requires home_corners & away_corners)
+        if home_corners is not None and away_corners is not None and (is_corner_market or home_score is None or away_score is None):
+            tot_corners = home_corners + away_corners
+            if market in ["over_7_5_corners", "over_7_5"]:
+                return 1.0 if tot_corners >= 8 else 0.0
+            elif market in ["over_8_5_corners", "over_8_5"]:
+                return 1.0 if tot_corners >= 9 else 0.0
+            elif market in ["over_9_5_corners", "over_9_5"]:
+                return 1.0 if tot_corners >= 10 else 0.0
+            elif market in ["over_10_5_corners", "over_10_5"]:
+                return 1.0 if tot_corners >= 11 else 0.0
+            elif market in ["over_11_5_corners", "over_11_5"]:
+                return 1.0 if tot_corners >= 12 else 0.0
+            elif market in ["under_7_5_corners", "under_7_5"]:
+                return 1.0 if tot_corners <= 7 else 0.0
+            elif market in ["under_8_5_corners", "under_8_5"]:
+                return 1.0 if tot_corners <= 8 else 0.0
+            elif market in ["under_9_5_corners", "under_9_5"]:
+                return 1.0 if tot_corners <= 9 else 0.0
+            elif market in ["under_10_5_corners", "under_10_5"]:
+                return 1.0 if tot_corners <= 10 else 0.0
+            elif market in ["under_11_5_corners", "under_11_5"]:
+                return 1.0 if tot_corners <= 11 else 0.0
+            elif market == "expected_corners_total":
+                return float(tot_corners)
+        if is_corner_market:
+            return None
+
+        # Disciplinary / Cards Markets (requires yellow / red cards)
+        if home_yellow is not None and away_yellow is not None and (is_card_market or home_score is None or away_score is None):
+            tot_yellow = home_yellow + away_yellow
+            tot_red = (home_red or 0) + (away_red or 0)
+            tot_cards = tot_yellow + tot_red
+
+            if market in ["over_1_5_cards", "over_1_5"]:
+                return 1.0 if tot_cards >= 2 else 0.0
+            elif market in ["under_1_5_cards", "under_1_5"]:
+                return 1.0 if tot_cards <= 1 else 0.0
+            elif market in ["over_2_5_cards", "over_2_5"]:
+                return 1.0 if tot_cards >= 3 else 0.0
+            elif market in ["under_2_5_cards", "under_2_5"]:
+                return 1.0 if tot_cards <= 2 else 0.0
+            elif market in ["over_3_5_cards", "over_3_5"]:
+                return 1.0 if tot_cards >= 4 else 0.0
+            elif market in ["under_3_5_cards", "under_3_5"]:
+                return 1.0 if tot_cards <= 3 else 0.0
+            elif market in ["over_4_5_cards", "over_4_5"]:
+                return 1.0 if tot_cards >= 5 else 0.0
+            elif market in ["under_4_5_cards", "under_4_5"]:
+                return 1.0 if tot_cards <= 4 else 0.0
+            elif market in ["over_5_5_cards", "over_5_5"]:
+                return 1.0 if tot_cards >= 6 else 0.0
+            elif market in ["under_5_5_cards", "under_5_5"]:
+                return 1.0 if tot_cards <= 5 else 0.0
+            elif market in ["over_6_5_cards", "over_6_5"]:
+                return 1.0 if tot_cards >= 7 else 0.0
+            elif market in ["under_6_5_cards", "under_6_5"]:
+                return 1.0 if tot_cards <= 6 else 0.0
+            elif market in ["any_red_card", "red_card"]:
+                return 1.0 if tot_red >= 1 else 0.0
+            elif market == "expected_cards_total":
+                return float(tot_cards)
+        if is_card_market:
+            return None
+
+        # Goals Markets (requires home_score & away_score)
         if home_score is not None and away_score is not None:
             tot_goals = home_score + away_score
 
@@ -79,60 +165,5 @@ class MarketResolutionService:
                 return float(away_score)
             elif market == "expected_goals_total":
                 return float(tot_goals)
-
-        # 2. Half-Time Goals Markets (requires ht_home & ht_away)
-        if ht_home_score is not None and ht_away_score is not None:
-            ht_tot = ht_home_score + ht_away_score
-            if market in ["ht_over_0_5", "ht_over_0_5_goals"]:
-                return 1.0 if ht_tot >= 1 else 0.0
-            elif market in ["ht_over_1_5", "ht_over_1_5_goals"]:
-                return 1.0 if ht_tot >= 2 else 0.0
-            elif market in ["ht_under_1_5", "ht_under_1_5_goals"]:
-                return 1.0 if ht_tot <= 1 else 0.0
-
-        # 3. Corners Markets (requires home_corners & away_corners)
-        if home_corners is not None and away_corners is not None:
-            tot_corners = home_corners + away_corners
-            if market in ["over_7_5_corners", "over_7_5"]:
-                return 1.0 if tot_corners >= 8 else 0.0
-            elif market in ["over_8_5_corners", "over_8_5"]:
-                return 1.0 if tot_corners >= 9 else 0.0
-            elif market in ["over_9_5_corners", "over_9_5"]:
-                return 1.0 if tot_corners >= 10 else 0.0
-            elif market in ["over_10_5_corners", "over_10_5"]:
-                return 1.0 if tot_corners >= 11 else 0.0
-            elif market in ["over_11_5_corners", "over_11_5"]:
-                return 1.0 if tot_corners >= 12 else 0.0
-            elif market in ["under_8_5_corners", "under_8_5"]:
-                return 1.0 if tot_corners <= 8 else 0.0
-            elif market in ["under_9_5_corners", "under_9_5"]:
-                return 1.0 if tot_corners <= 9 else 0.0
-            elif market in ["under_10_5_corners", "under_10_5"]:
-                return 1.0 if tot_corners <= 10 else 0.0
-            elif market == "expected_corners_total":
-                return float(tot_corners)
-
-        # 4. Disciplinary / Cards Markets (requires yellow / red cards)
-        if home_yellow is not None and away_yellow is not None:
-            tot_yellow = home_yellow + away_yellow
-            tot_red = (home_red or 0) + (away_red or 0)
-            tot_cards = tot_yellow + tot_red
-
-            if market in ["over_2_5_cards", "over_2_5"]:
-                return 1.0 if tot_cards >= 3 else 0.0
-            elif market in ["over_3_5_cards", "over_3_5"]:
-                return 1.0 if tot_cards >= 4 else 0.0
-            elif market in ["over_4_5_cards", "over_4_5"]:
-                return 1.0 if tot_cards >= 5 else 0.0
-            elif market in ["over_5_5_cards", "over_5_5"]:
-                return 1.0 if tot_cards >= 6 else 0.0
-            elif market in ["over_6_5_cards", "over_6_5"]:
-                return 1.0 if tot_cards >= 7 else 0.0
-            elif market in ["under_4_5_cards", "under_4_5"]:
-                return 1.0 if tot_cards <= 4 else 0.0
-            elif market in ["any_red_card", "red_card"]:
-                return 1.0 if tot_red >= 1 else 0.0
-            elif market == "expected_cards_total":
-                return float(tot_cards)
 
         return None

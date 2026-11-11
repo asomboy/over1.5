@@ -38,7 +38,8 @@ class ValidationDatasetService:
         competition_id: Optional[int] = None,
         min_date: Optional[datetime] = None,
         max_date: Optional[datetime] = None,
-        limit: int = 500
+        limit: int = 500,
+        persist_missing: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Builds chronologically ordered evaluation dataset of completed fixtures.
@@ -75,13 +76,15 @@ class ValidationDatasetService:
             a_corners = stats.away_corners if stats else None
             tot_corners = (h_corners + a_corners) if (h_corners is not None and a_corners is not None) else None
 
-            h_cards = (stats.home_yellow_cards or 0) if stats else None
-            a_cards = (stats.away_yellow_cards or 0) if stats else None
-            tot_cards = (h_cards + a_cards) if (h_cards is not None and a_cards is not None) else None
+            h_cards = (stats.home_yellow_cards or 0) if (stats and stats.home_yellow_cards is not None) else None
+            a_cards = (stats.away_yellow_cards or 0) if (stats and stats.away_yellow_cards is not None) else None
+            h_reds = (stats.home_red_cards or 0) if (stats and stats.home_red_cards is not None) else 0
+            a_reds = (stats.away_red_cards or 0) if (stats and stats.away_red_cards is not None) else 0
+            tot_cards = (h_cards + a_cards + h_reds + a_reds) if (h_cards is not None and a_cards is not None) else None
 
-            # 2. Get or capture feature snapshot with zero future leakage
+            # 2. Read existing feature snapshot (write only when explicitly requested via persist_missing)
             snapshot = db.query(FeatureSnapshot).filter(FeatureSnapshot.fixture_id == fix.id).first()
-            if not snapshot:
+            if not snapshot and persist_missing:
                 try:
                     snapshot = FeatureStoreService.capture_feature_snapshot(db, fix.id)
                 except Exception as ex:
@@ -89,7 +92,7 @@ class ValidationDatasetService:
 
             sample = {
                 "fixture_id": fix.id,
-                "kickoff_time": fix.match_date.isoformat() if fix.match_date else None,
+                "kickoff_time": (fix.match_date.isoformat() + "Z") if (fix.match_date and fix.match_date.tzinfo is None) else (fix.match_date.isoformat() if fix.match_date else None),
                 "competition_id": fix.league_id,
                 "competition": fix.league.name if fix.league else "Unknown",
                 "home_team": fix.home_team.name if fix.home_team else "Home",

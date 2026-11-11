@@ -44,7 +44,7 @@ class ProviderHealthService:
             if not log:
                 log = ProviderHealth(
                     provider=provider,
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
                     request_count=0,
                     success_count=0,
                     failure_count=0,

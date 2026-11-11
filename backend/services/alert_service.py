@@ -76,7 +76,7 @@ class AlertService:
             source=source,
             is_active=True,
             cooldown_until=now_naive + timedelta(minutes=cooldown_minutes),
-            created_at=now
+            created_at=now_naive
         )
         db.add(alert)
         db.commit()
@@ -98,7 +98,7 @@ class AlertService:
             return False
 
         alert.is_active = False
-        alert.resolved_at = datetime.now(timezone.utc)
+        alert.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         return True
 

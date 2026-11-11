@@ -79,7 +79,6 @@ class EloRatingService:
             home_actual = 1.0
             away_actual = 0.0
             home_elo.home_wins += 1
-            away_elo.away_wins += 1
         elif home_score < away_score:
             home_actual = 0.0
             away_actual = 1.0
@@ -113,8 +112,9 @@ class EloRatingService:
         home_elo.goals_conceded += away_score
         away_elo.goals_scored += away_score
         away_elo.goals_conceded += home_score
-        home_elo.last_updated = datetime.now(timezone.utc)
-        away_elo.last_updated = datetime.now(timezone.utc)
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        home_elo.last_updated = now_naive
+        away_elo.last_updated = now_naive
 
         if commit:
             db.commit()
@@ -288,7 +288,7 @@ class TeamFormService:
             if team_goals == 0:
                 streak.failed_to_score_last_5 += 1
 
-        streak.updated_at = datetime.now(timezone.utc)
+        streak.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         if commit:
             db.commit()

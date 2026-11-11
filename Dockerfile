@@ -32,6 +32,13 @@ COPY backend/ ./backend/
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
+# Create dedicated data directory and non-root runtime user
+RUN groupadd --system appuser && useradd --system --gid appuser --no-create-home appuser \
+    && mkdir -p /app/data/backups \
+    && chown -R appuser:appuser /app/data /app/backend
+
+USER appuser
+
 # Expose FastAPI port
 EXPOSE 8000
 
