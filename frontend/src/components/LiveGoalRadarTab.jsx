@@ -2,14 +2,18 @@ import React, { useMemo, useState } from 'react';
 import {
   Activity,
   ArrowUpRight,
+  BellRing,
   CheckCircle2,
   Clock,
   Filter,
   Flame,
+  Plus,
   Radio,
   RefreshCw,
   ShieldCheck,
+  Star,
 } from 'lucide-react';
+import { extractQuickSlipLeg } from '../utils/alertUtils';
 
 const formatPct = (prob) => {
   if (prob === null || prob === undefined || Number.isNaN(Number(prob))) return '—';
@@ -86,13 +90,45 @@ export default function LiveGoalRadarTab({
   onOpenLiveModal,
   onOpenDetailModal,
   onRefreshLive,
+  watchlistIds = [],
+  onToggleWatchlist,
+  alertSettings = null,
+  onOpenAlertSettings,
+  onAddToBetSlip,
+  livePerfData = null,
 }) {
   const [signalsOnly, setSignalsOnly] = useState(false);
+  const [starredOnly, setStarredOnly] = useState(false);
+
+  const watchlistSet = useMemo(() => new Set((watchlistIds || []).map(Number)), [watchlistIds]);
+
+  const passesCustomGate = (fix, meta) => {
+    if (!meta?.isActive) return false;
+    if (!alertSettings) {
+      return meta.strength === 'STRONG' || meta.strength === 'MODERATE';
+    }
+    const prob = Number(meta.prob || 0);
+    const conf = Number(fix?.confidence || 0);
+    const rem = Number(meta.timeRem ?? 15);
+    return (
+      prob >= Number(alertSettings.minProbabilityPct || 74) / 100 &&
+      conf >= Number(alertSettings.minConfidence || 70) &&
+      rem >= Number(alertSettings.minTimeRemaining || 10)
+    );
+  };
 
   const stats = useMemo(() => {
     const activeSignals = liveFixtures.filter((f) => {
       const m = getSignalMeta(f);
-      return m.isActive && (m.strength === 'STRONG' || m.strength === 'MODERATE');
+      if (!m.isActive) return false;
+      if (alertSettings) {
+        return (
+          Number(m.prob || 0) >= Number(alertSettings.minProbabilityPct || 74) / 100 &&
+          Number(f?.confidence || 0) >= Number(alertSettings.minConfidence || 70) &&
+          Number(m.timeRem ?? 15) >= Number(alertSettings.minTimeRemaining || 10)
+        );
+      }
+      return m.strength === 'STRONG' || m.strength === 'MODERATE';
     }).length;
     const highPlusOne = liveFixtures.filter(
       (f) => Number(f?.live_goals?.at_least_1_more_goal?.probability || 0) >= 0.7
@@ -106,12 +142,18 @@ export default function LiveGoalRadarTab({
         ? remXgValues.reduce((acc, v) => acc + v, 0) / remXgValues.length
         : null;
     return { activeSignals, highPlusOne, avgRemXg };
-  }, [liveFixtures]);
+  }, [liveFixtures, alertSettings]);
 
   const visibleFixtures = useMemo(() => {
-    if (!signalsOnly) return liveFixtures;
-    return liveFixtures.filter((f) => getSignalMeta(f).isActive);
-  }, [liveFixtures, signalsOnly]);
+    return liveFixtures.filter((f) => {
+      if (starredOnly && !watchlistSet.has(Number(f.fixture_id))) return false;
+      if (signalsOnly) {
+        const m = getSignalMeta(f);
+        if (!m.isActive) return false;
+      }
+      return true;
+    });
+  }, [liveFixtures, signalsOnly, starredOnly, watchlistSet]);
 
   const cardSurface = darkMode
     ? 'bg-slate-900/80 border-slate-800/90 hover:border-rose-500/40'
@@ -149,6 +191,21 @@ export default function LiveGoalRadarTab({
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              onClick={() => setStarredOnly((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                starredOnly
+                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                  : darkMode
+                  ? 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-600'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <Star className={`w-3.5 h-3.5 ${starredOnly ? 'fill-amber-400 text-amber-400' : ''}`} />
+              Starred ({watchlistIds.length})
+            </button>
+
+            <button
+              type="button"
               onClick={() => setSignalsOnly((v) => !v)}
               className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
                 signalsOnly
@@ -161,6 +218,21 @@ export default function LiveGoalRadarTab({
               <Filter className="w-3.5 h-3.5" />
               {signalsOnly ? 'Active Signals Only' : 'Filter: All Live'}
             </button>
+
+            {onOpenAlertSettings && (
+              <button
+                type="button"
+                onClick={onOpenAlertSettings}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                  darkMode
+                    ? 'bg-cyan-500/15 border-cyan-500/35 text-cyan-300 hover:bg-cyan-500/25'
+                    : 'bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100'
+                }`}
+              >
+                <BellRing className="w-3.5 h-3.5" />
+                Alerts ({alertSettings?.minProbabilityPct || 74}%+)
+              </button>
+            )}
 
             <button
               type="button"
@@ -240,6 +312,45 @@ export default function LiveGoalRadarTab({
             </div>
           </div>
         </div>
+
+        {/* Settled Live Hit-Rate Strip */}
+        {livePerfData && (livePerfData.settled_evaluations > 0 || (livePerfData.market_breakdown || []).length > 0) && (
+          <div
+            className={`mt-4 pt-3.5 border-t flex flex-wrap items-center justify-between gap-2 text-xs ${
+              darkMode ? 'border-slate-800/80 text-slate-300' : 'border-slate-200 text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2 font-bold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                Settled Live Accuracy:{' '}
+                <strong className="text-emerald-400">
+                  {livePerfData.overall_accuracy !== null && livePerfData.overall_accuracy !== undefined
+                    ? `${Math.round(Number(livePerfData.overall_accuracy) * 100)}%`
+                    : '—'}
+                </strong>{' '}
+                <span className="text-slate-400 font-normal">
+                  ({livePerfData.settled_evaluations} graded signals across {livePerfData.settled_fixtures_count || 0} finished matches)
+                </span>
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(livePerfData.market_breakdown || []).slice(0, 4).map((mb) => (
+                <span
+                  key={mb.market}
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                    darkMode
+                      ? 'bg-slate-900 border-slate-700 text-cyan-300'
+                      : 'bg-white border-slate-300 text-cyan-700'
+                  }`}
+                >
+                  {mb.market.replace(/^live_/, '').replace(/_/g, ' ').toUpperCase()}:{' '}
+                  {mb.accuracy !== null && mb.accuracy !== undefined ? `${Math.round(mb.accuracy * 100)}%` : '—'} ({mb.sample_size})
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Live Fixtures Feed */}
@@ -260,19 +371,26 @@ export default function LiveGoalRadarTab({
         >
           <Radio className="w-8 h-8 mx-auto mb-3 text-slate-500" />
           <h3 className={`text-base font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-            {signalsOnly
+            {starredOnly
+              ? 'No Starred Matches Currently In-Play'
+              : signalsOnly
               ? 'No Strong Live Goal Signals Passing Safety Gates Yet'
               : 'No Matches Currently In-Play'}
           </h3>
           <p className={`text-xs mt-1.5 max-w-md mx-auto ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
-            {signalsOnly
+            {starredOnly
+              ? 'Star upcoming or live fixtures to monitor them in your dedicated watchlist feed.'
+              : signalsOnly
               ? 'Safety gates suppress signals near full-time (<8 mins) or when live momentum & data quality thresholds are unmet.'
               : 'Our live tracker scans ESPN automatically every 30 seconds and promotes kicked-off matches here with live goal probabilities.'}
           </p>
-          {signalsOnly && (
+          {(signalsOnly || starredOnly) && (
             <button
               type="button"
-              onClick={() => setSignalsOnly(false)}
+              onClick={() => {
+                setSignalsOnly(false);
+                setStarredOnly(false);
+              }}
               className="mt-4 px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 text-slate-200 hover:bg-slate-700"
             >
               Show All In-Play Matches ({liveFixtures.length})
@@ -283,6 +401,8 @@ export default function LiveGoalRadarTab({
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {visibleFixtures.map((fix) => {
             const signal = getSignalMeta(fix);
+            const customHit = passesCustomGate(fix, signal);
+            const isStarred = watchlistSet.has(Number(fix.fixture_id));
             const lg = fix.live_goals || {};
             const remTotal = lg.remaining_xg?.total;
             const preTotal = lg.pre_match_xg?.total;
@@ -293,10 +413,25 @@ export default function LiveGoalRadarTab({
             const nextGoal = lg.next_goal || {};
 
             return (
-              <article key={fix.fixture_id} className={`rounded-2xl border p-4 sm:p-5 transition-all ${cardSurface}`}>
+              <article
+                key={fix.fixture_id}
+                className={`rounded-2xl border p-4 sm:p-5 transition-all ${cardSurface} ${
+                  customHit ? 'ring-1 ring-emerald-500/40' : ''
+                }`}
+              >
                 {/* Top Meta Row */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/60">
                   <div className="flex items-center gap-2 min-w-0">
+                    {onToggleWatchlist && (
+                      <button
+                        type="button"
+                        onClick={() => onToggleWatchlist(fix.fixture_id)}
+                        title={isStarred ? 'Remove from Watchlist' : 'Add to Watchlist'}
+                        className="p-1 rounded-md text-slate-400 hover:text-amber-400 transition-colors shrink-0"
+                      >
+                        <Star className={`w-4 h-4 ${isStarred ? 'fill-amber-400 text-amber-400' : ''}`} />
+                      </button>
+                    )}
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/40">
                       <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping" />
                       {fix.live_clock || `${fix.minute || 0}'`}
@@ -460,6 +595,20 @@ export default function LiveGoalRadarTab({
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {onAddToBetSlip && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const leg = extractQuickSlipLeg({ id: fix.fixture_id }, 'live', fix);
+                          if (leg) onAddToBetSlip(leg);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-extrabold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 transition-colors"
+                        title="Add live market signal to +EV Bet Slip"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Slip
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => onOpenLiveModal && onOpenLiveModal(fix.fixture_id)}

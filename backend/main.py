@@ -50,6 +50,8 @@ try:
     from services.whatsapp_service import WhatsAppNotificationService
     from services.canonical_competition_service import CanonicalCompetitionService
     from services.calibration_service import CalibrationService
+    from services.bet_slip_service import BetSlipService
+    from services.alert_preferences_service import AlertPreferencesService
 except ImportError:
     from .database import init_db, get_db, engine, SessionLocal
     from .config import CORS_ORIGINS, FOOTBALL_API_KEY, settings
@@ -72,6 +74,8 @@ except ImportError:
     from .services.whatsapp_service import WhatsAppNotificationService
     from .services.canonical_competition_service import CanonicalCompetitionService
     from .services.calibration_service import CalibrationService
+    from .services.bet_slip_service import BetSlipService
+    from .services.alert_preferences_service import AlertPreferencesService
 
 logger = logging.getLogger(__name__)
 
@@ -216,11 +220,13 @@ def _mark_live_goal_alert_sent(
 
 
 def _evaluate_live_goal_alert_candidate(
-    fix: models.Fixture, intel: Dict[str, Any]
+    fix: models.Fixture,
+    intel: Dict[str, Any],
+    prefs: Optional[Dict[str, Any]] = None,
 ) -> Optional[Tuple[int, str, Dict[str, Any]]]:
     """
-    Validates strict production gates before queueing an automated live goal Telegram push alert.
-    Returns (fixture_id, market, kwargs_for_broadcast) or None.
+    Validates strict production gates & persisted alert preferences before queueing
+    an automated live goal Telegram push alert. Returns (fixture_id, market, payload) or None.
     """
     if not intel or not fix:
         return None
@@ -229,23 +235,60 @@ def _evaluate_live_goal_alert_candidate(
     if intel.get("freshness_status") != "FRESH":
         return None
 
+    min_conf = 70
+    min_prob = 0.74
+    min_rem = 10.0
+    allowed_markets_l: Optional[List[str]] = None
+
+    if prefs:
+        if not prefs.get("telegram_live_enabled", True):
+            return None
+        if AlertPreferencesService.is_within_quiet_hours(
+            datetime.now(timezone.utc).hour,
+            prefs.get("quiet_hours_start"),
+            prefs.get("quiet_hours_end"),
+        ):
+            return None
+
+        allowed_leagues = [str(lg).strip().lower() for lg in (prefs.get("allowed_leagues") or []) if str(lg).strip()]
+        if allowed_leagues:
+            fix_league = str(fix.league.name if fix.league else "").strip().lower()
+            if not any(al in fix_league or fix_league in al for al in allowed_leagues):
+                return None
+
+        min_conf = int(prefs.get("min_live_confidence") or 70)
+        min_prob = float(prefs.get("min_live_probability") or 0.74)
+        min_rem = float(prefs.get("min_time_remaining") or 10.0)
+        if "allowed_markets" in prefs and prefs["allowed_markets"] is not None:
+            allowed_markets_l = [str(m).strip().lower() for m in prefs["allowed_markets"] if str(m).strip()]
+
     conf_obj = intel.get("confidence") or {}
     overall_conf = int(conf_obj.get("overall_confidence") or 0)
-    if overall_conf < 70:
+    if overall_conf < min_conf:
         return None
 
     best_sig = intel.get("best_live_signal") or {}
     all_signals = intel.get("live_signals") or []
+
     def _sig_strength(node: Any) -> str:
         if not isinstance(node, dict):
             return ""
         return str(node.get("signal_strength") or node.get("label") or "").upper()
+
+    def _market_allowed(mkt_str: str) -> bool:
+        if allowed_markets_l is None:
+            return True
+        if not allowed_markets_l:
+            return False
+        m_low = mkt_str.strip().lower()
+        return any(am in m_low or m_low in am for am in allowed_markets_l)
 
     goal_sigs = [
         s for s in all_signals
         if isinstance(s, dict)
         and str(s.get("category") or "").lower() == "goals"
         and _sig_strength(s) == "STRONG"
+        and _market_allowed(str(s.get("market") or ""))
     ]
 
     chosen_sig: Optional[Dict[str, Any]] = None
@@ -253,6 +296,7 @@ def _evaluate_live_goal_alert_candidate(
         isinstance(best_sig, dict)
         and str(best_sig.get("category") or "").lower() == "goals"
         and _sig_strength(best_sig) == "STRONG"
+        and _market_allowed(str(best_sig.get("market") or ""))
     ):
         chosen_sig = best_sig
     elif goal_sigs:
@@ -269,7 +313,7 @@ def _evaluate_live_goal_alert_candidate(
     prob = float(chosen_sig.get("probability") or 0.0)
     time_rem = float(chosen_sig.get("time_remaining_minutes") or 0.0)
     sig_conf = int(chosen_sig.get("confidence_score") or chosen_sig.get("signal_score") or overall_conf)
-    if prob < 0.74 or time_rem < 10.0 or max(overall_conf, sig_conf) < 70:
+    if prob < min_prob or time_rem < min_rem or max(overall_conf, sig_conf) < min_conf:
         return None
 
     if not _should_send_live_goal_alert(fix.id, market):
@@ -560,6 +604,11 @@ async def scheduled_live_score_refresh():
         calc_db = SessionLocal()
         pending_alerts: List[Tuple[int, str, Dict[str, Any]]] = []
         tg_enabled = bool(get_telegram_token() and get_telegram_chat_id())
+        alert_prefs = None
+        try:
+            alert_prefs = AlertPreferencesService.get_or_create_preferences(calc_db)
+        except Exception:
+            alert_prefs = None
         try:
             now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             win_start = now_naive - timedelta(hours=3)
@@ -616,13 +665,25 @@ async def scheduled_live_score_refresh():
                                 calc_db, fix.id, pre_fetched_live=live_res
                             )
                             if intel and tg_enabled:
-                                cand = _evaluate_live_goal_alert_candidate(fix, intel)
+                                cand = _evaluate_live_goal_alert_candidate(fix, intel, prefs=alert_prefs)
                                 if cand:
                                     pending_alerts.append(cand)
                     except Exception as item_ex:
                         logger.debug(f"Live score/intel poll skipped for fixture {fix.id}: {item_ex}")
 
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
+            try:
+                try:
+                    from services.model_evaluation_service import ModelEvaluationService
+                except ImportError:
+                    from .services.model_evaluation_service import ModelEvaluationService
+                ModelEvaluationService.settle_pending_live_snapshots(calc_db, limit=50)
+            except Exception as eval_ex:
+                logger.debug(f"Live snapshot auto-settlement skipped: {eval_ex}")
+            try:
+                BetSlipService.settle_open_slips(calc_db)
+            except Exception as slip_ex:
+                logger.debug(f"Open bet slip auto-settlement skipped: {slip_ex}")
         except Exception as e:
             logger.error(f"Error in scheduled live score refresh: {e}")
         finally:
@@ -643,7 +704,8 @@ async def scheduled_live_score_refresh():
 async def scheduled_telegram_daily_digest(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
-    window_key: Optional[str] = None
+    window_key: Optional[str] = None,
+    respect_preferences: bool = True,
 ):
     """
     Automated background worker job executing 3 times daily:
@@ -656,6 +718,21 @@ async def scheduled_telegram_daily_digest(
     try:
         utc_now = datetime.now(timezone.utc)
         current_hour_utc = utc_now.hour
+        if respect_preferences:
+            try:
+                alert_prefs = AlertPreferencesService.get_or_create_preferences(calc_db)
+                if not alert_prefs.get("telegram_digest_enabled", True):
+                    logger.info("Scheduled Telegram daily digest suppressed by alert preferences.")
+                    return
+                if AlertPreferencesService.is_within_quiet_hours(
+                    current_hour_utc,
+                    alert_prefs.get("quiet_hours_start"),
+                    alert_prefs.get("quiet_hours_end"),
+                ):
+                    logger.info("Scheduled Telegram daily digest suppressed during configured quiet hours.")
+                    return
+            except Exception:
+                pass
 
         # Determine target window (auto-detect if not specified)
         if not window_key or window_key == "auto":
@@ -2767,7 +2844,7 @@ def get_decision_engine_status(request: Request, db: Session = Depends(get_db)):
 async def send_telegram_test_notification(request: Request, window: Optional[str] = "auto"):
     """Sends a live 3-Odds Accumulator Ticket test notification directly to Telegram."""
     try:
-        await scheduled_telegram_daily_digest(window_key=window)
+        await scheduled_telegram_daily_digest(window_key=window, respect_preferences=False)
         return {
             "status": "ok",
             "message": f"Live 3-Odds Accumulator ticket dispatched to Telegram successfully! (Window: {window})"
@@ -3342,8 +3419,96 @@ def get_finished_fixtures(request: Request, params: FixtureQueryParams = Depends
         return {"status": "error", "message": str(exc), "count": 0, "data": []}
 
 
+# =============================================================================
+# PHASE 16: PAPER BET SLIP (+EV / KELLY LEDGER) & ALERT PREFERENCES ENDPOINTS
+# =============================================================================
+
+class BetSlipLegIn(BaseModel):
+    fixture_id: int = Field(..., ge=1)
+    match_label: Optional[str] = Field(None, max_length=160)
+    league_name: Optional[str] = Field(None, max_length=120)
+    match_date: Optional[str] = Field(None, max_length=64)
+    market: str = Field(..., min_length=1, max_length=80)
+    model_prob: float = Field(..., gt=0.0, lt=1.0)
+    bookmaker_odds: Optional[float] = Field(None, gt=1.0, le=500.0)
+    baseline_goals: Optional[int] = Field(None, ge=0, le=30)
 
 
+class BetSlipCreateIn(BaseModel):
+    title: Optional[str] = Field("Tracked Prediction Slip", max_length=120)
+    source: Optional[str] = Field("manual", max_length=32)
+    stake: float = Field(10.0, gt=0.0, le=100000.0)
+    legs: List[BetSlipLegIn] = Field(..., min_length=1, max_length=20)
 
 
+class AlertPreferenceUpdateIn(BaseModel):
+    telegram_live_enabled: Optional[bool] = None
+    telegram_digest_enabled: Optional[bool] = None
+    min_live_probability: Optional[float] = Field(None, ge=0.55, le=0.95)
+    min_live_confidence: Optional[int] = Field(None, ge=50, le=95)
+    min_time_remaining: Optional[float] = Field(None, ge=5.0, le=60.0)
+    allowed_markets: Optional[List[str]] = None
+    allowed_leagues: Optional[List[str]] = None
+    quiet_hours_start: Optional[int] = Field(None, ge=0, le=23)
+    quiet_hours_end: Optional[int] = Field(None, ge=0, le=23)
+    browser_push_enabled: Optional[bool] = None
+    audio_chime_enabled: Optional[bool] = None
 
+
+@app.get("/api/betslips")
+@limiter.limit("30/minute")
+def get_betslips(request: Request, db: Session = Depends(get_db)):
+    """Returns tracked bet slips (auto-settling any newly finished fixtures) & ROI summary."""
+    return BetSlipService.get_slips_and_summary(db)
+
+
+@app.post("/api/betslips")
+@limiter.limit("30/minute")
+def create_betslip(request: Request, payload: BetSlipCreateIn, db: Session = Depends(get_db)):
+    """Creates and tracks a new +EV paper bet slip with model fair odds & Kelly metrics."""
+    slip = BetSlipService.create_slip(
+        db=db,
+        title=payload.title or "Tracked Prediction Slip",
+        source=payload.source or "manual",
+        stake=payload.stake,
+        legs=[lg.model_dump() for lg in payload.legs],
+    )
+    return {"status": "ok", "slip": slip}
+
+
+@app.post("/api/betslips/settle")
+@limiter.limit("30/minute")
+def settle_betslips(request: Request, db: Session = Depends(get_db)):
+    """Explicitly settles pending tracked bet slips against finished or postponed fixtures."""
+    settled_count = BetSlipService.settle_open_slips(db)
+    summary_payload = BetSlipService.get_slips_and_summary(db)
+    return {"status": "ok", "settled_count": settled_count, **summary_payload}
+
+
+@app.delete("/api/betslips/{slip_id}")
+@limiter.limit("30/minute")
+def delete_betslip(request: Request, slip_id: int, db: Session = Depends(get_db)):
+    """Removes a tracked bet slip by ID."""
+    deleted = BetSlipService.delete_slip(db, slip_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Bet slip not found")
+    return {"status": "ok", "deleted_id": slip_id}
+
+
+@app.get("/api/alerts/preferences")
+@limiter.limit("60/minute")
+def get_alert_preferences(request: Request, db: Session = Depends(get_db)):
+    """Returns persisted server Telegram & alert threshold preferences."""
+    return {"status": "ok", "preferences": AlertPreferencesService.get_or_create_preferences(db)}
+
+
+@app.put("/api/alerts/preferences", dependencies=[Depends(require_admin_auth)])
+@limiter.limit("20/minute")
+def update_alert_preferences(
+    request: Request, payload: AlertPreferenceUpdateIn, db: Session = Depends(get_db)
+):
+    """Updates persisted Telegram alert rules, quiet hours, and signal filters (admin-protected)."""
+    updated = AlertPreferencesService.update_preferences(
+        db, payload.model_dump(exclude_unset=True)
+    )
+    return {"status": "ok", "preferences": updated}

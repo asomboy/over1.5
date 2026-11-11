@@ -221,66 +221,222 @@ class ModelEvaluationService:
             if any_red is not None:
                 _upsert_eval("red_cards", "any_red_card", cd_ver, pred_time, any_red, cd_snap.id, conf_val)
 
-        # 4. Evaluate Live Prediction Snapshots
+        # 4. Evaluate Live Prediction Snapshots across all active live goal & STRONG signal markets
         live_snaps = db.query(LivePredictionSnapshot).filter(LivePredictionSnapshot.fixture_id == fixture_id).all()
         for ls in live_snaps:
             pred_time = ls.prediction_timestamp or ls.created_at
             l_ver = ls.model_version or "v1_live_intelligence"
             min_val = ls.match_minute
             per_val = ls.period
+            snap_h = int(ls.home_score or 0)
+            snap_a = int(ls.away_score or 0)
+            snap_tot = snap_h + snap_a
+            final_tot = h_score + a_score
 
             if ls.goals_prediction_json:
                 try:
                     g_data = json.loads(ls.goals_prediction_json)
-                    if "at_least_1_more_goal" in g_data:
-                        p_val = g_data["at_least_1_more_goal"].get("probability")
-                        if p_val is not None:
-                            # 1 more goal means final total > score at snapshot
-                            tot_at_snap = ls.home_score + ls.away_score
-                            actual_1_more = 1.0 if (h_score + a_score) > tot_at_snap else 0.0
-                            brier = CalibrationService.calculate_brier_component(p_val, actual_1_more)
-                            ll = CalibrationService.calculate_log_loss_component(p_val, actual_1_more)
+                    if isinstance(g_data.get("at_least_1_more_goal"), dict):
+                        if cls._record_live_evaluation(
+                            db,
+                            fixture_id=fixture_id,
+                            snap=ls,
+                            competition=comp_name,
+                            market="live_at_least_1_more_goal",
+                            model_version=l_ver,
+                            pred_time=pred_time,
+                            match_minute=min_val,
+                            period=per_val,
+                            prob_value=g_data["at_least_1_more_goal"].get("probability"),
+                            actual_outcome=1.0 if final_tot > snap_tot else 0.0,
+                        ):
+                            eval_records_count += 1
 
-                            # Record directly
-                            existing = (
-                                db.query(ModelEvaluation)
-                                .filter(
-                                    ModelEvaluation.fixture_id == fixture_id,
-                                    ModelEvaluation.market == "live_at_least_1_more_goal",
-                                    ModelEvaluation.model_version == l_ver,
-                                    ModelEvaluation.is_live == True,
-                                    ModelEvaluation.match_minute == min_val
-                                )
-                                .first()
-                            )
-                            if not existing:
-                                db.add(ModelEvaluation(
-                                    fixture_id=fixture_id,
-                                    prediction_snapshot_id=ls.id,
-                                    prediction_type="live_goals",
-                                    market="live_at_least_1_more_goal",
-                                    model_version=l_ver,
-                                    competition=comp_name,
-                                    prediction_timestamp=pred_time,
-                                    match_minute=min_val,
-                                    period=per_val,
-                                    predicted_probability=p_val,
-                                    actual_outcome=actual_1_more,
-                                    confidence=ls.confidence,
-                                    data_quality=ls.data_quality,
-                                    is_live=True,
-                                    verified=True,
-                                    verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                                    brier_component=brier,
-                                    log_loss_component=ll,
-                                    absolute_error=abs(p_val - actual_1_more)
-                                ))
-                                eval_records_count += 1
+                    if snap_tot < 2 and isinstance(g_data.get("full_match_over_1_5"), dict):
+                        if cls._record_live_evaluation(
+                            db,
+                            fixture_id=fixture_id,
+                            snap=ls,
+                            competition=comp_name,
+                            market="live_over_1_5",
+                            model_version=l_ver,
+                            pred_time=pred_time,
+                            match_minute=min_val,
+                            period=per_val,
+                            prob_value=g_data["full_match_over_1_5"].get("probability"),
+                            actual_outcome=1.0 if final_tot >= 2 else 0.0,
+                        ):
+                            eval_records_count += 1
+
+                    if snap_tot < 3 and isinstance(g_data.get("full_match_over_2_5"), dict):
+                        if cls._record_live_evaluation(
+                            db,
+                            fixture_id=fixture_id,
+                            snap=ls,
+                            competition=comp_name,
+                            market="live_over_2_5",
+                            model_version=l_ver,
+                            pred_time=pred_time,
+                            match_minute=min_val,
+                            period=per_val,
+                            prob_value=g_data["full_match_over_2_5"].get("probability"),
+                            actual_outcome=1.0 if final_tot >= 3 else 0.0,
+                        ):
+                            eval_records_count += 1
+
+                    if not (snap_h > 0 and snap_a > 0) and isinstance(g_data.get("btts_yes"), dict):
+                        if cls._record_live_evaluation(
+                            db,
+                            fixture_id=fixture_id,
+                            snap=ls,
+                            competition=comp_name,
+                            market="live_btts_yes",
+                            model_version=l_ver,
+                            pred_time=pred_time,
+                            match_minute=min_val,
+                            period=per_val,
+                            prob_value=g_data["btts_yes"].get("probability"),
+                            actual_outcome=1.0 if (h_score > 0 and a_score > 0) else 0.0,
+                        ):
+                            eval_records_count += 1
                 except Exception as ex:
                     logger.debug(f"Error evaluating live goals snapshot {ls.id}: {ex}")
 
+            if ls.best_live_signal_json:
+                try:
+                    sig_data = json.loads(ls.best_live_signal_json)
+                    if isinstance(sig_data, dict):
+                        strength = str(sig_data.get("signal_strength") or sig_data.get("label") or "").upper()
+                        sig_prob = sig_data.get("probability")
+                        sig_mkt = str(sig_data.get("market") or sig_data.get("market_key") or "").lower().replace(" ", "_").replace(".", "_")
+                        actual_sig = None
+                        if strength == "STRONG" and sig_prob is not None:
+                            if "1_more" in sig_mkt or "next_goal" in sig_mkt or "at_least_1" in sig_mkt:
+                                actual_sig = 1.0 if final_tot > snap_tot else 0.0
+                            elif "over_1_5" in sig_mkt:
+                                actual_sig = 1.0 if final_tot >= 2 else 0.0
+                            elif "over_2_5" in sig_mkt:
+                                actual_sig = 1.0 if final_tot >= 3 else 0.0
+                            elif "over_3_5" in sig_mkt:
+                                actual_sig = 1.0 if final_tot >= 4 else 0.0
+                            elif "btts" in sig_mkt:
+                                actual_sig = 1.0 if (h_score > 0 and a_score > 0) else 0.0
+                        if actual_sig is not None and cls._record_live_evaluation(
+                            db,
+                            fixture_id=fixture_id,
+                            snap=ls,
+                            competition=comp_name,
+                            market="live_strong_signal",
+                            model_version=l_ver,
+                            pred_time=pred_time,
+                            match_minute=min_val,
+                            period=per_val,
+                            prob_value=sig_prob,
+                            actual_outcome=actual_sig,
+                        ):
+                            eval_records_count += 1
+                except Exception as ex:
+                    logger.debug(f"Error evaluating best live signal snapshot {ls.id}: {ex}")
+
         db.commit()
         return eval_records_count
+
+    @classmethod
+    def _record_live_evaluation(
+        cls,
+        db: Session,
+        *,
+        fixture_id: int,
+        snap: LivePredictionSnapshot,
+        competition: str,
+        market: str,
+        model_version: str,
+        pred_time: Any,
+        match_minute: Optional[int],
+        period: Optional[str],
+        prob_value: Any,
+        actual_outcome: float,
+    ) -> bool:
+        """Persists an idempotent ModelEvaluation row for a live snapshot market."""
+        if prob_value is None:
+            return False
+        try:
+            prob_f = float(prob_value)
+        except (TypeError, ValueError):
+            return False
+        if prob_f > 1.0:
+            prob_f = prob_f / 100.0
+        prob_f = max(0.0, min(1.0, prob_f))
+
+        existing = (
+            db.query(ModelEvaluation)
+            .filter(
+                ModelEvaluation.fixture_id == fixture_id,
+                ModelEvaluation.market == market,
+                ModelEvaluation.model_version == model_version,
+                ModelEvaluation.is_live == True,
+                ModelEvaluation.match_minute == match_minute,
+            )
+            .first()
+        )
+        if existing:
+            return False
+
+        brier = CalibrationService.calculate_brier_component(prob_f, actual_outcome)
+        ll = CalibrationService.calculate_log_loss_component(prob_f, actual_outcome)
+        db.add(ModelEvaluation(
+            fixture_id=fixture_id,
+            prediction_snapshot_id=snap.id,
+            prediction_type="live_goals",
+            market=market,
+            model_version=model_version,
+            competition=competition,
+            prediction_timestamp=pred_time,
+            match_minute=match_minute,
+            period=period,
+            predicted_probability=prob_f,
+            actual_outcome=actual_outcome,
+            confidence=snap.confidence,
+            data_quality=snap.data_quality,
+            is_live=True,
+            verified=True,
+            verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            brier_component=brier,
+            log_loss_component=ll,
+            absolute_error=abs(prob_f - actual_outcome),
+        ))
+        return True
+
+    @classmethod
+    def settle_pending_live_snapshots(cls, db: Session, limit: int = 50) -> Dict[str, int]:
+        """Automatically evaluates finished fixtures that recorded live snapshots."""
+        settled_ids = {
+            row[0]
+            for row in db.query(ModelEvaluation.fixture_id)
+            .filter(ModelEvaluation.is_live == True, ModelEvaluation.verified == True)
+            .distinct()
+            .all()
+        }
+        snap_rows = (
+            db.query(LivePredictionSnapshot.fixture_id)
+            .join(Fixture, Fixture.id == LivePredictionSnapshot.fixture_id)
+            .filter(
+                Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                Fixture.home_score.isnot(None),
+                Fixture.away_score.isnot(None),
+            )
+            .order_by(Fixture.match_date.desc())
+            .distinct()
+            .all()
+        )
+        pending_ids = [row[0] for row in snap_rows if row[0] not in settled_ids][:limit]
+        created = 0
+        for fid in pending_ids:
+            created += cls.evaluate_finished_fixture(db, fid)
+        return {
+            "fixtures_checked": len(pending_ids),
+            "evaluations_created": created,
+        }
 
     @classmethod
     def get_model_performance(
@@ -543,8 +699,8 @@ class ModelEvaluationService:
     @classmethod
     def get_live_minute_performance(cls, db: Session) -> Dict[str, Any]:
         """
-        Evaluates dynamic in-play prediction performance across 6 match minute intervals:
-        0-15, 16-30, 31-45+, 46-60, 61-75, 76-90+.
+        Evaluates dynamic in-play prediction performance across 6 match minute intervals
+        (0-15, 16-30, 31-45+, 46-60, 61-75, 76-90+) plus per-market hit rates.
         """
         minute_ranges = [
             ("0-15'", 0, 15),
@@ -555,25 +711,26 @@ class ModelEvaluationService:
             ("76-90'+", 76, 120)
         ]
 
+        all_verified_live = (
+            db.query(ModelEvaluation)
+            .filter(ModelEvaluation.is_live == True, ModelEvaluation.verified == True)
+            .all()
+        )
+
         buckets_out = []
         tot_live = 0
 
         for label, min_start, min_end in minute_ranges:
-            recs = (
-                db.query(ModelEvaluation)
-                .filter(
-                    ModelEvaluation.is_live == True,
-                    ModelEvaluation.verified == True,
-                    ModelEvaluation.match_minute >= min_start,
-                    ModelEvaluation.match_minute <= min_end
-                )
-                .all()
-            )
+            recs = [
+                r for r in all_verified_live
+                if r.match_minute is not None and min_start <= int(r.match_minute) <= min_end
+            ]
             n = len(recs)
             tot_live += n
             pairs = [(r.predicted_probability, r.actual_outcome) for r in recs]
             agg = CalibrationService.calculate_aggregate_metrics(pairs)
             cal = CalibrationService.compute_calibration_curve(pairs)
+            win_rate = round(sum(1 for _, act in pairs if float(act or 0.0) >= 0.5) / n, 4) if n > 0 else None
 
             buckets_out.append({
                 "minute_bucket": label,
@@ -582,13 +739,40 @@ class ModelEvaluationService:
                 "log_loss": agg["mean_log_loss"],
                 "ece": cal["ece"],
                 "accuracy": agg["accuracy"],
+                "win_rate": win_rate,
                 "status": "VALIDATED" if n >= 50 else ("VALIDATING" if n >= 15 else "INSUFFICIENT_DATA")
             })
 
+        market_groups: Dict[str, List[ModelEvaluation]] = {}
+        for row in all_verified_live:
+            market_groups.setdefault(str(row.market or "unknown"), []).append(row)
+
+        market_breakdown = []
+        for mkt_name, m_recs in sorted(market_groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            m_pairs = [(r.predicted_probability, r.actual_outcome) for r in m_recs]
+            m_agg = CalibrationService.calculate_aggregate_metrics(m_pairs)
+            m_n = len(m_recs)
+            market_breakdown.append({
+                "market": mkt_name,
+                "sample_size": m_n,
+                "accuracy": m_agg["accuracy"],
+                "win_rate": round(sum(1 for _, act in m_pairs if float(act or 0.0) >= 0.5) / m_n, 4) if m_n > 0 else None,
+                "brier_score": m_agg["mean_brier"],
+                "log_loss": m_agg["mean_log_loss"],
+                "avg_probability": round(sum(float(p or 0.0) for p, _ in m_pairs) / m_n, 4) if m_n > 0 else None,
+            })
+
+        all_pairs = [(r.predicted_probability, r.actual_outcome) for r in all_verified_live]
+        overall_agg = CalibrationService.calculate_aggregate_metrics(all_pairs) if all_pairs else {}
+        settled_fixtures_count = len({r.fixture_id for r in all_verified_live if r.fixture_id is not None})
+
         return {
             "total_live_evaluations": tot_live,
+            "settled_fixtures_count": settled_fixtures_count,
+            "overall_accuracy": overall_agg.get("accuracy"),
             "status": "VALIDATED" if tot_live >= MIN_PRODUCTION_VALIDATION_SAMPLE else "INSUFFICIENT_DATA",
-            "minute_buckets": buckets_out
+            "minute_buckets": buckets_out,
+            "market_breakdown": market_breakdown,
         }
 
     @classmethod
@@ -630,6 +814,9 @@ class ModelEvaluationService:
             "status": "ok",
             "minute_buckets": min_perf.get("minute_buckets", []),
             "total_live_evaluations": min_perf.get("total_live_evaluations", 0),
+            "settled_fixtures_count": min_perf.get("settled_fixtures_count", 0),
+            "overall_accuracy": min_perf.get("overall_accuracy"),
+            "market_breakdown": min_perf.get("market_breakdown", []),
             "live_signals": {
                 "signal_count": strong_count + moderate_count,
                 "strong_signals": strong_count,

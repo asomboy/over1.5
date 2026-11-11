@@ -25,7 +25,11 @@ import {
   Trophy,
   Clock,
   Crown,
-  Radio
+  Radio,
+  Star,
+  BellRing,
+  Calculator,
+  Plus
 } from 'lucide-react';
 import AccumulatorModal from './components/AccumulatorModal';
 import MatchDetailModal from './components/MatchDetailModal';
@@ -33,7 +37,21 @@ import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal'
 import ModelIntelligenceDashboard from './components/ModelIntelligenceDashboard';
 import FixtureMarketsPanel from './components/FixtureMarketsPanel';
 import LiveGoalRadarTab from './components/LiveGoalRadarTab';
+import AlertSettingsModal from './components/AlertSettingsModal';
+import BetSlipTrackerModal from './components/BetSlipTrackerModal';
 import { TABLE_MARKET_TABS, pctVal } from './utils/marketTabs';
+import {
+  dispatchLiveBrowserNotification,
+  evaluateClientLiveAlert,
+  extractQuickSlipLeg,
+  hasSignalBeenNotified,
+  loadAlertSettings,
+  loadWatchlistIds,
+  markSignalNotified,
+  playGoalAlertChime,
+  saveAlertSettings,
+  saveWatchlistIds,
+} from './utils/alertUtils';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -82,7 +100,7 @@ const apiRequest = async (method, path, data = null, options = {}) => {
     '';
   const mergedHeaders = {
     ...(options.headers || {}),
-    ...(method === 'post' && adminKey ? { 'X-Admin-Key': adminKey } : {}),
+    ...((method === 'post' || method === 'put' || method === 'delete') && adminKey ? { 'X-Admin-Key': adminKey } : {}),
   };
 
   for (const url of urls) {
@@ -93,6 +111,10 @@ const apiRequest = async (method, path, data = null, options = {}) => {
         res = await axios.get(url, reqOptions);
       } else if (method === 'post') {
         res = await axios.post(url, data, reqOptions);
+      } else if (method === 'put') {
+        res = await axios.put(url, data, reqOptions);
+      } else if (method === 'delete') {
+        res = await axios.delete(url, reqOptions);
       }
       // Ensure valid JSON API payload object (rejects HTML fallback strings from static server rewrites)
       if (res && res.data !== undefined && res.data !== null) {
@@ -173,6 +195,63 @@ export default function App() {
   const [showLiveModal, setShowLiveModal] = useState(false);
   const [showModelDashboard, setShowModelDashboard] = useState(false);
   const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [watchlistIds, setWatchlistIds] = useState(() => loadWatchlistIds());
+  const [alertSettings, setAlertSettings] = useState(() => loadAlertSettings());
+  const [showAlertSettingsModal, setShowAlertSettingsModal] = useState(false);
+  const [showBetSlipModal, setShowBetSlipModal] = useState(false);
+  const [draftSlipLegs, setDraftSlipLegs] = useState([]);
+  const [livePerfData, setLivePerfData] = useState(null);
+
+  const watchlistSet = useMemo(() => new Set(watchlistIds.map(Number)), [watchlistIds]);
+  const watchlistSetRef = useRef(watchlistSet);
+  watchlistSetRef.current = watchlistSet;
+  const alertSettingsRef = useRef(alertSettings);
+  alertSettingsRef.current = alertSettings;
+
+  const toggleWatchlist = useCallback((fixtureId) => {
+    const numId = Number(fixtureId);
+    if (!Number.isFinite(numId) || numId <= 0) return;
+    setWatchlistIds((prev) => {
+      const next = prev.includes(numId) ? prev.filter((id) => id !== numId) : [...prev, numId];
+      saveWatchlistIds(next);
+      return next;
+    });
+  }, []);
+
+  const handleUpdateAlertSettings = useCallback((nextSettings) => {
+    setAlertSettings(nextSettings);
+    saveAlertSettings(nextSettings);
+  }, []);
+
+  const handleAddDraftSlipLeg = useCallback((leg) => {
+    if (!leg || !leg.fixture_id) return;
+    setDraftSlipLegs((prev) => {
+      const exists = prev.some((l) => Number(l.fixture_id) === Number(leg.fixture_id) && l.market === leg.market);
+      if (exists) return prev;
+      return [...prev, leg];
+    });
+    setShowBetSlipModal(true);
+  }, []);
+
+  const handleUpdateDraftLeg = useCallback((idx, patch) => {
+    setDraftSlipLegs((prev) => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
+  }, []);
+
+  const handleRemoveDraftLeg = useCallback((idx) => {
+    setDraftSlipLegs((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleClearDraftLegs = useCallback(() => {
+    setDraftSlipLegs([]);
+  }, []);
+
+  const handleSendAccaToSlip = useCallback((legs) => {
+    if (!Array.isArray(legs) || legs.length === 0) return;
+    setDraftSlipLegs(legs);
+    setShowAccaModal(false);
+    setShowBetSlipModal(true);
+  }, []);
 
   // Dynamic Document Title Updates based on open modal
   useEffect(() => {
@@ -184,10 +263,14 @@ export default function App() {
       document.title = 'Smart Accumulator | Soccer Goal Predictor';
     } else if (showModelDashboard) {
       document.title = 'Model Intelligence | Soccer Goal Predictor';
+    } else if (showBetSlipModal) {
+      document.title = '+EV Bet Slip | Soccer Goal Predictor';
+    } else if (showAlertSettingsModal) {
+      document.title = 'Alert Rules | Soccer Goal Predictor';
     } else {
       document.title = 'Soccer Goal Predictor | AI Match Analytics & Goal Predictions';
     }
-  }, [showDetailModal, showLiveModal, showAccaModal, showModelDashboard]);
+  }, [showDetailModal, showLiveModal, showAccaModal, showModelDashboard, showBetSlipModal, showAlertSettingsModal]);
 
   // Detect slow cold-start initial load (>8s)
   useEffect(() => {
@@ -496,6 +579,16 @@ export default function App() {
     }
   }, []);
 
+  const fetchLivePerformance = useCallback(async (signal = undefined) => {
+    try {
+      const res = await apiRequest('get', '/api/live/performance', null, signal ? { timeout: 15000, signal } : { timeout: 15000 });
+      if (signal?.aborted) return;
+      if (res.data) setLivePerfData(res.data);
+    } catch {
+      // Ignore transient telemetry errors cleanly
+    }
+  }, []);
+
   // Fetch upcoming fixtures from FastAPI with cold-start retry & multi-URL fallback
   const fetchLiveFixtures = useCallback(async (isSilent = false, signal = undefined) => {
     if (!isSilent) setLoadingLive(true);
@@ -504,6 +597,17 @@ export default function App() {
       if (signal?.aborted) return;
       const list = Array.isArray(res.data?.fixtures) ? res.data.fixtures : [];
       setLiveFixtures(list);
+      const curSettings = alertSettingsRef.current;
+      if (curSettings && (curSettings.browserPushEnabled || curSettings.audioChimeEnabled)) {
+        for (const liveFix of list) {
+          const alertCandidate = evaluateClientLiveAlert(liveFix, curSettings, watchlistSetRef.current);
+          if (alertCandidate && !hasSignalBeenNotified(alertCandidate.key)) {
+            markSignalNotified(alertCandidate.key);
+            if (curSettings.audioChimeEnabled) playGoalAlertChime();
+            if (curSettings.browserPushEnabled) dispatchLiveBrowserNotification(alertCandidate);
+          }
+        }
+      }
     } catch (err) {
       if (err.name === 'CanceledError' || err.name === 'AbortError' || err.code === 'ERR_CANCELED') {
         return;
@@ -605,6 +709,7 @@ export default function App() {
     fetchUpcomingFixtures(false, initController.signal);
     fetchFinishedFixtures(false, initController.signal);
     fetchLiveFixtures(false, initController.signal);
+    fetchLivePerformance(initController.signal);
     fetchAccuracyStats(initController.signal);
     // Auto refresh live scores & finished matches silently every 20 seconds when tab is visible
     const interval = setInterval(() => {
@@ -617,13 +722,14 @@ export default function App() {
       fetchUpcomingFixtures(true, pollCtrl.signal);
       fetchFinishedFixtures(true, pollCtrl.signal);
       fetchLiveFixtures(true, pollCtrl.signal);
+      fetchLivePerformance(pollCtrl.signal);
     }, 20000);
     return () => {
       clearInterval(interval);
       initController.abort();
       if (pollAbortRef.current) pollAbortRef.current.abort();
     };
-  }, [checkHealth, fetchUpcomingFixtures, fetchFinishedFixtures, fetchLiveFixtures, fetchAccuracyStats]);
+  }, [checkHealth, fetchUpcomingFixtures, fetchFinishedFixtures, fetchLiveFixtures, fetchLivePerformance, fetchAccuracyStats]);
 
   // Helper to test if match is currently live
   const isMatchLive = (fix) => {
@@ -937,7 +1043,8 @@ export default function App() {
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
       const matchesValue = !showValueBetsOnly || fix.value_bet?.is_value_bet || (fix.prediction?.over_1_5_probability || 0) >= 0.78;
-      return matchesSearch && matchesLeague && matchesDay && matchesValue;
+      const matchesStar = !showStarredOnly || watchlistSet.has(Number(fix.id));
+      return matchesSearch && matchesLeague && matchesDay && matchesValue && matchesStar;
     });
 
     result = result.sort((a, b) => {
@@ -958,7 +1065,7 @@ export default function App() {
     });
 
     return result;
-  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, sortBy, extraMarketsMap]);
+  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, showStarredOnly, watchlistSet, sortBy, extraMarketsMap]);
 
   // Filtered Finished Fixtures for Results Tab (Strict Day & League Filtering)
   const filteredFinishedFixtures = useMemo(() => {
@@ -972,8 +1079,9 @@ export default function App() {
       const matchesLeague = selectedLeague === 'ALL' || fix.league?.name === selectedLeague;
       const matchesDay = selectedPickDay === 'ALL_DAYS' || getGMT1DayKey(fix.match_date) === selectedPickDay;
       const matchesValue = !showValueBetsOnly || fix.value_bet?.is_value_bet || (fix.prediction?.over_1_5_probability || 0) >= 0.78;
+      const matchesStar = !showStarredOnly || watchlistSet.has(Number(fix.id));
       
-      return matchesSearch && matchesLeague && matchesDay && matchesValue;
+      return matchesSearch && matchesLeague && matchesDay && matchesValue && matchesStar;
     });
 
     result = result.sort((a, b) => {
@@ -983,7 +1091,7 @@ export default function App() {
     });
 
     return result;
-  }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
+  }, [finishedFixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, showStarredOnly, watchlistSet]);
 
   // Table 2 Pagination State (Default: 50 matches per page for fast DOM render)
   const [currentPage, setCurrentPage] = useState(1);
@@ -992,7 +1100,7 @@ export default function App() {
   // Reset to page 1 whenever filters or search terms change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, selectedLeague, sortBy, selectedPickDay, showBest15Over15]);
+  }, [searchTerm, selectedLeague, sortBy, selectedPickDay, showBest15Over15, showStarredOnly]);
 
   // Paginated fixtures slice
   const paginatedFixtures = useMemo(() => {
@@ -1055,7 +1163,7 @@ export default function App() {
 
   useEffect(() => {
     setFinishedPage(1);
-  }, [searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly]);
+  }, [searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, showStarredOnly]);
 
   const paginatedFinishedFixtures = useMemo(() => {
     if (finishedPageSize === 'ALL') return filteredFinishedFixtures;
@@ -1192,6 +1300,31 @@ export default function App() {
                 {backendHealth.online ? `Live (${backendHealth.latency}ms)` : 'Offline'}
               </span>
             </div>
+
+            {/* +EV Paper Bet Slip Button */}
+            <button
+              onClick={() => setShowBetSlipModal(true)}
+              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-extrabold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-xl transition-all shadow-sm active:scale-95"
+              title="Open +EV Edge Calculator & Paper Bet Ledger"
+            >
+              <Calculator className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Bet Slip</span>
+              {draftSlipLegs.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-slate-950">
+                  {draftSlipLegs.length}
+                </span>
+              )}
+            </button>
+
+            {/* Live Alert Rules Button */}
+            <button
+              onClick={() => setShowAlertSettingsModal(true)}
+              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-bold bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-cyan-300 rounded-xl transition-all shadow-sm active:scale-95"
+              title="Live Browser Push, Audio Chime & Telegram Alert Preferences"
+            >
+              <BellRing className={`w-3.5 h-3.5 ${alertSettings.browserPushEnabled ? 'text-emerald-400' : 'text-cyan-400'}`} />
+              <span className="hidden md:inline">Alerts</span>
+            </button>
 
             {/* Smart Acca Button */}
             <button
@@ -1942,6 +2075,12 @@ export default function App() {
             onOpenLiveModal={(id) => openLiveModal(id)}
             onOpenDetailModal={(id) => openFixtureDetail(id, 'h2h')}
             onRefreshLive={() => fetchLiveFixtures(false)}
+            watchlistIds={watchlistIds}
+            onToggleWatchlist={toggleWatchlist}
+            alertSettings={alertSettings}
+            onOpenAlertSettings={() => setShowAlertSettingsModal(true)}
+            onAddToBetSlip={handleAddDraftSlipLeg}
+            livePerfData={livePerfData}
           />
         ) : (
           <>
@@ -2467,10 +2606,25 @@ export default function App() {
                 <span title="Fixtures with ≥78% Over 1.5 probability or verified value edge">💎 High Prob ≥78%</span>
               </button>
 
+              {/* Watchlist Starred Filter Toggle */}
+              <button
+                type="button"
+                onClick={() => setShowStarredOnly((v) => !v)}
+                className={`h-10 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 border ${
+                  showStarredOnly
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-md shadow-amber-500/10'
+                    : darkMode ? 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white' : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
+                }`}
+                title="Show only fixtures saved to your watchlist"
+              >
+                <Star className={`w-3.5 h-3.5 ${showStarredOnly ? 'fill-amber-400 text-amber-400' : ''}`} />
+                <span>Starred ({watchlistIds.length})</span>
+              </button>
+
               {/* Clear Filters */}
-              {(searchTerm || selectedLeague !== 'ALL' || sortBy !== 'DATE_ASC' || showBest15Over15 || showValueBetsOnly || selectedPickDay !== 'ALL_DAYS') && (
+              {(searchTerm || selectedLeague !== 'ALL' || sortBy !== 'DATE_ASC' || showBest15Over15 || showValueBetsOnly || showStarredOnly || selectedPickDay !== 'ALL_DAYS') && (
                 <button
-                  onClick={() => { setSearchTerm(''); setSelectedLeague('ALL'); setSortBy('DATE_ASC'); setShowBest15Over15(false); setShowValueBetsOnly(false); setSelectedPickDay('ALL_DAYS'); }}
+                  onClick={() => { setSearchTerm(''); setSelectedLeague('ALL'); setSortBy('DATE_ASC'); setShowBest15Over15(false); setShowValueBetsOnly(false); setShowStarredOnly(false); setSelectedPickDay('ALL_DAYS'); }}
                   className="h-10 px-2.5 sm:px-3 flex items-center text-xs text-rose-400 hover:text-rose-300 font-semibold transition-colors shrink-0"
                 >
                   Clear Filters
@@ -2570,6 +2724,14 @@ export default function App() {
                       {/* Teams Matchup */}
                       <div className="flex flex-col min-w-0 flex-1">
                         <div className="flex items-center gap-1.5 truncate">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); toggleWatchlist(fix.id); }}
+                            title={watchlistSet.has(Number(fix.id)) ? 'Remove from Watchlist' : 'Add to Watchlist'}
+                            className="p-0.5 rounded text-slate-400 hover:text-amber-400 shrink-0"
+                          >
+                            <Star className={`w-3.5 h-3.5 ${watchlistSet.has(Number(fix.id)) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          </button>
                           {fix.home_team?.logo_url && (
                             <img src={fix.home_team.logo_url} alt="" className="w-4 h-4 object-contain shrink-0" />
                           )}
@@ -2653,16 +2815,30 @@ export default function App() {
                           </div>
                         </div>
 
-                        <button
-                          onClick={(e) => { 
-                            e.stopPropagation(); 
-                            openFixtureDetail(fix.id, 'h2h');
-                          }}
-                          className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
-                        >
-                          <span>View Full H2H & Match Analytics</span>
-                          <ArrowUpRight className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const leg = extractQuickSlipLeg(rowFix, mobileRowTab, liveByFixtureId[fix.id]);
+                              if (leg) handleAddDraftSlipLeg(leg);
+                            }}
+                            className="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 font-bold text-xs inline-flex items-center gap-1 shrink-0"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>+ Slip</span>
+                          </button>
+                          <button
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              openFixtureDetail(fix.id, 'h2h');
+                            }}
+                            className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow"
+                          >
+                            <span>View Full H2H & Match Analytics</span>
+                            <ArrowUpRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2775,6 +2951,14 @@ export default function App() {
                         {/* Teams Matchup & Live Score */}
                         <td className="py-3 px-4">
                           <div className="flex items-center space-x-3">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); toggleWatchlist(fix.id); }}
+                              title={watchlistSet.has(Number(fix.id)) ? 'Remove from Watchlist' : 'Save to Watchlist'}
+                              className="p-1 rounded-md text-slate-500 hover:text-amber-400 transition-colors shrink-0"
+                            >
+                              <Star className={`w-3.5 h-3.5 ${watchlistSet.has(Number(fix.id)) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                            </button>
                             <div className="flex items-center space-x-2">
                               {fix.home_team?.logo_url ? (
                                 <img src={fix.home_team.logo_url} alt={fix.home_team.name} className="w-5 h-5 object-contain" />
@@ -3029,6 +3213,19 @@ export default function App() {
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                const leg = extractQuickSlipLeg(rowFix, activeMarketTab, liveByFixtureId[fix.id]);
+                                if (leg) handleAddDraftSlipLeg(leg);
+                              }}
+                              title="Add selected market to +EV Bet Slip"
+                              className="px-2 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 transition-all inline-flex items-center gap-0.5 font-extrabold text-[11px]"
+                            >
+                              <Plus className="w-3 h-3" />
+                              <span>Slip</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 toggleTableRowMarkets(rowFix);
                               }}
                               className={`px-2 py-1.5 rounded-lg border transition-all inline-flex items-center gap-1 font-bold text-[11px] ${
@@ -3160,7 +3357,17 @@ export default function App() {
                     <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20">
                       {fix.league?.name || 'League'}
                     </span>
-                    {renderLiveStatusBadge(fix)}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleWatchlist(fix.id); }}
+                        title={watchlistSet.has(Number(fix.id)) ? 'Remove from Watchlist' : 'Save to Watchlist'}
+                        className="p-1 rounded-md text-slate-400 hover:text-amber-400"
+                      >
+                        <Star className={`w-3.5 h-3.5 ${watchlistSet.has(Number(fix.id)) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                      </button>
+                      {renderLiveStatusBadge(fix)}
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold">
@@ -3301,6 +3508,18 @@ export default function App() {
                   <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
                     <span>xG: {formatFixed(pred.expected_goals_xg, 2)}</span>
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const leg = extractQuickSlipLeg(rowFix, activeMarketTab, liveByFixtureId[fix.id]);
+                          if (leg) handleAddDraftSlipLeg(leg);
+                        }}
+                        className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 text-[11px] font-extrabold"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Slip</span>
+                      </button>
                       {(isLive || Boolean(liveByFixtureId[fix.id])) && (
                         <button
                           type="button"
@@ -3391,6 +3610,7 @@ export default function App() {
         apiRequest={apiRequest}
         selectedPickDay={selectedPickDay}
         darkMode={darkMode}
+        onSendToBetSlip={handleSendAccaToSlip}
       />
 
       {/* Deep Match Detail & H2H Modal - Strictly Mutex Isolated */}
@@ -3435,6 +3655,38 @@ export default function App() {
         onClose={() => setShowModelDashboard(false)}
         apiRequest={apiRequest}
         darkMode={darkMode}
+      />
+
+      {/* +EV Edge Calculator & Paper Bet Ledger Modal */}
+      <BetSlipTrackerModal
+        isOpen={showBetSlipModal}
+        onClose={() => setShowBetSlipModal(false)}
+        draftLegs={draftSlipLegs}
+        onUpdateDraftLeg={handleUpdateDraftLeg}
+        onRemoveDraftLeg={handleRemoveDraftLeg}
+        onClearDraftLegs={handleClearDraftLegs}
+        apiRequest={apiRequest}
+        darkMode={darkMode}
+        onNotifyBanner={(msg) => {
+          setNotification(msg);
+          setTimeout(() => setNotification(null), 5000);
+        }}
+      />
+
+      {/* Live Browser Push, Audio Chime & Telegram Alert Rules Modal */}
+      <AlertSettingsModal
+        isOpen={showAlertSettingsModal}
+        onClose={() => setShowAlertSettingsModal(false)}
+        settings={alertSettings}
+        onUpdateSettings={handleUpdateAlertSettings}
+        availableLeagues={leaguesList}
+        watchlistCount={watchlistIds.length}
+        apiRequest={apiRequest}
+        darkMode={darkMode}
+        onNotifyBanner={(msg) => {
+          setNotification(msg);
+          setTimeout(() => setNotification(null), 5000);
+        }}
       />
     </div>
   );

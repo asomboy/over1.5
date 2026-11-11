@@ -1156,9 +1156,45 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
               {activeTab === 'live' && (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <span className="text-xs font-black uppercase tracking-wider text-white block">
-                      Live Minute-Bucket In-Play Performance
-                    </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-black uppercase tracking-wider text-white block">
+                        Live Minute-Bucket In-Play Performance
+                      </span>
+                      {liveData && (
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold">
+                            Settled Accuracy:{' '}
+                            {liveData.overall_accuracy !== null && liveData.overall_accuracy !== undefined
+                              ? `${Math.round(Number(liveData.overall_accuracy) * 100)}%`
+                              : '—'}
+                          </span>
+                          <span className="text-slate-400 font-semibold">
+                            {liveData.settled_evaluations ?? 0} graded · {liveData.settled_fixtures_count ?? 0} matches
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {Array.isArray(liveData?.market_breakdown) && liveData.market_breakdown.length > 0 && (
+                      <div className="flex flex-wrap gap-2 pb-1">
+                        {liveData.market_breakdown.map((mb) => (
+                          <div
+                            key={mb.market}
+                            className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-800 text-[11px] flex items-center gap-1.5"
+                          >
+                            <span className="font-bold text-slate-300 uppercase">
+                              {String(mb.market || '').replace(/^live_/, '').replace(/_/g, ' ')}
+                            </span>
+                            <span className="font-black text-emerald-400">
+                              {mb.accuracy !== null && mb.accuracy !== undefined
+                                ? `${Math.round(Number(mb.accuracy) * 100)}%`
+                                : '—'}
+                            </span>
+                            <span className="text-slate-500">({mb.sample_size})</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {liveData?.minute_buckets?.length > 0 ? (
                       <div className="overflow-x-auto">
@@ -1167,6 +1203,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                             <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-bold uppercase">
                               <th className="py-2 px-2">Minute Interval</th>
                               <th className="py-2 px-2 text-center">Snapshots</th>
+                              <th className="py-2 px-2 text-center">Hit Rate</th>
                               <th className="py-2 px-2 text-center">Brier</th>
                               <th className="py-2 px-2 text-center">Log Loss</th>
                               <th className="py-2 px-2 text-center">Status</th>
@@ -1177,6 +1214,11 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                               <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
                                 <td className="py-2.5 px-2 font-bold text-slate-200">{b.minute_bucket}</td>
                                 <td className="py-2.5 px-2 text-center text-white font-semibold">{b.sample_size}</td>
+                                <td className="py-2.5 px-2 text-center text-emerald-400 font-black">
+                                  {b.accuracy !== null && b.accuracy !== undefined
+                                    ? `${Math.round(Number(b.accuracy) * 100)}%`
+                                    : '—'}
+                                </td>
                                 <td className="py-2.5 px-2 text-center text-cyan-400 font-black">
                                   {formatFixed(b.brier_score, 3)}
                                 </td>

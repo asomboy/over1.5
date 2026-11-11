@@ -3,8 +3,9 @@
 # 
 # IMPORTANT: Sensitive and instance-specific environment variables 
 # (specifically FOOTBALL_API_KEY and DATABASE_URL) have sync: false.
-# They MUST be manually configured in the Render Dashboard Environment settings
-# for the soccer-goal-predictor-api service.
+# Set DATABASE_URL to a persistent external PostgreSQL database (Neon/Supabase)
+# in the Render Dashboard so Paper Bet Slips, Alert Preferences, and Live
+# Prediction Settlements persist across free-tier restarts and redeployments.
 # ==============================================================================
 
 services:
@@ -31,6 +32,10 @@ services:
       - key: ADMIN_API_KEY
         sync: false
       - key: CORS_ORIGINS
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
         sync: false
 
   # Frontend Vite React Static Site

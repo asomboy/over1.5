@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Zap, X, Copy, Check, ShieldCheck, Flame, TrendingUp, RefreshCw } from 'lucide-react';
+import { Zap, X, Copy, Check, ShieldCheck, Flame, TrendingUp, RefreshCw, Plus } from 'lucide-react';
 
-export default function AccumulatorModal({ isOpen, onClose, apiRequest, selectedPickDay, darkMode }) {
+export default function AccumulatorModal({ isOpen, onClose, apiRequest, selectedPickDay, darkMode, onSendToBetSlip }) {
   const [accumulators, setAccumulators] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('safe_double'); // 'safe_double' | 'over_1_5_5fold' | 'high_yield_3fold'
@@ -196,16 +196,46 @@ export default function AccumulatorModal({ isOpen, onClose, apiRequest, selected
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
+        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex flex-wrap items-center justify-between gap-2">
           <p className="text-[11px] text-slate-500">Always gamble responsibly.</p>
-          <button
-            onClick={copySlipToClipboard}
-            disabled={!currentAcca || !currentAcca.legs || currentAcca.legs.length === 0}
-            className="px-5 py-2.5 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-lg shadow-emerald-600/20 flex items-center gap-2 disabled:opacity-50"
-          >
-            {copied ? <Check className="w-4 h-4 text-white" /> : <Copy className="w-4 h-4 text-white" />}
-            <span>{copied ? 'Copied Slip to Clipboard!' : 'Copy Acca Slip'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {onSendToBetSlip && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!currentAcca?.legs?.length) return;
+                  const mapped = currentAcca.legs
+                    .filter((leg) => leg && leg.fixture_id)
+                    .map((leg) => ({
+                      fixture_id: Number(leg.fixture_id),
+                      match_label: leg.match || `${leg.home_team || 'Home'} vs ${leg.away_team || 'Away'}`,
+                      league_name: leg.league || '',
+                      match_date: leg.match_date || null,
+                      market: leg.market || 'Over 1.5 Goals',
+                      model_prob: Math.max(0.05, Math.min(0.95, Number(leg.probability || 75) / 100)),
+                      bookmaker_odds: '',
+                      baseline_goals: null,
+                    }));
+                  if (mapped.length > 0) {
+                    onSendToBetSlip(mapped, activeTab);
+                  }
+                }}
+                disabled={!currentAcca || !currentAcca.legs || currentAcca.legs.length === 0}
+                className="px-4 py-2.5 rounded-xl text-xs font-extrabold bg-amber-600 hover:bg-amber-500 text-white transition-all shadow-lg shadow-amber-600/20 flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4 text-white" />
+                <span>Track in +EV Slip</span>
+              </button>
+            )}
+            <button
+              onClick={copySlipToClipboard}
+              disabled={!currentAcca || !currentAcca.legs || currentAcca.legs.length === 0}
+              className="px-5 py-2.5 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-lg shadow-emerald-600/20 flex items-center gap-2 disabled:opacity-50"
+            >
+              {copied ? <Check className="w-4 h-4 text-white" /> : <Copy className="w-4 h-4 text-white" />}
+              <span>{copied ? 'Copied Slip to Clipboard!' : 'Copy Acca Slip'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

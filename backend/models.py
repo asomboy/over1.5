@@ -967,6 +967,50 @@ class LiveObservedSnapshot(Base):
     fixture = relationship("Fixture", back_populates="observed_snapshots")
 
 
+class BetSlip(Base):
+    """Tracked paper-trading / accumulator slip with automatic fixture settlement and +EV tracking."""
+    __tablename__ = "bet_slips"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, default="manual", index=True)  # manual | accumulator | live_signal
+    stake: Mapped[float] = mapped_column(Float, default=10.0)
+    combined_odds: Mapped[float] = mapped_column(Float, default=1.0)
+    expected_win_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expected_value_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING", index=True)  # PENDING | WON | LOST | VOID
+    payout: Mapped[float] = mapped_column(Float, default=0.0)
+    profit_loss: Mapped[float] = mapped_column(Float, default=0.0)
+    legs_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, index=True)
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AlertPreference(Base):
+    """Persisted user alert rules, league/market subscriptions, and notification preferences."""
+    __tablename__ = "alert_preferences"
+    __table_args__ = {'extend_existing': True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    profile_key: Mapped[str] = mapped_column(String, unique=True, default="default", index=True)
+    telegram_live_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    telegram_digest_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_live_probability: Mapped[float] = mapped_column(Float, default=0.74)
+    min_live_confidence: Mapped[int] = mapped_column(Integer, default=70)
+    min_time_remaining: Mapped[float] = mapped_column(Float, default=10.0)
+    allowed_markets_json: Mapped[str] = mapped_column(
+        Text,
+        default='["At Least 1 More Goal", "Full Match Over 1.5 Goals", "Full Match Over 2.5 Goals", "Full Match Over 3.5 Goals"]'
+    )
+    allowed_leagues_json: Mapped[str] = mapped_column(Text, default="[]")
+    quiet_hours_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    quiet_hours_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    browser_push_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    audio_chime_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
+
+
 
 
 

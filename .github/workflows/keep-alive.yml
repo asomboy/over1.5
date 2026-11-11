@@ -2,8 +2,8 @@ name: Keep Render Alive & Daily Sync
 
 on:
   schedule:
-    # Ping every 14 minutes to prevent Render free tier spin-down
-    - cron: '*/14 * * * *'
+    # Ping every 10 minutes to prevent Render free tier spin-down (buffers cron jitter)
+    - cron: '*/10 * * * *'
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 env:
@@ -27,8 +27,8 @@ jobs:
 
   daily-sync:
     runs-on: ubuntu-latest
-    # Run once in the first 14-minute tick of UTC midnight (00:00-00:13) and noon (12:00-12:13)
-    if: github.event.schedule == '*/14 * * * *' || github.event_name == 'workflow_dispatch'
+    # Run once in the first 10-minute tick of UTC midnight (00:00-00:09) and noon (12:00-12:09)
+    if: github.event.schedule == '*/10 * * * *' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Check if sync window matches
         id: check_time
@@ -37,7 +37,7 @@ jobs:
           MINUTE=$(date -u +%M)
           MIN_INT=$((10#$MINUTE))
           echo "Current UTC time: ${HOUR}:${MINUTE}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || { { [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; } && [ "$MIN_INT" -lt 14 ]; }; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || { { [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; } && [ "$MIN_INT" -lt 10 ]; }; then
             echo "sync_needed=true" >> $GITHUB_OUTPUT
           else
             echo "sync_needed=false" >> $GITHUB_OUTPUT

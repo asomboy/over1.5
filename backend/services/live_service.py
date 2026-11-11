@@ -1241,30 +1241,48 @@ class LivePredictionSnapshotService:
 
 class LiveModelEvaluationService:
     """
-    Live prediction validation across match minute buckets.
+    Live prediction validation across match minute buckets & settled match outcomes.
     """
 
     @classmethod
     def evaluate_live_performance(cls, db: Session) -> Dict[str, Any]:
         """
-        Evaluates verified live snapshots.
+        Evaluates verified live snapshots alongside settled post-match live accuracy metrics.
         """
         snapshots = db.query(LivePredictionSnapshot).all()
         n = len(snapshots)
+
+        settled_perf: Dict[str, Any] = {}
+        try:
+            try:
+                from services.model_evaluation_service import ModelEvaluationService
+            except ImportError:
+                from .model_evaluation_service import ModelEvaluationService
+            settled_perf = ModelEvaluationService.get_live_minute_performance(db)
+        except Exception:
+            settled_perf = {}
+
+        base_payload = {
+            "model_version": LIVE_MODEL_VERSION,
+            "snapshots_evaluated": n,
+            "settled_evaluations": settled_perf.get("total_live_evaluations", 0),
+            "settled_fixtures_count": settled_perf.get("settled_fixtures_count", 0),
+            "overall_accuracy": settled_perf.get("overall_accuracy"),
+            "minute_buckets": settled_perf.get("minute_buckets", []),
+            "market_breakdown": settled_perf.get("market_breakdown", []),
+        }
 
         if n < MIN_REAL_LIVE_SNAPSHOT_EVALUATION_SAMPLE:
             return {
                 "status": "insufficient_data",
                 "validation_status": "UNVALIDATED (Insufficient Real Data)",
                 "message": f"Only {n} live prediction snapshots recorded. Minimum {MIN_REAL_LIVE_SNAPSHOT_EVALUATION_SAMPLE} required for production validation.",
-                "snapshots_evaluated": n,
                 "required_snapshots": MIN_REAL_LIVE_SNAPSHOT_EVALUATION_SAMPLE,
-                "model_version": LIVE_MODEL_VERSION
+                **base_payload,
             }
 
         return {
             "status": "validated",
             "validation_status": "VALIDATED",
-            "model_version": LIVE_MODEL_VERSION,
-            "snapshots_evaluated": n
+            **base_payload,
         }
