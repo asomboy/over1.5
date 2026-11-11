@@ -2,7 +2,7 @@ import os
 import sys
 import math
 from datetime import datetime, timezone
-from typing import List, Optional, cast
+from typing import Any, List, Optional, cast
 from sqlalchemy.orm import Session
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,13 +136,17 @@ def calculate_team_statistics(
 
 
 def calculate_all_team_statistics(
-    db: Session, last_n_matches: int = 10
+    db: Session, last_n_matches: int = 10, team_ids: Optional[Any] = None
 ) -> List[TeamStatistics]:
     """
-    Calculates and saves team statistics for all teams in the database using a shared commit.
+    Calculates and saves team statistics for teams in the database using a shared commit.
+    When team_ids is provided, restricts recalculation to that subset for fast refreshes.
     """
     league_stats_map = {ls.league_id: ls for ls in db.query(LeagueStatistics).all()}
     teams = db.query(Team).all()
+    if team_ids is not None:
+        id_set = set(team_ids)
+        teams = [t for t in teams if t.id in id_set]
     calculated_stats = []
     for team in teams:
         l_stat = league_stats_map.get(team.league_id) if team.league_id else None

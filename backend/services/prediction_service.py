@@ -90,11 +90,16 @@ def _negative_binomial_pmf(k: int, mu: float, r: float = 3.0) -> float:
         return _poisson_pmf(k, mu)
 
 
-def _calculate_overdispersion_parameter(db: Session, league_id: int) -> Optional[float]:
+def _calculate_overdispersion_parameter(
+    db: Session, league_id: int, batch_cache: Optional[Dict[str, Any]] = None
+) -> Optional[float]:
     """
     Calculate the Negative Binomial dispersion parameter r from historical data.
     r = mean^2 / (variance - mean)
     """
+    cache_key = ("overdisp", league_id)
+    if batch_cache is not None and cache_key in batch_cache:
+        return batch_cache[cache_key]
     try:
         results = (
             db.query(HistoricalResult)
@@ -107,20 +112,21 @@ def _calculate_overdispersion_parameter(db: Session, league_id: int) -> Optional
         )
 
         if len(results) < 15:
-            return None
+            out = None
+        else:
+            total_goals = [res.home_score + res.away_score for res in results]
+            n = len(total_goals)
+            mean = sum(total_goals) / n
+            variance = sum((g - mean) ** 2 for g in total_goals) / n
 
-        total_goals = [res.home_score + res.away_score for res in results]
-        n = len(total_goals)
-        mean = sum(total_goals) / n
-        variance = sum((g - mean) ** 2 for g in total_goals) / n
-
-        if variance <= mean:
-            return None
-
-        r = (mean ** 2) / (variance - mean)
-        if r <= 1.0:
-            return None
-        return round(min(8.0, max(1.5, r)), 2)
+            if variance <= mean:
+                out = None
+            else:
+                r = (mean ** 2) / (variance - mean)
+                out = round(min(8.0, max(1.5, r)), 2) if r > 1.0 else None
+        if batch_cache is not None:
+            batch_cache[cache_key] = out
+        return out
     except Exception:
         return None
 
@@ -166,7 +172,8 @@ class HalfPredictionEngine:
 
     @classmethod
     def calculate_half_proportions(
-        cls, db: Optional[Session], league_id: Optional[int], home_team_id: Optional[int], away_team_id: Optional[int]
+        cls, db: Optional[Session], league_id: Optional[int], home_team_id: Optional[int], away_team_id: Optional[int],
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Tuple[float, float, float, float]:
         """
         Calculates (home_1h_ratio, home_2h_ratio, away_1h_ratio, away_2h_ratio).
@@ -175,54 +182,67 @@ class HalfPredictionEngine:
         league_1h_ratio = cls.DEFAULT_FIRST_HALF_RATIO
         
         if db and league_id:
-            try:
-                league_ht_matches = (
-                    db.query(HistoricalResult)
-                    .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-                    .filter(
-                        Fixture.league_id == league_id,
-                        HistoricalResult.half_time_home_score.isnot(None),
-                        HistoricalResult.half_time_away_score.isnot(None)
+            l_key = ("half_league", league_id)
+            if batch_cache is not None and l_key in batch_cache:
+                league_1h_ratio = batch_cache[l_key]
+            else:
+                try:
+                    league_ht_matches = (
+                        db.query(HistoricalResult)
+                        .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                        .filter(
+                            Fixture.league_id == league_id,
+                            HistoricalResult.half_time_home_score.isnot(None),
+                            HistoricalResult.half_time_away_score.isnot(None)
+                        )
+                        .limit(100)
+                        .all()
                     )
-                    .limit(100)
-                    .all()
-                )
-                if len(league_ht_matches) >= 10:
-                    tot_ht_goals = sum((r.half_time_home_score or 0) + (r.half_time_away_score or 0) for r in league_ht_matches)
-                    tot_ft_goals = sum(r.total_goals for r in league_ht_matches)
-                    if tot_ft_goals > 0:
-                        obs_ratio = tot_ht_goals / tot_ft_goals
-                        league_1h_ratio = _clamp(obs_ratio, 0.38, 0.52)
-            except Exception as e:
-                logger.debug(f"Error calculating league HT proportions: {e}")
+                    if len(league_ht_matches) >= 10:
+                        tot_ht_goals = sum((r.half_time_home_score or 0) + (r.half_time_away_score or 0) for r in league_ht_matches)
+                        tot_ft_goals = sum(r.total_goals for r in league_ht_matches)
+                        if tot_ft_goals > 0:
+                            obs_ratio = tot_ht_goals / tot_ft_goals
+                            league_1h_ratio = _clamp(obs_ratio, 0.38, 0.52)
+                except Exception as e:
+                    logger.debug(f"Error calculating league HT proportions: {e}")
+                if batch_cache is not None:
+                    batch_cache[l_key] = league_1h_ratio
 
         def get_team_ht_ratio(team_id: Optional[int], is_home: bool) -> float:
             if not db or not team_id:
                 return league_1h_ratio
-            try:
-                filter_cond = (Fixture.home_team_id == team_id) if is_home else (Fixture.away_team_id == team_id)
-                team_ht_matches = (
-                    db.query(HistoricalResult)
-                    .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-                    .filter(
-                        filter_cond,
-                        HistoricalResult.half_time_home_score.isnot(None),
-                        HistoricalResult.half_time_away_score.isnot(None)
+            t_key = ("half_team_raw", team_id, is_home)
+            if batch_cache is not None and t_key in batch_cache:
+                n, team_ht_scored, team_ft_scored = batch_cache[t_key]
+            else:
+                n, team_ht_scored, team_ft_scored = 0, 0, 0
+                try:
+                    filter_cond = (Fixture.home_team_id == team_id) if is_home else (Fixture.away_team_id == team_id)
+                    team_ht_matches = (
+                        db.query(HistoricalResult)
+                        .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                        .filter(
+                            filter_cond,
+                            HistoricalResult.half_time_home_score.isnot(None),
+                            HistoricalResult.half_time_away_score.isnot(None)
+                        )
+                        .order_by(Fixture.match_date.desc())
+                        .limit(12)
+                        .all()
                     )
-                    .order_by(Fixture.match_date.desc())
-                    .limit(12)
-                    .all()
-                )
-                n = len(team_ht_matches)
-                if n >= 5:
-                    team_ht_scored = sum((r.half_time_home_score or 0) if is_home else (r.half_time_away_score or 0) for r in team_ht_matches)
-                    team_ft_scored = sum(r.home_score if is_home else r.away_score for r in team_ht_matches)
-                    if team_ft_scored > 0:
-                        obs_team_ratio = _clamp(team_ht_scored / team_ft_scored, 0.30, 0.60)
-                        weight = min(0.6, n / 15.0)
-                        return _shrink_to_prior(obs_team_ratio, league_1h_ratio, weight)
-            except Exception as e:
-                logger.debug(f"Error calculating team HT proportions: {e}")
+                    n = len(team_ht_matches)
+                    if n >= 5:
+                        team_ht_scored = sum((r.half_time_home_score or 0) if is_home else (r.half_time_away_score or 0) for r in team_ht_matches)
+                        team_ft_scored = sum(r.home_score if is_home else r.away_score for r in team_ht_matches)
+                except Exception as e:
+                    logger.debug(f"Error calculating team HT proportions: {e}")
+                if batch_cache is not None:
+                    batch_cache[t_key] = (n, team_ht_scored, team_ft_scored)
+            if n >= 5 and team_ft_scored > 0:
+                obs_team_ratio = _clamp(team_ht_scored / team_ft_scored, 0.30, 0.60)
+                weight = min(0.6, n / 15.0)
+                return _shrink_to_prior(obs_team_ratio, league_1h_ratio, weight)
             return league_1h_ratio
 
         home_1h = get_team_ht_ratio(home_team_id, is_home=True)
@@ -299,7 +319,9 @@ class DixonColesPredictionEngine:
     """
 
     @classmethod
-    def resolve_rho_strategy(cls, db: Optional[Session], league_id: Optional[int]) -> Tuple[float, str]:
+    def resolve_rho_strategy(
+        cls, db: Optional[Session], league_id: Optional[int], batch_cache: Optional[Dict[str, Any]] = None
+    ) -> Tuple[float, str]:
         """
         Hierarchical Dixon-Coles rho estimation strategy:
         A. Competition-specific estimated rho (n >= 30 historical matches in league)
@@ -314,6 +336,10 @@ class DixonColesPredictionEngine:
 
         # Global estimate helper
         def compute_global_rho() -> Tuple[float, str]:
+            g_key = ("global_rho",)
+            if batch_cache is not None and g_key in batch_cache:
+                return batch_cache[g_key]
+            out = (DEFAULT_FALLBACK_RHO, "fallback")
             try:
                 all_results = (
                     db.query(HistoricalResult)
@@ -325,13 +351,19 @@ class DixonColesPredictionEngine:
                 n = len(all_results)
                 if n >= 50:
                     rho_est = cls._estimate_rho_from_matches(all_results)
-                    return _clamp(rho_est, MIN_RHO, MAX_RHO), "global"
+                    out = (_clamp(rho_est, MIN_RHO, MAX_RHO), "global")
             except Exception as e:
                 logger.debug(f"Global rho estimation error: {e}")
-            return DEFAULT_FALLBACK_RHO, "fallback"
+            if batch_cache is not None:
+                batch_cache[g_key] = out
+            return out
 
         if not league_id:
             return compute_global_rho()
+
+        l_key = ("rho_strategy", league_id)
+        if batch_cache is not None and l_key in batch_cache:
+            return batch_cache[l_key]
 
         # Competition-specific estimation
         try:
@@ -346,15 +378,18 @@ class DixonColesPredictionEngine:
 
             if n_league >= 30:
                 raw_rho = cls._estimate_rho_from_matches(league_results)
-                return _clamp(raw_rho, MIN_RHO, MAX_RHO), "competition"
+                out = (_clamp(raw_rho, MIN_RHO, MAX_RHO), "competition")
             elif n_league >= 10:
                 raw_comp = cls._estimate_rho_from_matches(league_results)
                 glob_rho, _ = compute_global_rho()
                 weight = n_league / 30.0
                 shrunk_rho = _shrink_to_prior(raw_comp, glob_rho, weight)
-                return _clamp(shrunk_rho, MIN_RHO, MAX_RHO), "shrunk_competition"
+                out = (_clamp(shrunk_rho, MIN_RHO, MAX_RHO), "shrunk_competition")
             else:
-                return compute_global_rho()
+                out = compute_global_rho()
+            if batch_cache is not None:
+                batch_cache[l_key] = out
+            return out
         except Exception as e:
             logger.warning(f"Competition rho resolution failed for league {league_id}: {e}. Falling back to default.")
             return compute_global_rho()
@@ -438,9 +473,77 @@ class DixonColesPredictionEngine:
 
         return h_att, h_def, a_att, a_def
 
+    @staticmethod
+    def _cached_team_stats(db: Session, team_id: int, batch_cache: Optional[Dict[str, Any]], create_if_missing: bool = False):
+        k = ("team_stats", team_id)
+        if batch_cache is not None and k in batch_cache:
+            return batch_cache[k]
+        row = db.query(TeamStatistics).filter(TeamStatistics.team_id == team_id).first()
+        if not row and create_if_missing:
+            row = calculate_team_statistics(db, team_id)
+        if not row:
+            return None
+        tup = (
+            int(row.matches_analyzed_home or 0),
+            int(row.matches_analyzed_away or 0),
+            float(row.avg_home_goals_scored or 0.0),
+            float(row.avg_away_goals_scored or 0.0),
+            float(row.home_attack_strength or 1.0),
+            float(row.home_defense_strength or 1.0),
+            float(row.away_attack_strength or 1.0),
+            float(row.away_defense_strength or 1.0),
+        )
+        if batch_cache is not None:
+            batch_cache[k] = tup
+        return tup
+
+    @staticmethod
+    def _cached_league_stats(db: Session, league_id: int, batch_cache: Optional[Dict[str, Any]], create_if_missing: bool = False):
+        k = ("league_stats", league_id)
+        if batch_cache is not None and k in batch_cache:
+            return batch_cache[k]
+        row = db.query(LeagueStatistics).filter(LeagueStatistics.league_id == league_id).first()
+        if not row and create_if_missing:
+            row = calculate_league_statistics(db, league_id)
+        if not row:
+            return None
+        tup = (
+            float(row.avg_home_goals or 0.0),
+            float(row.avg_away_goals or 0.0),
+            int(row.total_matches_analyzed or 0),
+        )
+        if batch_cache is not None:
+            batch_cache[k] = tup
+        return tup
+
+    @staticmethod
+    def _cached_elo(db: Session, team_id: int, batch_cache: Optional[Dict[str, Any]], create_if_missing: bool = False):
+        k = ("elo", team_id)
+        if batch_cache is not None and k in batch_cache:
+            return batch_cache[k]
+        row = EloRatingService.get_or_create_elo(db, team_id) if create_if_missing else db.query(EloRating).filter(EloRating.team_id == team_id).first()
+        if not row:
+            return None
+        tup = (float(row.rating), int(row.matches_played or 0))
+        if batch_cache is not None:
+            batch_cache[k] = tup
+        return tup
+
+    @staticmethod
+    def _cached_streak(db: Session, team_id: int, batch_cache: Optional[Dict[str, Any]]):
+        k = ("team_streak", team_id)
+        if batch_cache is not None and k in batch_cache:
+            return batch_cache[k]
+        row = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == team_id).first()
+        tup = (int(row.goals_scored_last_5 or 0), int(row.goals_conceded_last_5 or 0)) if row else None
+        if batch_cache is not None:
+            batch_cache[k] = tup
+        return tup
+
     @classmethod
     def calculate_confidence_details(
-        cls, db: Optional[Session], home_team_id: Optional[int], away_team_id: Optional[int], league_id: Optional[int] = None
+        cls, db: Optional[Session], home_team_id: Optional[int], away_team_id: Optional[int], league_id: Optional[int] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Computes deterministic multi-factor model confidence metrics (0-100):
@@ -458,11 +561,11 @@ class DixonColesPredictionEngine:
             }
 
         try:
-            home_stats = db.query(TeamStatistics).filter(TeamStatistics.team_id == home_team_id).first()
-            away_stats = db.query(TeamStatistics).filter(TeamStatistics.team_id == away_team_id).first()
+            h_ts = cls._cached_team_stats(db, home_team_id, batch_cache)
+            a_ts = cls._cached_team_stats(db, away_team_id, batch_cache)
 
-            h_matches = (home_stats.matches_analyzed_home + home_stats.matches_analyzed_away) if home_stats else 0
-            a_matches = (away_stats.matches_analyzed_home + away_stats.matches_analyzed_away) if away_stats else 0
+            h_matches = (h_ts[0] + h_ts[1]) if h_ts else 0
+            a_matches = (a_ts[0] + a_ts[1]) if a_ts else 0
             total_matches = h_matches + a_matches
 
             if total_matches >= 16:
@@ -476,9 +579,9 @@ class DixonColesPredictionEngine:
             else:
                 dq_base = 22
 
-            home_elo = db.query(EloRating).filter(EloRating.team_id == home_team_id).first()
-            away_elo = db.query(EloRating).filter(EloRating.team_id == away_team_id).first()
-            min_elo_m = min(home_elo.matches_played if home_elo else 0, away_elo.matches_played if away_elo else 0)
+            h_elo = cls._cached_elo(db, home_team_id, batch_cache)
+            a_elo = cls._cached_elo(db, away_team_id, batch_cache)
+            min_elo_m = min(h_elo[1] if h_elo else 0, a_elo[1] if a_elo else 0)
 
             if min_elo_m >= 10:
                 dq_base += 12
@@ -487,17 +590,17 @@ class DixonColesPredictionEngine:
             elif min_elo_m >= 1:
                 dq_base += 3
 
-            home_streak = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == home_team_id).first()
-            away_streak = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == away_team_id).first()
-            if home_streak and away_streak:
+            h_st = cls._cached_streak(db, home_team_id, batch_cache)
+            a_st = cls._cached_streak(db, away_team_id, batch_cache)
+            if h_st and a_st:
                 dq_base += 8
 
             data_quality = int(round(_clamp(dq_base, 15, 98)))
 
             stab_base = 72
             if league_id:
-                l_stats = db.query(LeagueStatistics).filter(LeagueStatistics.league_id == league_id).first()
-                tot_l_matches = l_stats.total_matches_analyzed if l_stats else 0
+                ls_tup = cls._cached_league_stats(db, league_id, batch_cache)
+                tot_l_matches = ls_tup[2] if ls_tup else 0
                 if tot_l_matches >= 30:
                     stab_base += 12
                 elif tot_l_matches >= 10:
@@ -505,14 +608,14 @@ class DixonColesPredictionEngine:
                 elif tot_l_matches < 3:
                     stab_base -= 12
 
-            if home_streak and home_stats and home_stats.avg_home_goals_scored > 0:
-                recent_avg = home_streak.goals_scored_last_5 / 5.0
-                if abs(recent_avg - home_stats.avg_home_goals_scored) > 1.8:
+            if h_st and h_ts and h_ts[2] > 0:
+                recent_avg = h_st[0] / 5.0
+                if abs(recent_avg - h_ts[2]) > 1.8:
                     stab_base -= 8
 
-            if away_streak and away_stats and away_stats.avg_away_goals_scored > 0:
-                recent_avg = away_streak.goals_scored_last_5 / 5.0
-                if abs(recent_avg - away_stats.avg_away_goals_scored) > 1.8:
+            if a_st and a_ts and a_ts[3] > 0:
+                recent_avg = a_st[0] / 5.0
+                if abs(recent_avg - a_ts[3]) > 1.8:
                     stab_base -= 8
 
             model_stability = int(round(_clamp(stab_base, 15, 98)))
@@ -552,32 +655,34 @@ class DixonColesPredictionEngine:
 
     @classmethod
     def calculate_xg(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: int, target_date: Optional[datetime] = None, venue: Optional[str] = None
+        cls, db: Session, home_team_id: int, away_team_id: int, league_id: int, target_date: Optional[datetime] = None, venue: Optional[str] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Tuple[float, float, float]:
         """Calculates expected goals for home team, away team, and total match xG."""
-        home_team = db.query(Team).filter(Team.id == home_team_id).first()
-        away_team = db.query(Team).filter(Team.id == away_team_id).first()
+        from types import SimpleNamespace
 
-        home_stats = db.query(TeamStatistics).filter(TeamStatistics.team_id == home_team_id).first()
-        if not home_stats:
-            home_stats = calculate_team_statistics(db, home_team_id)
+        def _team_ratings(tid: int):
+            rk = ("team_ratings", tid)
+            if batch_cache is not None and rk in batch_cache:
+                return batch_cache[rk]
+            t_obj = db.query(Team).filter(Team.id == tid).first()
+            ratings = cls.resolve_team_ratings(t_obj)
+            if batch_cache is not None:
+                batch_cache[rk] = ratings
+            return ratings
 
-        away_stats = db.query(TeamStatistics).filter(TeamStatistics.team_id == away_team_id).first()
-        if not away_stats:
-            away_stats = calculate_team_statistics(db, away_team_id)
+        h_ts = cls._cached_team_stats(db, home_team_id, batch_cache, create_if_missing=True)
+        a_ts = cls._cached_team_stats(db, away_team_id, batch_cache, create_if_missing=True)
+        ls_tup = cls._cached_league_stats(db, league_id, batch_cache, create_if_missing=True)
 
-        league_stats = db.query(LeagueStatistics).filter(LeagueStatistics.league_id == league_id).first()
-        if not league_stats:
-            league_stats = calculate_league_statistics(db, league_id)
+        league_avg_home = ls_tup[0] if ls_tup and ls_tup[0] > 0 else 1.45
+        league_avg_away = ls_tup[1] if ls_tup and ls_tup[1] > 0 else 1.15
 
-        league_avg_home = cast(float, league_stats.avg_home_goals) if league_stats and league_stats.avg_home_goals > 0 else 1.45
-        league_avg_away = cast(float, league_stats.avg_away_goals) if league_stats and league_stats.avg_away_goals > 0 else 1.15
+        def_h_att, def_h_def, _, _ = _team_ratings(home_team_id)
+        _, _, def_a_att, def_a_def = _team_ratings(away_team_id)
 
-        def_h_att, def_h_def, _, _ = cls.resolve_team_ratings(home_team)
-        _, _, def_a_att, def_a_def = cls.resolve_team_ratings(away_team)
-
-        n_home_m = int(home_stats.matches_analyzed_home) if home_stats else 0
-        n_away_a = int(away_stats.matches_analyzed_away) if away_stats else 0
+        n_home_m = h_ts[0] if h_ts else 0
+        n_away_a = a_ts[1] if a_ts else 0
 
         if n_home_m < 3:
             def_h_att = _clamp(def_h_att, 0.95, 1.05)
@@ -591,10 +696,10 @@ class DixonColesPredictionEngine:
         w_a_att = 0.0 if n_away_a < 3 else min(1.0, n_away_a / 5.0)
         w_a_def = 0.0 if n_away_a < 3 else min(1.0, n_away_a / 5.0)
 
-        home_attack = _shrink_to_prior(cast(float, home_stats.home_attack_strength) if home_stats else 1.0, def_h_att, w_h_att)
-        home_defense = _shrink_to_prior(cast(float, home_stats.home_defense_strength) if home_stats else 1.0, def_h_def, w_h_def)
-        away_attack = _shrink_to_prior(cast(float, away_stats.away_attack_strength) if away_stats else 1.0, def_a_att, w_a_att)
-        away_defense = _shrink_to_prior(cast(float, away_stats.away_defense_strength) if away_stats else 1.0, def_a_def, w_a_def)
+        home_attack = _shrink_to_prior(h_ts[4] if h_ts else 1.0, def_h_att, w_h_att)
+        home_defense = _shrink_to_prior(h_ts[5] if h_ts else 1.0, def_h_def, w_h_def)
+        away_attack = _shrink_to_prior(a_ts[6] if a_ts else 1.0, def_a_att, w_a_att)
+        away_defense = _shrink_to_prior(a_ts[7] if a_ts else 1.0, def_a_def, w_a_def)
 
         raw_home = home_attack * away_defense * league_avg_home
         raw_away = away_attack * home_defense * league_avg_away
@@ -602,15 +707,22 @@ class DixonColesPredictionEngine:
         # Venue Goal Multiplier
         if venue and venue.strip():
             try:
-                venue_results = (
-                    db.query(HistoricalResult)
-                    .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
-                    .filter(Fixture.venue == venue, Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
-                    .all()
-                )
+                vk = ("venue_stats", venue)
+                if batch_cache is not None and vk in batch_cache:
+                    v_cnt, v_avg = batch_cache[vk]
+                else:
+                    venue_results = (
+                        db.query(HistoricalResult)
+                        .join(Fixture, Fixture.id == HistoricalResult.fixture_id)
+                        .filter(Fixture.venue == venue, Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+                        .all()
+                    )
+                    v_cnt = len(venue_results)
+                    v_avg = (sum(res.total_goals for res in venue_results) / v_cnt) if v_cnt > 0 else 0.0
+                    if batch_cache is not None:
+                        batch_cache[vk] = (v_cnt, v_avg)
                 tot_league_avg = league_avg_home + league_avg_away
-                if len(venue_results) >= 2 and tot_league_avg > 0:
-                    v_avg = sum(res.total_goals for res in venue_results) / len(venue_results)
+                if v_cnt >= 2 and tot_league_avg > 0:
                     raw_v_mult = _clamp(v_avg / tot_league_avg, 0.85, 1.20)
                     v_mult = 0.5 + 0.5 * raw_v_mult
                     raw_home *= v_mult
@@ -619,23 +731,29 @@ class DixonColesPredictionEngine:
                 pass
 
         # Form adjustment
-        home_streak = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == home_team_id).first()
-        away_streak = db.query(TeamFormStreak).filter(TeamFormStreak.team_id == away_team_id).first()
-        if home_streak:
-            h_scored_m, h_conceded_m = _form_goal_multipliers(home_streak, league_avg_home, league_avg_away)
+        h_st = cls._cached_streak(db, home_team_id, batch_cache)
+        a_st = cls._cached_streak(db, away_team_id, batch_cache)
+        if h_st:
+            h_scored_m, h_conceded_m = _form_goal_multipliers(
+                SimpleNamespace(goals_scored_last_5=h_st[0], goals_conceded_last_5=h_st[1]),
+                league_avg_home, league_avg_away,
+            )
             raw_home *= (0.5 + 0.5 * h_scored_m)
             raw_away *= (0.5 + 0.5 * h_conceded_m)
-        if away_streak:
-            a_scored_m, a_conceded_m = _form_goal_multipliers(away_streak, league_avg_away, league_avg_home)
+        if a_st:
+            a_scored_m, a_conceded_m = _form_goal_multipliers(
+                SimpleNamespace(goals_scored_last_5=a_st[0], goals_conceded_last_5=a_st[1]),
+                league_avg_away, league_avg_home,
+            )
             raw_away *= (0.5 + 0.5 * a_scored_m)
             raw_home *= (0.5 + 0.5 * a_conceded_m)
 
         # Elo adjustment
         try:
-            home_elo_obj = EloRatingService.get_or_create_elo(db, home_team_id)
-            away_elo_obj = EloRatingService.get_or_create_elo(db, away_team_id)
-            elo_diff = (home_elo_obj.rating + EloRatingService.HOME_ADVANTAGE) - away_elo_obj.rating
-            min_elo_matches = min(home_elo_obj.matches_played, away_elo_obj.matches_played)
+            h_elo = cls._cached_elo(db, home_team_id, batch_cache, create_if_missing=True)
+            a_elo = cls._cached_elo(db, away_team_id, batch_cache, create_if_missing=True)
+            elo_diff = (h_elo[0] + EloRatingService.HOME_ADVANTAGE) - a_elo[0]
+            min_elo_matches = min(h_elo[1], a_elo[1])
             elo_weight = min(1.0, min_elo_matches / 15.0)
             goal_margin = _clamp((elo_diff / 400.0) * 1.6, -1.2, 1.2) * elo_weight
             raw_home = max(0.4, raw_home + goal_margin / 2.0)
@@ -902,7 +1020,8 @@ class DixonColesPredictionEngine:
     def calculate_poisson_probabilities(
         cls, lambda_home: float, lambda_away: float, max_goals: int = 10, rho: Optional[float] = None,
         overdispersion_r: Optional[float] = None, db: Optional[Session] = None,
-        home_team_id: Optional[int] = None, away_team_id: Optional[int] = None, league_id: Optional[int] = None
+        home_team_id: Optional[int] = None, away_team_id: Optional[int] = None, league_id: Optional[int] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Unified Match Intelligence calculator with adaptive score grid and hierarchical rho strategy.
@@ -912,17 +1031,17 @@ class DixonColesPredictionEngine:
             safe_rho = _clamp(rho, MIN_RHO, MAX_RHO)
             rho_source = "custom"
         else:
-            safe_rho, rho_source = cls.resolve_rho_strategy(db, league_id)
+            safe_rho, rho_source = cls.resolve_rho_strategy(db, league_id, batch_cache=batch_cache)
 
         matrix, grid_size, tail_diag = cls.calculate_score_matrix(lambda_home, lambda_away, max_goals=max_goals, rho=safe_rho)
         derived = cls.derive_markets_from_matrix(matrix, grid_size)
 
         # Half-by-Half goal predictions with exact sum consistency
-        half_props = HalfPredictionEngine.calculate_half_proportions(db, league_id, home_team_id, away_team_id)
+        half_props = HalfPredictionEngine.calculate_half_proportions(db, league_id, home_team_id, away_team_id, batch_cache=batch_cache)
         halves = HalfPredictionEngine.calculate_half_probabilities(lambda_home, lambda_away, half_props)
 
         # Confidence system
-        confidence = cls.calculate_confidence_details(db, home_team_id, away_team_id, league_id)
+        confidence = cls.calculate_confidence_details(db, home_team_id, away_team_id, league_id, batch_cache=batch_cache)
 
         # Best Model Signal
         best_signal = cls.determine_best_market_signal(derived, confidence)
@@ -984,7 +1103,9 @@ class DixonColesPredictionEngine:
 
     @classmethod
     def generate_match_intelligence_prediction(
-        cls, db: Session, fixture_id: int
+        cls, db: Session, fixture_id: int,
+        commit_snapshots: bool = True,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """Generates the complete validated Match Intelligence Core prediction payload for a fixture."""
         fixture = db.query(Fixture).filter(Fixture.id == fixture_id).first()
@@ -994,7 +1115,8 @@ class DixonColesPredictionEngine:
         match_date = getattr(fixture, "match_date", None)
         venue_str = getattr(fixture, "venue", None)
         xg_home, xg_away, xg_total = cls.calculate_xg(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id), target_date=match_date, venue=venue_str
+            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id),
+            target_date=match_date, venue=venue_str, batch_cache=batch_cache
         )
 
         weather_info = WeatherService.get_weather_for_venue(venue_str)
@@ -1003,18 +1125,21 @@ class DixonColesPredictionEngine:
             xg_away = round(xg_away * weather_info["xg_modifier"], 2)
             xg_total = round(xg_home + xg_away, 2)
 
-        overdispersion_r = _calculate_overdispersion_parameter(db, cast(int, fixture.league_id))
+        overdispersion_r = _calculate_overdispersion_parameter(db, cast(int, fixture.league_id), batch_cache=batch_cache)
         probs = cls.calculate_poisson_probabilities(
             xg_home, xg_away, overdispersion_r=overdispersion_r,
             db=db, home_team_id=cast(int, fixture.home_team_id),
             away_team_id=cast(int, fixture.away_team_id),
-            league_id=cast(int, fixture.league_id)
+            league_id=cast(int, fixture.league_id),
+            batch_cache=batch_cache
         )
 
         # Corners Prediction Engine integration (Phase 2)
         try:
             from services.corners_service import CornersPredictionEngine
-            corners_payload = CornersPredictionEngine.predict_corners(db, fixture_id, target_date=match_date)
+            corners_payload = CornersPredictionEngine.predict_corners(
+                db, fixture_id, target_date=match_date, commit_snapshot=commit_snapshots, batch_cache=batch_cache
+            )
         except Exception as e:
             logger.debug(f"Corners prediction generation error: {e}")
             corners_payload = {
@@ -1031,7 +1156,9 @@ class DixonColesPredictionEngine:
         # Cards Prediction Engine integration (Phase 3)
         try:
             from services.cards_service import CardsPredictionEngine
-            cards_payload = CardsPredictionEngine.predict_cards(db, fixture_id, target_date=match_date)
+            cards_payload = CardsPredictionEngine.predict_cards(
+                db, fixture_id, target_date=match_date, commit_snapshot=commit_snapshots, batch_cache=batch_cache
+            )
         except Exception as e:
             logger.debug(f"Cards prediction generation error: {e}")
             cards_payload = {
@@ -1061,94 +1188,50 @@ class DixonColesPredictionEngine:
             "confidence": probs["confidence"],
             "best_signal": probs["best_signal"],
             "corners": corners_payload,
-            "cards": cards_payload
+            "cards": cards_payload,
         }
-
         return full_payload
 
     @classmethod
-    def predict_fixture(cls, db: Session, fixture_id: int, commit: bool = True) -> Optional[Prediction]:
-        """Calculates Dixon-Coles Match Intelligence V2 predictions for a specific fixture and saves in SQLite."""
-        fixture = db.query(Fixture).filter(Fixture.id == fixture_id).first()
-        if not fixture:
+    def predict_fixture(
+        cls, db: Session, fixture_id: int, commit: bool = True, batch_cache: Optional[Dict[str, Any]] = None
+    ) -> Optional[Prediction]:
+        """Calculates Dixon-Coles Match Intelligence V2 predictions (Goals, Corners, Cards) and saves in SQLite."""
+        intel = cls.generate_match_intelligence_prediction(
+            db, fixture_id, commit_snapshots=commit, batch_cache=batch_cache
+        )
+        if not intel:
             return None
-
-        match_date = getattr(fixture, "match_date", None)
-        venue_str = getattr(fixture, "venue", None)
-        xg_home, xg_away, xg_total = cls.calculate_xg(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), cast(int, fixture.league_id), target_date=match_date, venue=venue_str
-        )
-
-        weather_info = WeatherService.get_weather_for_venue(venue_str)
-        if weather_info and weather_info.get("xg_modifier"):
-            xg_home = round(xg_home * weather_info["xg_modifier"], 2)
-            xg_away = round(xg_away * weather_info["xg_modifier"], 2)
-            xg_total = round(xg_home + xg_away, 2)
-
-        overdispersion_r = _calculate_overdispersion_parameter(db, cast(int, fixture.league_id))
-        probs = cls.calculate_poisson_probabilities(
-            xg_home, xg_away, overdispersion_r=overdispersion_r,
-            db=db, home_team_id=cast(int, fixture.home_team_id),
-            away_team_id=cast(int, fixture.away_team_id),
-            league_id=cast(int, fixture.league_id)
-        )
-
-        # Corners Prediction Engine integration (Phase 2)
-        try:
-            from services.corners_service import CornersPredictionEngine
-            corners_payload = CornersPredictionEngine.predict_corners(db, fixture_id, target_date=match_date)
-        except Exception as e:
-            logger.debug(f"Corners prediction generation error: {e}")
-            corners_payload = {
-                "available": False,
-                "reason": "Corner prediction service unavailable.",
-                "expected": None,
-                "total_markets": None,
-                "home_team": None,
-                "away_team": None,
-                "confidence": {"overall": 0, "data_quality": 0, "sample_strength": 0, "model_stability": 0, "label": "insufficient"},
-                "model": {"version": "v1_corners_nb", "dispersion": 5.5, "dispersion_source": "fallback"}
-            }
-
-        full_intelligence = {
-            "fixture_id": fixture_id,
-            "model": probs["model"],
-            "expected_goals": probs["expected_goals"],
-            "result": probs["result"],
-            "goals": probs["goals"],
-            "btts": probs["btts"],
-            "home_team_goals": probs["home_team_goals"],
-            "away_team_goals": probs["away_team_goals"],
-            "halves": probs["halves"],
-            "exact_scores": probs["exact_scores"],
-            "confidence": probs["confidence"],
-            "best_signal": probs["best_signal"],
-            "corners": corners_payload
-        }
 
         prediction = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if not prediction:
             prediction = Prediction(fixture_id=fixture_id)
             db.add(prediction)
 
-        prediction.predicted_home_score = xg_home
-        prediction.predicted_away_score = xg_away
-        prediction.expected_goals_xg = xg_total
-        prediction.home_win_probability = probs["home_win_probability"]
-        prediction.draw_probability = probs["draw_probability"]
-        prediction.away_win_probability = probs["away_win_probability"]
-        prediction.over_0_5_probability = probs["over_0_5_probability"]
-        prediction.over_1_5_probability = probs["over_1_5_probability"]
-        prediction.over_2_5_probability = probs["over_2_5_probability"]
-        prediction.over_3_5_probability = probs["over_3_5_probability"]
-        prediction.over_4_5_probability = probs["over_4_5_probability"]
-        prediction.under_2_5_probability = probs["under_2_5_probability"]
-        prediction.btts_probability = probs["btts_probability"]
-        prediction.confidence_score = probs["confidence"]["overall"] / 100.0
-        prediction.most_likely_score = probs["most_likely_score"]
-        prediction.top_scorelines_json = json.dumps(probs["top_5_scorelines"])
+        exp_goals = intel["expected_goals"]
+        res_probs = intel["result"]
+        goal_probs = intel["goals"]
+        btts_probs = intel["btts"]
+        exact_scores = intel.get("exact_scores") or []
+
+        prediction.predicted_home_score = exp_goals["home"]
+        prediction.predicted_away_score = exp_goals["away"]
+        prediction.expected_goals_xg = exp_goals["total"]
+        prediction.home_win_probability = res_probs["home_win"]
+        prediction.draw_probability = res_probs["draw"]
+        prediction.away_win_probability = res_probs["away_win"]
+        prediction.over_0_5_probability = goal_probs["over_0_5"]
+        prediction.over_1_5_probability = goal_probs["over_1_5"]
+        prediction.over_2_5_probability = goal_probs["over_2_5"]
+        prediction.over_3_5_probability = goal_probs["over_3_5"]
+        prediction.over_4_5_probability = goal_probs["over_4_5"]
+        prediction.under_2_5_probability = goal_probs["under_2_5"]
+        prediction.btts_probability = btts_probs["yes"]
+        prediction.confidence_score = intel["confidence"]["overall"] / 100.0
+        prediction.most_likely_score = exact_scores[0]["score"] if exact_scores else "1-1"
+        prediction.top_scorelines_json = json.dumps(exact_scores[:5])
         prediction.model_version = MODEL_VERSION
-        prediction.raw_intelligence_json = json.dumps(full_intelligence)
+        prediction.raw_intelligence_json = json.dumps(intel)
         prediction.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         if commit:
@@ -1165,13 +1248,14 @@ class DixonColesPredictionEngine:
         if upcoming_only:
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).replace(tzinfo=None)
             query = query.filter(Fixture.match_date >= cutoff)
-        fixtures = query.all()
+        fixtures = query.order_by(Fixture.match_date.asc()).all()
+        batch_cache: Dict[str, Any] = {}
         predictions = []
         for idx, f in enumerate(fixtures, 1):
-            pred = cls.predict_fixture(db, cast(int, f.id), commit=False)
+            pred = cls.predict_fixture(db, cast(int, f.id), commit=False, batch_cache=batch_cache)
             if pred:
                 predictions.append(pred)
-            if idx % 50 == 0:
+            if idx == 20 or idx % 50 == 0:
                 db.commit()
         db.commit()
         return predictions

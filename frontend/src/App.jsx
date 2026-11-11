@@ -31,6 +31,8 @@ import AccumulatorModal from './components/AccumulatorModal';
 import MatchDetailModal from './components/MatchDetailModal';
 import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal';
 import ModelIntelligenceDashboard from './components/ModelIntelligenceDashboard';
+import FixtureMarketsPanel from './components/FixtureMarketsPanel';
+import { TABLE_MARKET_TABS, pctVal } from './utils/marketTabs';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
@@ -251,10 +253,142 @@ export default function App() {
     );
   };
 
+  // Table 2 Market Tabs & Per-Row Expandable Markets state
+  const [activeMarketTab, setActiveMarketTab] = useState('overview');
+  const [expandedTableRows, setExpandedTableRows] = useState({});
+  const [expandedRowMarketTabs, setExpandedRowMarketTabs] = useState({});
+  const [extraMarketsMap, setExtraMarketsMap] = useState({});
+  const [loadingExtraMap, setLoadingExtraMap] = useState({});
+
+  const ensureExtraFixtureMarkets = useCallback(async (fix) => {
+    const fixtureId = typeof fix === 'object' ? fix?.id : fix;
+    if (!fixtureId) return;
+    const hasCorners = typeof fix === 'object' ? Boolean(fix?.corners?.total_markets) : false;
+    const hasCards = typeof fix === 'object' ? Boolean(fix?.cards?.total_markets) : false;
+    if (extraMarketsMap[fixtureId] || (hasCorners && hasCards)) return;
+    setLoadingExtraMap(prev => (prev[fixtureId] ? prev : { ...prev, [fixtureId]: true }));
+    try {
+      const res = await apiRequest('get', `/api/fixtures/${fixtureId}`, null, { timeout: 15000 });
+      const data = res?.data;
+      if (data && (data.corners || data.cards || data.prediction)) {
+        setExtraMarketsMap(prev => ({
+          ...prev,
+          [fixtureId]: {
+            ...(data.prediction ? { prediction: data.prediction } : {}),
+            ...(data.corners !== undefined ? { corners: data.corners } : {}),
+            ...(data.cards !== undefined ? { cards: data.cards } : {}),
+          },
+        }));
+      }
+    } catch (err) {
+      console.warn(`Failed to lazy-load extra markets for fixture ${fixtureId}:`, err);
+    } finally {
+      setLoadingExtraMap(prev => {
+        if (!prev[fixtureId]) return prev;
+        const next = { ...prev };
+        delete next[fixtureId];
+        return next;
+      });
+    }
+  }, [extraMarketsMap]);
+
+  const toggleTableRowMarkets = useCallback((fix) => {
+    if (!fix?.id) return;
+    const willOpen = !expandedTableRows[fix.id];
+    setExpandedTableRows(prev => ({ ...prev, [fix.id]: willOpen }));
+    if (willOpen) {
+      setExpandedRowMarketTabs(prev => (
+        prev[fix.id]
+          ? prev
+          : { ...prev, [fix.id]: activeMarketTab === 'overview' ? 'goals_ou' : activeMarketTab }
+      ));
+      const mergedCorners = extraMarketsMap[fix.id]?.corners || fix.corners;
+      const mergedCards = extraMarketsMap[fix.id]?.cards || fix.cards;
+      if (!mergedCorners?.total_markets || !mergedCards?.total_markets) {
+        ensureExtraFixtureMarkets(fix);
+      }
+    }
+  }, [expandedTableRows, activeMarketTab, extraMarketsMap, ensureExtraFixtureMarkets]);
+
+  const handleRowMarketTabChange = useCallback((fix, tabId) => {
+    if (!fix?.id) return;
+    setExpandedRowMarketTabs(prev => ({ ...prev, [fix.id]: tabId }));
+    const mergedCorners = extraMarketsMap[fix.id]?.corners || fix.corners;
+    const mergedCards = extraMarketsMap[fix.id]?.cards || fix.cards;
+    if ((tabId === 'corners' && !mergedCorners?.total_markets) || (tabId === 'cards' && !mergedCards?.total_markets)) {
+      ensureExtraFixtureMarkets(fix);
+    }
+  }, [extraMarketsMap, ensureExtraFixtureMarkets]);
+
+  const getRowMobileSummaryBadge = (rowFix) => {
+    const pred = rowFix.prediction || {};
+    const corners = rowFix.corners;
+    const cards = rowFix.cards;
+    if (activeMarketTab === 'goals_ou') {
+      const o25 = pctVal(pred.over_2_5_probability);
+      return o25 !== null ? `O2.5: ${o25}%` : 'O2.5: —';
+    }
+    if (activeMarketTab === 'corners') {
+      const cTot = corners?.expected?.total;
+      const cO85 = pctVal(corners?.total_markets?.over_8_5);
+      return cTot != null ? `${formatFixed(cTot, 1)}c (${cO85 ?? '—'}%)` : 'Corners';
+    }
+    if (activeMarketTab === 'cards') {
+      const kTot = cards?.expected?.total;
+      const kO35 = pctVal(cards?.total_markets?.over_3_5);
+      return kTot != null ? `${formatFixed(kTot, 1)}k (${kO35 ?? '—'}%)` : 'Cards';
+    }
+    if (activeMarketTab === 'halves') {
+      const h1 = pctVal(pred.first_half_over_0_5_probability);
+      return h1 !== null ? `1H: ${h1}%` : '1H: —';
+    }
+    if (activeMarketTab === 'team_goals') {
+      const ho15 = pctVal(pred.home_over_1_5_probability);
+      return ho15 !== null ? `H O1.5: ${ho15}%` : 'Teams';
+    }
+    const o15 = Math.round((pred.over_1_5_probability || 0) * 100);
+    return `${o15}%`;
+  };
+
+  const renderTableMarketTabsBar = () => (
+    <div className={`px-3 sm:px-4 py-2.5 border-b flex items-center justify-between gap-2 flex-wrap ${
+      darkMode ? 'border-slate-800/80 bg-slate-950/60' : 'border-slate-200 bg-slate-50/90'
+    }`}>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mr-1 hidden md:inline">
+          Markets:
+        </span>
+        {TABLE_MARKET_TABS.map((tab) => {
+          const isSelected = activeMarketTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveMarketTab(tab.id)}
+              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all border whitespace-nowrap ${
+                isSelected
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-sm'
+                  : darkMode
+                  ? 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                  : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="text-[10px] font-medium text-slate-400 hidden sm:inline">
+        Click &ldquo;Markets&rdquo; on any row to expand all options inline
+      </span>
+    </div>
+  );
+
   // Mobile Accordion state to track expanded fixture IDs
   const [expandedMobileRows, setExpandedMobileRows] = useState(new Set());
 
-  const toggleMobileRow = (fixId) => {
+  const toggleMobileRow = (fixId, fixObj = null) => {
+    const willExpand = !expandedMobileRows.has(fixId);
     setExpandedMobileRows(prev => {
       const next = new Set(prev);
       if (next.has(fixId)) {
@@ -264,6 +398,13 @@ export default function App() {
       }
       return next;
     });
+    if (willExpand && fixObj) {
+      const mergedCorners = extraMarketsMap[fixObj.id]?.corners || fixObj.corners;
+      const mergedCards = extraMarketsMap[fixObj.id]?.cards || fixObj.cards;
+      if (!mergedCorners?.total_markets || !mergedCards?.total_markets) {
+        ensureExtraFixtureMarkets(fixObj);
+      }
+    }
   };
 
   // Backend health status state
@@ -692,6 +833,9 @@ export default function App() {
       if (sortBy === 'FIRST_HALF_OVER_0_5_DESC') return (b.prediction?.first_half_over_0_5_probability || 0) - (a.prediction?.first_half_over_0_5_probability || 0);
       if (sortBy === 'SECOND_HALF_OVER_0_5_DESC') return (b.prediction?.second_half_over_0_5_probability || 0) - (a.prediction?.second_half_over_0_5_probability || 0);
       if (sortBy === 'OVER_2_5_DESC') return (b.prediction?.over_2_5_probability || 0) - (a.prediction?.over_2_5_probability || 0);
+      if (sortBy === 'BTTS_DESC') return (b.prediction?.btts_probability || 0) - (a.prediction?.btts_probability || 0);
+      if (sortBy === 'CORNERS_O95_DESC') return ((extraMarketsMap[b.id]?.corners || b.corners)?.total_markets?.over_9_5 || 0) - ((extraMarketsMap[a.id]?.corners || a.corners)?.total_markets?.over_9_5 || 0);
+      if (sortBy === 'CARDS_O35_DESC') return ((extraMarketsMap[b.id]?.cards || b.cards)?.total_markets?.over_3_5 || 0) - ((extraMarketsMap[a.id]?.cards || a.cards)?.total_markets?.over_3_5 || 0);
       if (sortBy === 'XG_DESC') return (b.prediction?.expected_goals_xg || 0) - (a.prediction?.expected_goals_xg || 0);
       
       const tA = parseMatchDate(a.match_date)?.getTime() || 0;
@@ -700,7 +844,7 @@ export default function App() {
     });
 
     return result;
-  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, sortBy]);
+  }, [fixtures, searchTerm, selectedLeague, selectedPickDay, showValueBetsOnly, sortBy, extraMarketsMap]);
 
   // Filtered Finished Fixtures for Results Tab (Strict Day & League Filtering)
   const filteredFinishedFixtures = useMemo(() => {
@@ -2118,6 +2262,9 @@ export default function App() {
                   <option value="FIRST_HALF_OVER_0_5_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest 1st Half Over 0.5 %</option>
                   <option value="SECOND_HALF_OVER_0_5_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest 2nd Half Over 0.5 %</option>
                   <option value="OVER_2_5_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest Over 2.5 %</option>
+                  <option value="BTTS_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest BTTS Yes %</option>
+                  <option value="CORNERS_O95_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest Corners O9.5 %</option>
+                  <option value="CARDS_O35_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest Cards O3.5 %</option>
                   <option value="XG_DESC" className={darkMode ? 'bg-slate-900' : 'bg-white'}>Highest Total xG</option>
                 </select>
               </div>
@@ -2204,17 +2351,21 @@ export default function App() {
               </div>
             </div>
 
+            {renderTableMarketTabsBar()}
+
             {/* MOBILE ACCORDION VIEW (< sm BREAKPOINT) */}
             <div className="block sm:hidden p-2 space-y-2">
               {paginatedFixtures.map(fix => {
-                const pred = fix.prediction || {};
+                const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+                const pred = rowFix.prediction || {};
                 const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
                 const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
                 const drawPct = Math.round((pred.draw_probability || 0) * 100);
                 const awayWinPct = Math.round((pred.away_win_probability || 0) * 100);
-                const isLive = isMatchLive(fix);
+                const isLive = isMatchLive(rowFix);
                 const isExpanded = expandedMobileRows.has(`table2-${fix.id}`);
                 const brightnessClass = getPercentageColorClass(over15Pct);
+                const mobileRowTab = expandedRowMarketTabs[fix.id] || (activeMarketTab === 'overview' ? 'goals_ou' : activeMarketTab);
 
                 return (
                   <div 
@@ -2227,7 +2378,7 @@ export default function App() {
                   >
                     {/* Compact Header Row (Team Names & Live Score) */}
                     <div 
-                      onClick={() => toggleMobileRow(`table2-${fix.id}`)}
+                      onClick={() => toggleMobileRow(`table2-${fix.id}`, rowFix)}
                       className="p-3 flex items-center justify-between gap-2 cursor-pointer active:bg-slate-800/40"
                     >
                       {/* Teams Matchup */}
@@ -2260,10 +2411,10 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Right: Over 1.5 % Badge & Chevron Toggle */}
+                      {/* Right: Active Market Summary Badge & Chevron Toggle */}
                       <div className="flex items-center gap-1.5 shrink-0">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${brightnessClass}`}>
-                          {over15Pct}%
+                          {getRowMobileSummaryBadge(rowFix)}
                         </span>
                         <div className="p-1 rounded-lg text-slate-400">
                           {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-400" /> : <ChevronDown className="w-4 h-4" />}
@@ -2271,9 +2422,9 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Accordion Expanded Details Panel */}
+                    {/* Accordion Expanded Details & Multi-Market Tabs Panel */}
                     {isExpanded && (
-                      <div className={`p-3 border-t space-y-2 text-xs transition-all ${
+                      <div className={`p-3 border-t space-y-2.5 text-xs transition-all ${
                         darkMode ? 'border-slate-800/80 bg-slate-900/90' : 'border-slate-100 bg-slate-50'
                       }`}>
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -2289,6 +2440,18 @@ export default function App() {
                             </span>
                           </div>
                         </div>
+
+                        <FixtureMarketsPanel
+                          fix={rowFix}
+                          activeRowTab={mobileRowTab}
+                          onChangeRowTab={(tabId) => handleRowMarketTabChange(rowFix, tabId)}
+                          darkMode={darkMode}
+                          getPercentageColorClass={getPercentageColorClass}
+                          formatFixed={formatFixed}
+                          loadingExtra={Boolean(loadingExtraMap[fix.id])}
+                          compact
+                          onOpenFullModal={openFixtureDetail}
+                        />
 
                         {/* 1X2 Probabilities Bar */}
                         <div className="p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-1">
@@ -2331,25 +2494,56 @@ export default function App() {
                     <th className="py-3.5 px-4">Status / Kickoff (GMT+1)</th>
                     <th className="py-3.5 px-4">Competition / League</th>
                     <th className="py-3.5 px-4">Matchup & Live Score</th>
-                    <th className="py-3.5 px-4 text-center">Over 1.5 Goals %</th>
-                    <th className="py-3.5 px-4 text-center">xG (H - A)</th>
-                    <th className="py-3.5 px-4 text-center">1X2 Odds</th>
-                    <th className="py-3.5 px-4 text-right">Details</th>
+                    <th className="py-3.5 px-4 text-center">
+                      {activeMarketTab === 'goals_ou' ? 'Over 1.5 / 2.5 %'
+                        : activeMarketTab === 'corners' ? 'Exp Corners (H - A)'
+                        : activeMarketTab === 'cards' ? 'Exp Cards (H - A)'
+                        : activeMarketTab === 'halves' ? '1st Half O0.5 / O1.5'
+                        : activeMarketTab === 'team_goals' ? 'Home Goals (O0.5 / O1.5)'
+                        : 'Over 1.5 Goals %'}
+                    </th>
+                    <th className="py-3.5 px-4 text-center">
+                      {activeMarketTab === 'goals_ou' ? 'O0.5 / O3.5 / O4.5'
+                        : activeMarketTab === 'corners' ? 'Corners O8.5 / O9.5'
+                        : activeMarketTab === 'cards' ? 'Cards O3.5 / O4.5'
+                        : activeMarketTab === 'halves' ? '2nd Half O0.5 / O1.5'
+                        : activeMarketTab === 'team_goals' ? 'Away Goals (O0.5 / O1.5)'
+                        : 'xG (H - A)'}
+                    </th>
+                    <th className="py-3.5 px-4 text-center">
+                      {activeMarketTab === 'goals_ou' ? 'BTTS (Yes / No)'
+                        : activeMarketTab === 'corners' ? 'O10.5 / U9.5 Corners'
+                        : activeMarketTab === 'cards' ? 'O2.5 / Red Card Risk'
+                        : activeMarketTab === 'halves' ? '1H / 2H xG Split'
+                        : activeMarketTab === 'team_goals' ? '1X2 & Top Score'
+                        : '1X2 Odds'}
+                    </th>
+                    <th className="py-3.5 px-4 text-right">Markets & Details</th>
                   </tr>
                 </thead>
                 <tbody className={`divide-y text-xs ${darkMode ? 'divide-slate-800/80' : 'divide-slate-100'}`}>
                   {paginatedFixtures.map(fix => {
-                    const pred = fix.prediction || {};
+                    const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+                    const pred = rowFix.prediction || {};
+                    const corners = rowFix.corners;
+                    const cards = rowFix.cards;
                     const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
                     const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
                     const drawPct = Math.round((pred.draw_probability || 0) * 100);
                     const awayWinPct = Math.round((pred.away_win_probability || 0) * 100);
-                    const isLive = isMatchLive(fix);
+                    const isLive = isMatchLive(rowFix);
                     const brightnessClass = getPercentageColorClass(over15Pct);
+                    const isRowExpanded = Boolean(expandedTableRows[fix.id]);
+                    const rowActiveTab = expandedRowMarketTabs[fix.id] || (activeMarketTab === 'overview' ? 'goals_ou' : activeMarketTab);
+
+                    const bttsYesPct = pctVal(pred.btts_probability);
+                    const bttsNoPct = pctVal(
+                      pred.btts_no_probability ?? (pred.btts_probability != null ? Math.max(0, 1 - Number(pred.btts_probability)) : null)
+                    );
 
                     return (
+                      <React.Fragment key={fix.id}>
                       <tr 
-                        key={fix.id} 
                         onClick={() => openFixtureDetail(fix.id, 'decision_intel')}
                         className={`group cursor-pointer transition-all ${
                           isLive
@@ -2434,65 +2628,250 @@ export default function App() {
                           </div>
                         </td>
 
-                        {/* Over 1.5 Goals % Badge */}
+                        {/* Dynamic Market Col 4 */}
                         <td className="py-3 px-4 text-center">
-                          <div className="flex flex-col items-center gap-1">
-                            <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
-                              <Flame className="w-3 h-3 fill-current" />
-                              <span>Over 1.5: {over15Pct}%</span>
-                            </span>
-                            {fix.value_bet?.is_value_bet && fix.value_bet?.value_edge_pct != null ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet.value_edge_pct}%`}>
-                                💎 Value ({fix.value_bet.model_odds})
+                          {activeMarketTab === 'goals_ou' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-2.5 py-0.5 rounded-full text-xs font-mono ${brightnessClass}`}>
+                                O1.5: {over15Pct}%
                               </span>
-                            ) : (over15Pct >= 78 && fix.value_bet?.model_odds != null && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800/70 text-cyan-300 border border-slate-700 inline-flex items-center gap-1" title="Implied fair model odds (no external bookmaker margin)">
-                                Fair Odds: {fix.value_bet.model_odds}
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(pred.over_2_5_probability) ?? 0)}`}>
+                                O2.5: {pctVal(pred.over_2_5_probability) ?? '—'}%
                               </span>
-                            ))}
-                          </div>
+                            </div>
+                          ) : activeMarketTab === 'corners' ? (
+                            corners?.expected?.total != null ? (
+                              <div className="flex flex-col items-center">
+                                <span className="font-mono font-black text-xs text-amber-300">
+                                  {formatFixed(corners.expected.total, 2)} Total
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  H {formatFixed(corners.expected.home, 1)} - A {formatFixed(corners.expected.away, 1)}
+                                </span>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix); }}
+                                className="text-[10px] font-semibold text-slate-400 hover:text-emerald-400 underline"
+                              >
+                                {loadingExtraMap[fix.id] ? 'Loading...' : 'Load Corners'}
+                              </button>
+                            )
+                          ) : activeMarketTab === 'cards' ? (
+                            cards?.expected?.total != null ? (
+                              <div className="flex flex-col items-center">
+                                <span className="font-mono font-black text-xs text-amber-300">
+                                  {formatFixed(cards.expected.total, 2)} Total
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  H {formatFixed(cards.expected.home, 1)} - A {formatFixed(cards.expected.away, 1)}
+                                </span>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); ensureExtraFixtureMarkets(rowFix); }}
+                                className="text-[10px] font-semibold text-slate-400 hover:text-emerald-400 underline"
+                              >
+                                {loadingExtraMap[fix.id] ? 'Loading...' : 'Load Cards'}
+                              </button>
+                            )
+                          ) : activeMarketTab === 'halves' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(pred.first_half_over_0_5_probability) ?? 0)}`}>
+                                1H O0.5: {pctVal(pred.first_half_over_0_5_probability) ?? '—'}%
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                1H O1.5: {pctVal(pred.first_half_over_1_5_probability) ?? '—'}%
+                              </span>
+                            </div>
+                          ) : activeMarketTab === 'team_goals' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(pred.home_over_0_5_probability) ?? 0)}`}>
+                                H O0.5: {pctVal(pred.home_over_0_5_probability) ?? '—'}%
+                              </span>
+                              <span className="text-[10px] text-slate-300 font-mono">
+                                H O1.5: {pctVal(pred.home_over_1_5_probability) ?? '—'}%
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-3 py-1 rounded-full text-xs font-mono inline-flex items-center gap-1 ${brightnessClass}`}>
+                                <Flame className="w-3 h-3 fill-current" />
+                                <span>Over 1.5: {over15Pct}%</span>
+                              </span>
+                              {fix.value_bet?.is_value_bet && fix.value_bet?.value_edge_pct != null ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 inline-flex items-center gap-1" title={`Model Edge: +${fix.value_bet.value_edge_pct}%`}>
+                                  💎 Value ({fix.value_bet.model_odds})
+                                </span>
+                              ) : (over15Pct >= 78 && fix.value_bet?.model_odds != null && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800/70 text-cyan-300 border border-slate-700 inline-flex items-center gap-1" title="Implied fair model odds (no external bookmaker margin)">
+                                  Fair Odds: {fix.value_bet.model_odds}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </td>
 
-                        {/* Expected Goals xG */}
+                        {/* Dynamic Market Col 5 */}
                         <td className="py-3 px-4 text-center">
-                          <div className="flex flex-col items-center">
-                            <span className="font-mono font-black text-xs text-slate-200">
-                              {formatFixed(pred.predicted_home_score, 2)} - {formatFixed(pred.predicted_away_score, 2)}
-                            </span>
-                            <span className="text-[10px] text-slate-400">Total: {formatFixed(pred.expected_goals_xg, 2)}</span>
-                          </div>
+                          {activeMarketTab === 'goals_ou' ? (
+                            <div className="flex flex-col items-center gap-0.5 font-mono text-[11px]">
+                              <span className="text-emerald-400 font-bold">O0.5: {pctVal(pred.over_0_5_probability) ?? '—'}%</span>
+                              <span className="text-slate-300">O3.5: {pctVal(pred.over_3_5_probability) ?? '—'}%</span>
+                              <span className="text-slate-400 text-[10px]">O4.5: {pctVal(pred.over_4_5_probability) ?? '—'}%</span>
+                            </div>
+                          ) : activeMarketTab === 'corners' ? (
+                            corners?.total_markets ? (
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(corners.total_markets.over_8_5) ?? 0)}`}>
+                                  O8.5: {pctVal(corners.total_markets.over_8_5) ?? '—'}%
+                                </span>
+                                <span className="text-[10px] text-slate-300 font-mono">
+                                  O9.5: {pctVal(corners.total_markets.over_9_5) ?? '—'}%
+                                </span>
+                              </div>
+                            ) : <span className="text-slate-500">—</span>
+                          ) : activeMarketTab === 'cards' ? (
+                            cards?.total_markets ? (
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(cards.total_markets.over_3_5) ?? 0)}`}>
+                                  O3.5: {pctVal(cards.total_markets.over_3_5) ?? '—'}%
+                                </span>
+                                <span className="text-[10px] text-slate-300 font-mono">
+                                  O4.5: {pctVal(cards.total_markets.over_4_5) ?? '—'}%
+                                </span>
+                              </div>
+                            ) : <span className="text-slate-500">—</span>
+                          ) : activeMarketTab === 'halves' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(pred.second_half_over_0_5_probability) ?? 0)}`}>
+                                2H O0.5: {pctVal(pred.second_half_over_0_5_probability) ?? '—'}%
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                2H O1.5: {pctVal(pred.second_half_over_1_5_probability) ?? '—'}%
+                              </span>
+                            </div>
+                          ) : activeMarketTab === 'team_goals' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${getPercentageColorClass(pctVal(pred.away_over_0_5_probability) ?? 0)}`}>
+                                A O0.5: {pctVal(pred.away_over_0_5_probability) ?? '—'}%
+                              </span>
+                              <span className="text-[10px] text-slate-300 font-mono">
+                                A O1.5: {pctVal(pred.away_over_1_5_probability) ?? '—'}%
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center">
+                              <span className="font-mono font-black text-xs text-slate-200">
+                                {formatFixed(pred.predicted_home_score, 2)} - {formatFixed(pred.predicted_away_score, 2)}
+                              </span>
+                              <span className="text-[10px] text-slate-400">Total: {formatFixed(pred.expected_goals_xg, 2)}</span>
+                            </div>
+                          )}
                         </td>
 
-                        {/* 1X2 Odds Quick Bar */}
+                        {/* Dynamic Market Col 6 */}
                         <td className="py-3 px-4 text-center w-36">
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[10px] font-bold text-slate-400">
-                              <span className="text-emerald-400">{homeWinPct}%</span>
-                              <span className="text-slate-300">{drawPct}%</span>
-                              <span className="text-cyan-400">{awayWinPct}%</span>
+                          {activeMarketTab === 'goals_ou' ? (
+                            <div className="flex flex-col items-center gap-1 font-mono">
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] ${getPercentageColorClass(bttsYesPct ?? 0)}`}>
+                                BTTS Yes: {bttsYesPct ?? '—'}%
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                No: {bttsNoPct ?? '—'}% &bull; U2.5: {pctVal(pred.under_2_5_probability) ?? '—'}%
+                              </span>
                             </div>
-                            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden flex">
-                              <div style={{ width: `${homeWinPct}%` }} className="bg-emerald-500" />
-                              <div style={{ width: `${drawPct}%` }} className="bg-slate-400" />
-                              <div style={{ width: `${awayWinPct}%` }} className="bg-cyan-500" />
+                          ) : activeMarketTab === 'corners' ? (
+                            corners?.total_markets ? (
+                              <div className="flex flex-col items-center gap-0.5 font-mono text-[11px]">
+                                <span className="text-slate-200 font-bold">O10.5: {pctVal(corners.total_markets.over_10_5) ?? '—'}%</span>
+                                <span className="text-[10px] text-slate-400">U9.5: {pctVal(corners.total_markets.under_9_5) ?? '—'}%</span>
+                              </div>
+                            ) : <span className="text-slate-500">—</span>
+                          ) : activeMarketTab === 'cards' ? (
+                            cards?.total_markets ? (
+                              <div className="flex flex-col items-center gap-0.5 font-mono text-[11px]">
+                                <span className="text-slate-200 font-bold">O2.5: {pctVal(cards.total_markets.over_2_5) ?? '—'}%</span>
+                                <span className="text-[10px] text-rose-400">Red: {pctVal(cards.red_card_risk?.any_red_prob) ?? '—'}%</span>
+                              </div>
+                            ) : <span className="text-slate-500">—</span>
+                          ) : activeMarketTab === 'halves' ? (
+                            <div className="flex flex-col items-center font-mono text-[11px]">
+                              <span className="text-emerald-300 font-bold">1H xG: {pred.first_half_xg != null ? formatFixed(pred.first_half_xg, 2) : '—'}</span>
+                              <span className="text-cyan-300 font-bold">2H xG: {pred.second_half_xg != null ? formatFixed(pred.second_half_xg, 2) : '—'}</span>
                             </div>
-                          </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                                <span className="text-emerald-400">{homeWinPct}%</span>
+                                <span className="text-slate-300">{drawPct}%</span>
+                                <span className="text-cyan-400">{awayWinPct}%</span>
+                              </div>
+                              <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden flex">
+                                <div style={{ width: `${homeWinPct}%` }} className="bg-emerald-500" />
+                                <div style={{ width: `${drawPct}%` }} className="bg-slate-400" />
+                                <div style={{ width: `${awayWinPct}%` }} className="bg-cyan-500" />
+                              </div>
+                              {activeMarketTab === 'team_goals' && pred.most_likely_score && (
+                                <span className="text-[10px] text-slate-400 font-mono block">Score: {pred.most_likely_score}</span>
+                              )}
+                            </div>
+                          )}
                         </td>
 
-                        {/* Detail Button */}
+                        {/* Markets Toggle & Detail Button */}
                         <td className="py-3 px-4 text-right">
-                          <button 
-                            onClick={(e) => { 
-                              e.stopPropagation(); 
-                              openFixtureDetail(fix.id, 'h2h');
-                            }}
-                            className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
-                          >
-                            <span>H2H & Details</span>
-                            <ArrowUpRight className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="inline-flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleTableRowMarkets(rowFix);
+                              }}
+                              className={`px-2 py-1.5 rounded-lg border transition-all inline-flex items-center gap-1 font-bold text-[11px] ${
+                                isRowExpanded
+                                  ? 'bg-emerald-600 text-white border-emerald-400'
+                                  : darkMode
+                                  ? 'text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/15'
+                                  : 'text-cyan-700 border-cyan-300 hover:bg-cyan-50'
+                              }`}
+                              title="Show/Hide inline markets for this fixture"
+                            >
+                              <span>Markets</span>
+                              {isRowExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </button>
+                            <button 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                openFixtureDetail(fix.id, 'h2h');
+                              }}
+                              className="p-1.5 rounded-lg text-emerald-400 hover:text-white hover:bg-emerald-600/20 border border-emerald-500/30 transition-all inline-flex items-center gap-1 font-semibold text-xs"
+                            >
+                              <span>Details</span>
+                              <ArrowUpRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
+                      {isRowExpanded && (
+                        <tr className={darkMode ? 'bg-slate-900/40' : 'bg-slate-50/80'}>
+                          <td colSpan={7} className="px-4 py-3">
+                            <FixtureMarketsPanel
+                              fix={rowFix}
+                              activeRowTab={rowActiveTab}
+                              onChangeRowTab={(tabId) => handleRowMarketTabChange(rowFix, tabId)}
+                              darkMode={darkMode}
+                              getPercentageColorClass={getPercentageColorClass}
+                              formatFixed={formatFixed}
+                              loadingExtra={Boolean(loadingExtraMap[fix.id])}
+                              onOpenFullModal={openFixtureDetail}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -2546,15 +2925,20 @@ export default function App() {
           
           /* GRID VIEW MODE */
           <div className="space-y-6">
+          <div className={`rounded-2xl border overflow-hidden ${darkMode ? 'border-slate-800 bg-slate-900/60' : 'border-slate-200 bg-white'}`}>
+            {renderTableMarketTabsBar()}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {paginatedFixtures.map(fix => {
-              const pred = fix.prediction || {};
+              const rowFix = extraMarketsMap[fix.id] ? { ...fix, ...extraMarketsMap[fix.id] } : fix;
+              const pred = rowFix.prediction || {};
               const over15Pct = Math.round((pred.over_1_5_probability || 0) * 100);
               const homeWinPct = Math.round((pred.home_win_probability || 0) * 100);
               const drawPct = Math.round((pred.draw_probability || 0) * 100);
               const awayWinPct = Math.round((pred.away_win_probability || 0) * 100);
-              const isLive = isMatchLive(fix);
+              const isLive = isMatchLive(rowFix);
               const brightnessClass = getPercentageColorClass(over15Pct);
+              const cardTab = expandedRowMarketTabs[fix.id] || activeMarketTab;
 
               return (
                 <div 
@@ -2640,17 +3024,61 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Over 1.5 Goals Outcome (Right After Matchup - Brightness Color Differentiated) */}
-                  <div className={`p-3 rounded-2xl border flex items-center justify-between ${
-                    over15Pct >= 80 ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-slate-900/80 border-slate-800'
-                  }`}>
-                    <div>
-                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Over 1.5 Goals Outcome</span>
-                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-mono inline-block mt-0.5 ${brightnessClass}`}>
-                        Over 1.5: {over15Pct}%
-                      </span>
+                  {/* Inline Market Switcher Tabs per Card */}
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="space-y-2.5"
+                  >
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {TABLE_MARKET_TABS.map((tab) => {
+                        const isCardTab = cardTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRowMarketTabChange(rowFix, tab.id);
+                            }}
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all ${
+                              isCardTab
+                                ? 'bg-emerald-600 text-white border-emerald-400'
+                                : darkMode
+                                ? 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                                : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            {tab.shortLabel}
+                          </button>
+                        );
+                      })}
                     </div>
-                    <Flame className="w-5 h-5 text-amber-400" />
+
+                    {cardTab === 'overview' ? (
+                      <div className={`p-3 rounded-2xl border flex items-center justify-between ${
+                        over15Pct >= 80 ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-slate-900/80 border-slate-800'
+                      }`}>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">Over 1.5 Goals Outcome</span>
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-mono inline-block mt-0.5 ${brightnessClass}`}>
+                            Over 1.5: {over15Pct}%
+                          </span>
+                        </div>
+                        <Flame className="w-5 h-5 text-amber-400" />
+                      </div>
+                    ) : (
+                      <FixtureMarketsPanel
+                        fix={rowFix}
+                        activeRowTab={cardTab}
+                        onChangeRowTab={(tabId) => handleRowMarketTabChange(rowFix, tabId)}
+                        darkMode={darkMode}
+                        getPercentageColorClass={getPercentageColorClass}
+                        formatFixed={formatFixed}
+                        loadingExtra={Boolean(loadingExtraMap[fix.id])}
+                        compact
+                        hideTabs
+                      />
+                    )}
                   </div>
 
                   {/* 1X2 Bar */}

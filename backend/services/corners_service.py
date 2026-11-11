@@ -41,6 +41,30 @@ FALLBACK_LEAGUE_TOTAL_CORNERS = 10.00
 MIN_REAL_BACKTEST_VALIDATION_SAMPLE = 100
 
 
+def _can_use_corner_cache(
+    db: Optional[Session],
+    target_date: Optional[datetime],
+    batch_cache: Optional[Dict[str, Any]],
+) -> bool:
+    """Allows per-batch caching when target_date falls strictly after all finished corner history."""
+    if batch_cache is None or db is None:
+        return False
+    if target_date is None:
+        return True
+    if "_latest_finished_dt" not in batch_cache:
+        batch_cache["_latest_finished_dt"] = (
+            db.query(func.max(Fixture.match_date))
+            .filter(Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]))
+            .scalar()
+        )
+    latest_dt = batch_cache["_latest_finished_dt"]
+    if latest_dt is None:
+        return True
+    naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if target_date.tzinfo else target_date
+    latest_naive = latest_dt.astimezone(timezone.utc).replace(tzinfo=None) if getattr(latest_dt, "tzinfo", None) else latest_dt
+    return naive_target > latest_naive
+
+
 class CornerDataQualityService:
     """
     Service responsible for calculating true data coverage and sample size metrics
@@ -123,15 +147,21 @@ class CornerDataQualityService:
 
     @classmethod
     def get_fixture_corner_coverage(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None
+        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Calculates exact historical sample size and true coverage for a specific fixture matchup.
         Excludes matches occurring on or after target_date to maintain temporal safety.
         """
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
+        use_cache = _can_use_corner_cache(db, target_date, batch_cache)
 
         def get_team_stats(team_id: int) -> Tuple[int, int]:
+            c_key = ("corner_cov_team", team_id)
+            if use_cache and batch_cache is not None and c_key in batch_cache:
+                return batch_cache[c_key]
+
             q_elig = db.query(Fixture).filter(
                 or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
                 Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
@@ -154,7 +184,10 @@ class CornerDataQualityService:
                 q_obs = q_obs.filter(Fixture.match_date < naive_target)
             obs_count = q_obs.count()
 
-            return elig_count, obs_count
+            res = (elig_count, obs_count)
+            if use_cache and batch_cache is not None:
+                batch_cache[c_key] = res
+            return res
 
         h_elig, h_obs = get_team_stats(home_team_id)
         a_elig, a_obs = get_team_stats(away_team_id)
@@ -167,27 +200,33 @@ class CornerDataQualityService:
         l_elig = 0
         l_obs = 0
         if league_id:
-            q_lelig = db.query(Fixture).filter(
-                Fixture.league_id == league_id,
-                Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
-            )
-            if naive_target:
-                q_lelig = q_lelig.filter(Fixture.match_date < naive_target)
-            l_elig = q_lelig.count()
-
-            q_lobs = (
-                db.query(MatchStatistics)
-                .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
-                .filter(
+            l_key = ("corner_cov_league", league_id)
+            if use_cache and batch_cache is not None and l_key in batch_cache:
+                l_elig, l_obs = batch_cache[l_key]
+            else:
+                q_lelig = db.query(Fixture).filter(
                     Fixture.league_id == league_id,
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_corners.isnot(None),
-                    MatchStatistics.away_corners.isnot(None)
+                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
                 )
-            )
-            if naive_target:
-                q_lobs = q_lobs.filter(Fixture.match_date < naive_target)
-            l_obs = q_lobs.count()
+                if naive_target:
+                    q_lelig = q_lelig.filter(Fixture.match_date < naive_target)
+                l_elig = q_lelig.count()
+
+                q_lobs = (
+                    db.query(MatchStatistics)
+                    .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
+                    .filter(
+                        Fixture.league_id == league_id,
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_corners.isnot(None),
+                        MatchStatistics.away_corners.isnot(None)
+                    )
+                )
+                if naive_target:
+                    q_lobs = q_lobs.filter(Fixture.match_date < naive_target)
+                l_obs = q_lobs.count()
+                if use_cache and batch_cache is not None:
+                    batch_cache[l_key] = (l_elig, l_obs)
 
         l_cov = round(l_obs / float(l_elig), 4) if l_elig > 0 else 0.0
 
@@ -226,7 +265,8 @@ class CornersPredictionEngine:
 
     @classmethod
     def resolve_league_baseline(
-        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None
+        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Tuple[float, float, float, str, int]:
         """
         Hierarchical League Baseline Resolution.
@@ -242,8 +282,12 @@ class CornersPredictionEngine:
             return FALLBACK_LEAGUE_HOME_CORNERS, FALLBACK_LEAGUE_AWAY_CORNERS, FALLBACK_LEAGUE_TOTAL_CORNERS, "fallback", 0
 
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
+        use_cache = _can_use_corner_cache(db, target_date, batch_cache)
 
         def compute_global_baseline() -> Tuple[float, float, float, str, int]:
+            g_key = ("corner_global_baseline",)
+            if use_cache and batch_cache is not None and g_key in batch_cache:
+                return batch_cache[g_key]
             try:
                 g_query = (
                     db.query(MatchStatistics)
@@ -262,13 +306,23 @@ class CornersPredictionEngine:
                 if n_g >= MIN_GLOBAL_BASELINE_SAMPLES:
                     gh = sum(m.home_corners for m in g_matches if m.home_corners is not None) / float(n_g)
                     ga = sum(m.away_corners for m in g_matches if m.away_corners is not None) / float(n_g)
-                    return round(gh, 2), round(ga, 2), round(gh + ga, 2), "global", n_g
+                    out = (round(gh, 2), round(ga, 2), round(gh + ga, 2), "global", n_g)
+                    if use_cache and batch_cache is not None:
+                        batch_cache[g_key] = out
+                    return out
             except Exception as e:
                 logger.debug(f"Global corner baseline error: {e}")
-            return FALLBACK_LEAGUE_HOME_CORNERS, FALLBACK_LEAGUE_AWAY_CORNERS, FALLBACK_LEAGUE_TOTAL_CORNERS, "fallback", 0
+            out = (FALLBACK_LEAGUE_HOME_CORNERS, FALLBACK_LEAGUE_AWAY_CORNERS, FALLBACK_LEAGUE_TOTAL_CORNERS, "fallback", 0)
+            if use_cache and batch_cache is not None:
+                batch_cache[g_key] = out
+            return out
 
         if not league_id:
             return compute_global_baseline()
+
+        l_key = ("corner_league_baseline", league_id)
+        if use_cache and batch_cache is not None and l_key in batch_cache:
+            return batch_cache[l_key]
 
         try:
             l_query = (
@@ -290,7 +344,7 @@ class CornersPredictionEngine:
             if n_l >= MIN_COMPETITION_BASELINE_SAMPLES:
                 lh = sum(m.home_corners for m in l_matches if m.home_corners is not None) / float(n_l)
                 la = sum(m.away_corners for m in l_matches if m.away_corners is not None) / float(n_l)
-                return round(lh, 2), round(la, 2), round(lh + la, 2), "competition", n_l
+                out = (round(lh, 2), round(la, 2), round(lh + la, 2), "competition", n_l)
             elif n_l >= MIN_SHRUNK_BASELINE_SAMPLES:
                 lh_raw = sum(m.home_corners for m in l_matches if m.home_corners is not None) / float(n_l)
                 la_raw = sum(m.away_corners for m in l_matches if m.away_corners is not None) / float(n_l)
@@ -298,16 +352,20 @@ class CornersPredictionEngine:
                 w = n_l / float(MIN_COMPETITION_BASELINE_SAMPLES)
                 shrunk_h = _shrink_to_prior(lh_raw, gh, w)
                 shrunk_a = _shrink_to_prior(la_raw, ga, w)
-                return round(shrunk_h, 2), round(shrunk_a, 2), round(shrunk_h + shrunk_a, 2), "shrunk_competition", n_l
+                out = (round(shrunk_h, 2), round(shrunk_a, 2), round(shrunk_h + shrunk_a, 2), "shrunk_competition", n_l)
             else:
-                return compute_global_baseline()
+                out = compute_global_baseline()
+            if use_cache and batch_cache is not None:
+                batch_cache[l_key] = out
+            return out
         except Exception as e:
             logger.warning(f"Error calculating corner baseline for league {league_id}: {e}")
             return compute_global_baseline()
 
     @classmethod
     def resolve_dispersion(
-        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None
+        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Tuple[float, str]:
         """
         Estimates the Negative Binomial dispersion parameter r from historical corner data.
@@ -323,8 +381,12 @@ class CornersPredictionEngine:
             return DEFAULT_FALLBACK_DISPERSION, "fallback"
 
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
+        use_cache = _can_use_corner_cache(db, target_date, batch_cache)
 
         def compute_global_dispersion() -> Tuple[float, str]:
+            g_key = ("corner_global_disp",)
+            if use_cache and batch_cache is not None and g_key in batch_cache:
+                return batch_cache[g_key]
             try:
                 g_query = (
                     db.query(MatchStatistics)
@@ -346,15 +408,25 @@ class CornersPredictionEngine:
                     var_val = sum((c - mean_val) ** 2 for c in corners) / float(n)
                     if var_val > mean_val:
                         r = (mean_val ** 2) / (var_val - mean_val)
-                        return round(_clamp(r, MIN_DISPERSION, MAX_DISPERSION), 2), "global"
+                        out = (round(_clamp(r, MIN_DISPERSION, MAX_DISPERSION), 2), "global")
                     else:
-                        return MAX_DISPERSION, "global"
+                        out = (MAX_DISPERSION, "global")
+                    if use_cache and batch_cache is not None:
+                        batch_cache[g_key] = out
+                    return out
             except Exception as e:
                 logger.debug(f"Global corner dispersion estimation error: {e}")
-            return DEFAULT_FALLBACK_DISPERSION, "fallback"
+            out = (DEFAULT_FALLBACK_DISPERSION, "fallback")
+            if use_cache and batch_cache is not None:
+                batch_cache[g_key] = out
+            return out
 
         if not league_id:
             return compute_global_dispersion()
+
+        l_key = ("corner_league_disp", league_id)
+        if use_cache and batch_cache is not None and l_key in batch_cache:
+            return batch_cache[l_key]
 
         try:
             l_query = (
@@ -379,9 +451,9 @@ class CornersPredictionEngine:
                 var_val = sum((c - mean_val) ** 2 for c in corners) / float(n_comp)
                 if var_val > mean_val:
                     r = (mean_val ** 2) / (var_val - mean_val)
-                    return round(_clamp(r, MIN_DISPERSION, MAX_DISPERSION), 2), "competition"
+                    out = (round(_clamp(r, MIN_DISPERSION, MAX_DISPERSION), 2), "competition")
                 else:
-                    return MAX_DISPERSION, "competition"
+                    out = (MAX_DISPERSION, "competition")
             elif n_comp >= 8:
                 corners = [(m.total_corners or (m.home_corners + m.away_corners)) for m in league_matches if m.home_corners is not None and m.away_corners is not None]
                 mean_val = sum(corners) / float(n_comp)
@@ -390,16 +462,20 @@ class CornersPredictionEngine:
                 glob_r, _ = compute_global_dispersion()
                 w = n_comp / 20.0
                 shrunk_r = _shrink_to_prior(raw_comp, glob_r, w)
-                return round(_clamp(shrunk_r, MIN_DISPERSION, MAX_DISPERSION), 2), "shrunk_competition"
+                out = (round(_clamp(shrunk_r, MIN_DISPERSION, MAX_DISPERSION), 2), "shrunk_competition")
             else:
-                return compute_global_dispersion()
+                out = compute_global_dispersion()
+            if use_cache and batch_cache is not None:
+                batch_cache[l_key] = out
+            return out
         except Exception as e:
             logger.warning(f"Error calculating corner dispersion for league {league_id}: {e}")
             return compute_global_dispersion()
 
     @classmethod
     def get_team_corner_features(
-        cls, db: Session, team_id: int, is_home: bool, target_date: Optional[datetime] = None
+        cls, db: Session, team_id: int, is_home: bool, target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Extracts comprehensive, chronologically safe team corner features:
@@ -410,58 +486,74 @@ class CornersPredictionEngine:
         - sample variance
         - true sample size and eligible match count
         """
-        team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
         att_str, def_str = 1.0, 1.0
-        if team:
-            try:
-                from services.prediction_service import PoissonPredictionEngine
-                h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
-                att_str = h_att if is_home else a_att
-                def_str = h_def if is_home else a_def
-            except Exception:
-                pass
+        r_key = ("team_ratings", team_id)
+        if batch_cache is not None and r_key in batch_cache:
+            h_att, h_def, a_att, a_def = batch_cache[r_key]
+            att_str = h_att if is_home else a_att
+            def_str = h_def if is_home else a_def
+        else:
+            team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
+            if team:
+                try:
+                    from services.prediction_service import PoissonPredictionEngine
+                    ratings = PoissonPredictionEngine.resolve_team_ratings(team)
+                    if batch_cache is not None:
+                        batch_cache[r_key] = ratings
+                    h_att, h_def, a_att, a_def = ratings
+                    att_str = h_att if is_home else a_att
+                    def_str = h_def if is_home else a_def
+                except Exception:
+                    pass
 
         fallback_for = round((FALLBACK_LEAGUE_HOME_CORNERS if is_home else FALLBACK_LEAGUE_AWAY_CORNERS) * att_str, 2)
         fallback_against = round((FALLBACK_LEAGUE_AWAY_CORNERS if is_home else FALLBACK_LEAGUE_HOME_CORNERS) * def_str, 2)
 
         try:
             naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
+            use_cache = _can_use_corner_cache(db, target_date, batch_cache)
+            t_rec_key = ("corner_team_recs", team_id, is_home)
 
-            # Query venue-specific matches
-            venue_query = (
-                db.query(Fixture, MatchStatistics)
-                .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
-                .filter(
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_corners.isnot(None),
-                    MatchStatistics.away_corners.isnot(None)
-                )
-            )
-            if naive_target:
-                venue_query = venue_query.filter(Fixture.match_date < naive_target)
-
-            if is_home:
-                venue_query = venue_query.filter(Fixture.home_team_id == team_id)
+            if use_cache and batch_cache is not None and t_rec_key in batch_cache:
+                venue_records, all_records = batch_cache[t_rec_key]
             else:
-                venue_query = venue_query.filter(Fixture.away_team_id == team_id)
-
-            venue_records = venue_query.order_by(Fixture.match_date.desc()).limit(25).all()
-
-            # Query all matches (home + away) for rolling form
-            all_query = (
-                db.query(Fixture, MatchStatistics)
-                .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
-                .filter(
-                    or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_corners.isnot(None),
-                    MatchStatistics.away_corners.isnot(None)
+                # Query venue-specific matches (lightweight tuple projection)
+                venue_query = (
+                    db.query(Fixture.match_date, Fixture.home_team_id, MatchStatistics.home_corners, MatchStatistics.away_corners)
+                    .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
+                    .filter(
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_corners.isnot(None),
+                        MatchStatistics.away_corners.isnot(None)
+                    )
                 )
-            )
-            if naive_target:
-                all_query = all_query.filter(Fixture.match_date < naive_target)
+                if naive_target:
+                    venue_query = venue_query.filter(Fixture.match_date < naive_target)
 
-            all_records = all_query.order_by(Fixture.match_date.desc()).limit(20).all()
+                if is_home:
+                    venue_query = venue_query.filter(Fixture.home_team_id == team_id)
+                else:
+                    venue_query = venue_query.filter(Fixture.away_team_id == team_id)
+
+                venue_records = venue_query.order_by(Fixture.match_date.desc()).limit(25).all()
+
+                # Query all matches (home + away) for rolling form
+                all_query = (
+                    db.query(Fixture.match_date, Fixture.home_team_id, MatchStatistics.home_corners, MatchStatistics.away_corners)
+                    .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
+                    .filter(
+                        or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_corners.isnot(None),
+                        MatchStatistics.away_corners.isnot(None)
+                    )
+                )
+                if naive_target:
+                    all_query = all_query.filter(Fixture.match_date < naive_target)
+
+                all_records = all_query.order_by(Fixture.match_date.desc()).limit(20).all()
+                if use_cache and batch_cache is not None:
+                    batch_cache[t_rec_key] = (venue_records, all_records)
 
             if not venue_records and not all_records:
                 return {
@@ -486,16 +578,16 @@ class CornersPredictionEngine:
             raw_for_list = []
             raw_against_list = []
 
-            for f, stats in records_to_use:
-                days_diff = max(0, (ref_date - f.match_date).total_seconds() / 86400.0) if f.match_date else 0
+            for m_date, m_home_team_id, h_cor, a_cor in records_to_use:
+                days_diff = max(0, (ref_date - m_date).total_seconds() / 86400.0) if m_date else 0
                 w = math.exp(-cls.XI_TIME_DECAY * days_diff)
 
-                if f.home_team_id == team_id:
-                    c_for = stats.home_corners or 0
-                    c_against = stats.away_corners or 0
+                if m_home_team_id == team_id:
+                    c_for = h_cor or 0
+                    c_against = a_cor or 0
                 else:
-                    c_for = stats.away_corners or 0
-                    c_against = stats.home_corners or 0
+                    c_for = a_cor or 0
+                    c_against = h_cor or 0
 
                 weighted_for += c_for * w
                 weighted_against += c_against * w
@@ -544,7 +636,8 @@ class CornersPredictionEngine:
 
     @classmethod
     def calculate_expected_corners(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None
+        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Tuple[float, float, float, Dict[str, Any]]:
         """
         Calculates expected corners (lambda_home, lambda_away, lambda_total) using
@@ -552,12 +645,12 @@ class CornersPredictionEngine:
         """
         # 1. Resolve League baseline hierarchically
         l_home_avg, l_away_avg, l_tot_avg, baseline_source, baseline_sample_size = cls.resolve_league_baseline(
-            db, league_id, target_date=target_date
+            db, league_id, target_date=target_date, batch_cache=batch_cache
         )
 
         # 2. Extract Team features
-        h_feat = cls.get_team_corner_features(db, home_team_id, is_home=True, target_date=target_date)
-        a_feat = cls.get_team_corner_features(db, away_team_id, is_home=False, target_date=target_date)
+        h_feat = cls.get_team_corner_features(db, home_team_id, is_home=True, target_date=target_date, batch_cache=batch_cache)
+        a_feat = cls.get_team_corner_features(db, away_team_id, is_home=False, target_date=target_date, batch_cache=batch_cache)
 
         # 3. Attacking and defensive concession strengths
         raw_h_att = h_feat["avg_corners_for"] / max(1.0, l_home_avg)
@@ -759,7 +852,8 @@ class CornersPredictionEngine:
 
     @classmethod
     def predict_corners(
-        cls, db: Session, fixture_id: int, target_date: Optional[datetime] = None, save_snapshot: bool = True
+        cls, db: Session, fixture_id: int, target_date: Optional[datetime] = None, save_snapshot: bool = True,
+        commit_snapshot: bool = True, batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Executes full Corner Prediction pipeline for a fixture.
@@ -780,7 +874,7 @@ class CornersPredictionEngine:
 
         # Calculate exact coverage and sample metrics
         cov_info = CornerDataQualityService.get_fixture_corner_coverage(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, target_date=target_date
+            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, target_date=target_date, batch_cache=batch_cache
         )
 
         h_sample = cov_info["home_sample_size"]
@@ -791,11 +885,11 @@ class CornersPredictionEngine:
 
         # Calculate expected corners
         xg_h, xg_a, xg_tot, diag = cls.calculate_expected_corners(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, target_date=target_date
+            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, target_date=target_date, batch_cache=batch_cache
         )
 
         # Resolve dispersion
-        dispersion_r, dispersion_source = cls.resolve_dispersion(db, fixture.league_id, target_date=target_date)
+        dispersion_r, dispersion_source = cls.resolve_dispersion(db, fixture.league_id, target_date=target_date, batch_cache=batch_cache)
 
         # Calculate probabilities
         probs = cls.calculate_corner_probabilities(xg_h, xg_a, dispersion=dispersion_r)
@@ -832,7 +926,7 @@ class CornersPredictionEngine:
         # Persist prediction snapshot if requested
         if save_snapshot:
             try:
-                CornerSnapshotService.save_prediction_snapshot(db, fixture_id, res_payload, is_prematch=(fixture.status == "SCHEDULED"))
+                CornerSnapshotService.save_prediction_snapshot(db, fixture_id, res_payload, is_prematch=(fixture.status == "SCHEDULED"), commit=commit_snapshot)
             except Exception as snap_ex:
                 logger.debug(f"Error persisting corner snapshot for fixture {fixture_id}: {snap_ex}")
 
@@ -847,7 +941,7 @@ class CornerSnapshotService:
 
     @classmethod
     def save_prediction_snapshot(
-        cls, db: Session, fixture_id: int, pred_dict: Dict[str, Any], is_prematch: bool = True
+        cls, db: Session, fixture_id: int, pred_dict: Dict[str, Any], is_prematch: bool = True, commit: bool = True
     ) -> Optional[CornerPredictionSnapshot]:
         """
         Persists a prediction snapshot. If a pre-match snapshot already exists,
@@ -902,7 +996,10 @@ class CornerSnapshotService:
             existing.dispersion = model_meta.get("dispersion", DEFAULT_FALLBACK_DISPERSION)
             existing.dispersion_source = model_meta.get("dispersion_source", "fallback")
             existing.baseline_source = model_meta.get("baseline_source", "fallback")
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
             return existing
 
         snapshot = CornerPredictionSnapshot(
@@ -938,7 +1035,10 @@ class CornerSnapshotService:
             is_verified=False
         )
         db.add(snapshot)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return snapshot
 
     @classmethod

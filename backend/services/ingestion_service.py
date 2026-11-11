@@ -697,14 +697,14 @@ class DataIngestionService:
                     parsed_h_score = extract_score_value(raw_h_score)
                     parsed_a_score = extract_score_value(raw_a_score)
 
-                    if status_state == "post" or any(k in status_name for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
-                        status = "FINISHED"
-                    elif status_state == "in" or any(k in status_name for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME", "LIVE", "IN PROGRESS", "SHOOTOUT"]):
-                        status = "LIVE"
-                    elif any(k in status_name for k in ["POSTPONED", "CANCELLED", "ABANDONED"]):
+                    if any(k in status_name for k in ["POSTPONED", "CANCELLED", "CANCELED", "ABANDONED", "SUSPENDED"]):
                         status = "POSTPONED"
                         parsed_h_score = None
                         parsed_a_score = None
+                    elif status_state == "post" or any(k in status_name for k in ["FINAL", "FULL", "FINISHED", "FT", "POST_EVENT", "END_OF_EXTRATIME"]):
+                        status = "FINISHED"
+                    elif status_state == "in" or any(k in status_name for k in ["IN_PROGRESS", "HALFTIME", "FIRST_HALF", "SECOND_HALF", "END_PERIOD", "OVERTIME", "LIVE", "IN PROGRESS", "SHOOTOUT"]):
+                        status = "LIVE"
                     else:
                         status = "SCHEDULED"
                         parsed_h_score = None

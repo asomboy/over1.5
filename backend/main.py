@@ -84,22 +84,113 @@ class FixtureQueryParams(BaseModel):
     limit: Optional[int] = Field(None, ge=1, le=2000)
 
 
-def _load_preds_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.Prediction]:
-    """Loads Prediction rows strictly for the requested fixture IDs in safe SQLite IN chunks."""
-    preds_map: Dict[int, models.Prediction] = {}
+def _load_latest_by_fixture(db: Session, model_cls: Any, fixture_ids: List[int]) -> Dict[int, Any]:
+    """Loads latest model rows by fixture_id in safe SQLite IN chunks."""
+    rows_map: Dict[int, Any] = {}
     if not fixture_ids:
-        return preds_map
+        return rows_map
     for i in range(0, len(fixture_ids), 500):
         chunk = fixture_ids[i:i + 500]
         rows = (
-            db.query(models.Prediction)
-            .filter(models.Prediction.fixture_id.in_(chunk))
-            .order_by(models.Prediction.id.asc())
+            db.query(model_cls)
+            .filter(model_cls.fixture_id.in_(chunk))
+            .order_by(model_cls.id.asc())
             .all()
         )
         for row in rows:
-            preds_map[row.fixture_id] = row
-    return preds_map
+            rows_map[row.fixture_id] = row
+    return rows_map
+
+
+def _load_preds_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.Prediction]:
+    """Loads Prediction rows strictly for the requested fixture IDs in safe SQLite IN chunks."""
+    return _load_latest_by_fixture(db, models.Prediction, fixture_ids)
+
+
+def _load_corners_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.CornerPredictionSnapshot]:
+    """Loads latest CornerPredictionSnapshot rows strictly for the requested fixture IDs."""
+    return _load_latest_by_fixture(db, models.CornerPredictionSnapshot, fixture_ids)
+
+
+def _load_cards_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, models.CardPredictionSnapshot]:
+    """Loads latest CardPredictionSnapshot rows strictly for the requested fixture IDs."""
+    return _load_latest_by_fixture(db, models.CardPredictionSnapshot, fixture_ids)
+
+
+def _serialize_corner_snapshot(c: Optional[models.CornerPredictionSnapshot]) -> Optional[Dict[str, Any]]:
+    """Serializes a compact corner prediction snapshot for upcoming table market tabs."""
+    if not c or c.expected_total_corners is None:
+        return None
+    return {
+        "available": True,
+        "expected": {
+            "home": round(float(c.expected_home_corners), 2) if c.expected_home_corners is not None else None,
+            "away": round(float(c.expected_away_corners), 2) if c.expected_away_corners is not None else None,
+            "total": round(float(c.expected_total_corners), 2),
+        },
+        "total_markets": {
+            "over_7_5": round(float(c.over_7_5_prob), 4) if c.over_7_5_prob is not None else None,
+            "under_7_5": round(float(c.under_7_5_prob), 4) if c.under_7_5_prob is not None else None,
+            "over_8_5": round(float(c.over_8_5_prob), 4) if c.over_8_5_prob is not None else None,
+            "under_8_5": round(float(c.under_8_5_prob), 4) if c.under_8_5_prob is not None else None,
+            "over_9_5": round(float(c.over_9_5_prob), 4) if c.over_9_5_prob is not None else None,
+            "under_9_5": round(float(c.under_9_5_prob), 4) if c.under_9_5_prob is not None else None,
+            "over_10_5": round(float(c.over_10_5_prob), 4) if c.over_10_5_prob is not None else None,
+            "under_10_5": round(float(c.under_10_5_prob), 4) if c.under_10_5_prob is not None else None,
+            "over_11_5": round(float(c.over_11_5_prob), 4) if c.over_11_5_prob is not None else None,
+            "under_11_5": round(float(c.under_11_5_prob), 4) if c.under_11_5_prob is not None else None,
+        },
+        "home_team": {
+            "over_3_5": round(float(c.home_over_3_5_prob), 4) if c.home_over_3_5_prob is not None else None,
+            "over_4_5": round(float(c.home_over_4_5_prob), 4) if c.home_over_4_5_prob is not None else None,
+            "over_5_5": round(float(c.home_over_5_5_prob), 4) if c.home_over_5_5_prob is not None else None,
+        },
+        "away_team": {
+            "over_3_5": round(float(c.away_over_3_5_prob), 4) if c.away_over_3_5_prob is not None else None,
+            "over_4_5": round(float(c.away_over_4_5_prob), 4) if c.away_over_4_5_prob is not None else None,
+            "over_5_5": round(float(c.away_over_5_5_prob), 4) if c.away_over_5_5_prob is not None else None,
+        },
+        "confidence": {"overall": c.confidence_score},
+    }
+
+
+def _serialize_card_snapshot(c: Optional[models.CardPredictionSnapshot]) -> Optional[Dict[str, Any]]:
+    """Serializes a compact card prediction snapshot for upcoming table market tabs."""
+    if not c or c.expected_total_cards is None:
+        return None
+    return {
+        "available": True,
+        "expected": {
+            "home": round(float(c.expected_home_cards), 2) if c.expected_home_cards is not None else None,
+            "away": round(float(c.expected_away_cards), 2) if c.expected_away_cards is not None else None,
+            "total": round(float(c.expected_total_cards), 2),
+        },
+        "total_markets": {
+            "over_1_5": round(float(c.over_1_5_prob), 4) if c.over_1_5_prob is not None else None,
+            "over_2_5": round(float(c.over_2_5_prob), 4) if c.over_2_5_prob is not None else None,
+            "under_2_5": round(float(c.under_2_5_prob), 4) if c.under_2_5_prob is not None else None,
+            "over_3_5": round(float(c.over_3_5_prob), 4) if c.over_3_5_prob is not None else None,
+            "under_3_5": round(float(c.under_3_5_prob), 4) if c.under_3_5_prob is not None else None,
+            "over_4_5": round(float(c.over_4_5_prob), 4) if c.over_4_5_prob is not None else None,
+            "under_4_5": round(float(c.under_4_5_prob), 4) if c.under_4_5_prob is not None else None,
+            "over_5_5": round(float(c.over_5_5_prob), 4) if c.over_5_5_prob is not None else None,
+            "under_5_5": round(float(c.under_5_5_prob), 4) if c.under_5_5_prob is not None else None,
+        },
+        "home_team": {
+            "over_0_5": round(float(c.home_over_0_5_prob), 4) if c.home_over_0_5_prob is not None else None,
+            "over_1_5": round(float(c.home_over_1_5_prob), 4) if c.home_over_1_5_prob is not None else None,
+            "over_2_5": round(float(c.home_over_2_5_prob), 4) if c.home_over_2_5_prob is not None else None,
+        },
+        "away_team": {
+            "over_0_5": round(float(c.away_over_0_5_prob), 4) if c.away_over_0_5_prob is not None else None,
+            "over_1_5": round(float(c.away_over_1_5_prob), 4) if c.away_over_1_5_prob is not None else None,
+            "over_2_5": round(float(c.away_over_2_5_prob), 4) if c.away_over_2_5_prob is not None else None,
+        },
+        "red_card_risk": {
+            "any_red_prob": round(float(c.any_red_card_prob), 4) if c.any_red_card_prob is not None else None,
+        },
+        "confidence": {"overall": c.confidence_score},
+    }
 
 
 def _apply_fixture_query_filters(query, params: FixtureQueryParams):
@@ -201,11 +292,36 @@ def _run_data_refresh_sync() -> bool:
 
         calc_db = SessionLocal()
         try:
-            calculate_all_league_statistics(calc_db)
-            calculate_all_team_statistics(calc_db)
             DataIngestionService.purge_school_and_youth_competitions(calc_db)
             DataIngestionService.repair_and_canonicalize_fixture_leagues(calc_db)
             DataIngestionService.auto_resolve_expired_live_fixtures(calc_db)
+
+            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            upcoming_cutoff = now_utc_naive - timedelta(hours=12)
+            recent_cutoff = now_utc_naive - timedelta(days=7)
+            active_fixture_teams = (
+                calc_db.query(models.Fixture.home_team_id, models.Fixture.away_team_id)
+                .filter(
+                    (
+                        models.Fixture.status.notin_(["FINISHED", "FT", "AET", "PEN"])
+                        & (models.Fixture.match_date >= upcoming_cutoff)
+                    )
+                    | (models.Fixture.match_date >= recent_cutoff)
+                )
+                .all()
+            )
+            active_team_ids = set()
+            for h_id, a_id in active_fixture_teams:
+                if h_id:
+                    active_team_ids.add(h_id)
+                if a_id:
+                    active_team_ids.add(a_id)
+            existing_stat_ids = {r[0] for r in calc_db.query(models.TeamStatistics.team_id).all()}
+            all_team_ids = {r[0] for r in calc_db.query(models.Team.id).all()}
+            active_team_ids |= (all_team_ids - existing_stat_ids)
+
+            calculate_all_league_statistics(calc_db)
+            calculate_all_team_statistics(calc_db, team_ids=active_team_ids)
             PoissonPredictionEngine.predict_all_upcoming_fixtures(calc_db, upcoming_only=True)
             logger.info("Scheduled data refresh completed successfully.")
         except Exception as e:
@@ -2355,12 +2471,25 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
         logger.info("No upcoming fixtures found in DB. Triggering non-blocking background ingestion fallback...")
         background_tasks.add_task(_run_data_refresh_sync)
 
+    fixture_ids_list = [f.id for f in fixtures]
     try:
-        all_preds = _load_preds_for_fixtures(db, [f.id for f in fixtures])
+        all_preds = _load_preds_for_fixtures(db, fixture_ids_list)
     except Exception as pred_err:
         logger.error(f"Error loading predictions: {pred_err}")
         db.rollback()
         all_preds = {}
+
+    try:
+        all_corners = _load_corners_for_fixtures(db, fixture_ids_list)
+    except Exception as corner_err:
+        logger.debug(f"Error loading corner snapshots: {corner_err}")
+        all_corners = {}
+
+    try:
+        all_cards = _load_cards_for_fixtures(db, fixture_ids_list)
+    except Exception as card_err:
+        logger.debug(f"Error loading card snapshots: {card_err}")
+        all_cards = {}
 
     result_data = []
     for fix in fixtures:
@@ -2473,8 +2602,10 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
                 "over_1_5_probability": o15,
                 "over_2_5_probability": o25,
                 "over_3_5_probability": o35,
+                "over_4_5_probability": round(float(pred.over_4_5_probability), 4) if getattr(pred, "over_4_5_probability", None) is not None else None,
                 "under_2_5_probability": u25,
                 "btts_probability": btts_prob,
+                "btts_no_probability": round(max(0.0, 1.0 - btts_prob), 4) if btts_prob is not None else None,
                 "confidence_score": confidence_score,
                 
                 # Home Team Specific Goal Thresholds
@@ -2558,7 +2689,9 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
                 "short_code": fix.away_team.short_code if fix.away_team else None,
                 "logo_url": fix.away_team.logo_url if fix.away_team else None
             },
-            "prediction": pred_dict
+            "prediction": pred_dict,
+            "corners": _serialize_corner_snapshot(all_corners.get(fix.id)),
+            "cards": _serialize_card_snapshot(all_cards.get(fix.id)),
         })
 
     return {"status": "ok", "count": len(result_data), "data": result_data}

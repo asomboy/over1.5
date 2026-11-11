@@ -17,6 +17,7 @@ try:
         Referee, RefereeMatchStatistics, CardPredictionSnapshot
     )
     from services.prediction_service import _negative_binomial_pmf, _shrink_to_prior, _clamp
+    from services.corners_service import _can_use_corner_cache as _can_use_card_cache
     from schemas.prediction_schema import CardsPrediction
 except ImportError:
     from ..models import (
@@ -24,6 +25,7 @@ except ImportError:
         Referee, RefereeMatchStatistics, CardPredictionSnapshot
     )
     from .prediction_service import _negative_binomial_pmf, _shrink_to_prior, _clamp
+    from .corners_service import _can_use_corner_cache as _can_use_card_cache
     from ..schemas.prediction_schema import CardsPrediction
 
 logger = logging.getLogger(__name__)
@@ -144,15 +146,21 @@ class CardDataQualityService:
 
     @classmethod
     def get_fixture_card_coverage(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None
+        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Calculates exact historical card sample size and true coverage for a matchup.
         Strictly excludes matches on or after target_date for temporal safety.
         """
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
+        use_cache = _can_use_card_cache(db, target_date, batch_cache)
 
         def get_team_stats(team_id: int) -> Tuple[int, int]:
+            c_key = ("card_cov_team", team_id)
+            if use_cache and batch_cache is not None and c_key in batch_cache:
+                return batch_cache[c_key]
+
             q_elig = db.query(Fixture).filter(
                 or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
                 Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
@@ -174,7 +182,10 @@ class CardDataQualityService:
             if naive_target:
                 q_obs = q_obs.filter(Fixture.match_date < naive_target)
             obs = q_obs.count()
-            return elig, obs
+            res = (elig, obs)
+            if use_cache and batch_cache is not None:
+                batch_cache[c_key] = res
+            return res
 
         h_elig, h_obs = get_team_stats(home_team_id)
         a_elig, a_obs = get_team_stats(away_team_id)
@@ -185,27 +196,33 @@ class CardDataQualityService:
         # League stats
         l_elig, l_obs = 0, 0
         if league_id:
-            q_lelig = db.query(Fixture).filter(
-                Fixture.league_id == league_id,
-                Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
-            )
-            if naive_target:
-                q_lelig = q_lelig.filter(Fixture.match_date < naive_target)
-            l_elig = q_lelig.count()
-
-            q_lobs = (
-                db.query(MatchStatistics)
-                .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
-                .filter(
+            l_key = ("card_cov_league", league_id)
+            if use_cache and batch_cache is not None and l_key in batch_cache:
+                l_elig, l_obs = batch_cache[l_key]
+            else:
+                q_lelig = db.query(Fixture).filter(
                     Fixture.league_id == league_id,
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_yellow_cards.isnot(None),
-                    MatchStatistics.away_yellow_cards.isnot(None)
+                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"])
                 )
-            )
-            if naive_target:
-                q_lobs = q_lobs.filter(Fixture.match_date < naive_target)
-            l_obs = q_lobs.count()
+                if naive_target:
+                    q_lelig = q_lelig.filter(Fixture.match_date < naive_target)
+                l_elig = q_lelig.count()
+
+                q_lobs = (
+                    db.query(MatchStatistics)
+                    .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
+                    .filter(
+                        Fixture.league_id == league_id,
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_yellow_cards.isnot(None),
+                        MatchStatistics.away_yellow_cards.isnot(None)
+                    )
+                )
+                if naive_target:
+                    q_lobs = q_lobs.filter(Fixture.match_date < naive_target)
+                l_obs = q_lobs.count()
+                if use_cache and batch_cache is not None:
+                    batch_cache[l_key] = (l_elig, l_obs)
 
         l_cov = round(l_obs / float(l_elig), 4) if l_elig > 0 else 0.0
 
@@ -238,7 +255,12 @@ class RefereeIntelligenceService:
 
     @classmethod
     def resolve_referee_adjustment(
-        cls, db: Optional[Session], referee_name: Optional[str], league_id: Optional[int], target_date: Optional[datetime] = None
+        cls,
+        db: Optional[Session],
+        referee_name: Optional[str],
+        league_id: Optional[int],
+        target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Resolves referee card tendency adjustment factor (neutral = 1.0).
@@ -255,12 +277,23 @@ class RefereeIntelligenceService:
             }
 
         clean_ref = referee_name.strip()
+        use_cache = _can_use_card_cache(db, target_date, batch_cache)
+        cache_key = ("card_ref_adj", clean_ref.lower(), league_id)
+        if use_cache and cache_key in batch_cache:
+            return batch_cache[cache_key]
+
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
 
         try:
             # Query referee matches in MatchStatistics
             q_ref = (
-                db.query(MatchStatistics)
+                db.query(
+                    MatchStatistics.total_cards,
+                    MatchStatistics.home_yellow_cards,
+                    MatchStatistics.away_yellow_cards,
+                    MatchStatistics.home_red_cards,
+                    MatchStatistics.away_red_cards,
+                )
                 .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
                 .filter(
                     func.lower(MatchStatistics.referee_name) == clean_ref.lower(),
@@ -276,7 +309,9 @@ class RefereeIntelligenceService:
             n_ref = len(ref_matches)
 
             # Get league baseline for comparison
-            l_home, l_away, l_tot, _, _ = LeagueCardBaselineService.resolve_league_baseline(db, league_id, target_date=target_date)
+            l_home, l_away, l_tot, _, _ = LeagueCardBaselineService.resolve_league_baseline(
+                db, league_id, target_date=target_date, batch_cache=batch_cache
+            )
 
             if n_ref >= MIN_REFEREE_SPECIFIC_SAMPLES:
                 tot_cards = [
@@ -288,7 +323,7 @@ class RefereeIntelligenceService:
                 adj = _clamp(raw_ratio, 0.70, 1.40)
                 diff_pct = int(round((adj - 1.0) * 100))
                 label = f"+{diff_pct}% Strict" if diff_pct > 5 else (f"{diff_pct}% Lenient" if diff_pct < -5 else "Neutral")
-                return {
+                res = {
                     "available": True,
                     "referee_name": clean_ref,
                     "sample_size": n_ref,
@@ -309,7 +344,7 @@ class RefereeIntelligenceService:
                 adj = _clamp(shrunk_adj, 0.75, 1.30)
                 diff_pct = int(round((adj - 1.0) * 100))
                 label = f"+{diff_pct}% Strict" if diff_pct > 4 else (f"{diff_pct}% Lenient" if diff_pct < -4 else "Neutral")
-                return {
+                res = {
                     "available": True,
                     "referee_name": clean_ref,
                     "sample_size": n_ref,
@@ -319,7 +354,7 @@ class RefereeIntelligenceService:
                     "source": "shrunk_referee"
                 }
             else:
-                return {
+                res = {
                     "available": False,
                     "referee_name": clean_ref,
                     "sample_size": n_ref,
@@ -328,6 +363,9 @@ class RefereeIntelligenceService:
                     "influence_label": "Neutral",
                     "source": "competition" if league_id else "fallback"
                 }
+            if use_cache:
+                batch_cache[cache_key] = res
+            return res
         except Exception as e:
             logger.debug(f"Error resolving referee adjustment for {clean_ref}: {e}")
             return {
@@ -348,7 +386,11 @@ class LeagueCardBaselineService:
 
     @classmethod
     def resolve_league_baseline(
-        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None
+        cls,
+        db: Optional[Session],
+        league_id: Optional[int],
+        target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, float, float, str, int]:
         """
         Resolves league card baselines (home_avg, away_avg, total_avg, source, sample_size).
@@ -356,12 +398,24 @@ class LeagueCardBaselineService:
         if not db:
             return FALLBACK_LEAGUE_HOME_CARDS, FALLBACK_LEAGUE_AWAY_CARDS, FALLBACK_LEAGUE_TOTAL_CARDS, "fallback", 0
 
+        use_cache = _can_use_card_cache(db, target_date, batch_cache)
+        if use_cache and ("card_league_baseline", league_id) in batch_cache:
+            return batch_cache[("card_league_baseline", league_id)]
+
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
 
         def compute_global_baseline() -> Tuple[float, float, float, str, int]:
+            if use_cache and ("card_global_baseline",) in batch_cache:
+                return batch_cache[("card_global_baseline",)]
+            res = (FALLBACK_LEAGUE_HOME_CARDS, FALLBACK_LEAGUE_AWAY_CARDS, FALLBACK_LEAGUE_TOTAL_CARDS, "fallback", 0)
             try:
                 g_query = (
-                    db.query(MatchStatistics)
+                    db.query(
+                        MatchStatistics.home_yellow_cards,
+                        MatchStatistics.away_yellow_cards,
+                        MatchStatistics.home_red_cards,
+                        MatchStatistics.away_red_cards,
+                    )
                     .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
                     .filter(
                         Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
@@ -375,19 +429,29 @@ class LeagueCardBaselineService:
                 g_matches = g_query.limit(300).all()
                 n_g = len(g_matches)
                 if n_g >= MIN_GLOBAL_CARDS_SAMPLES:
-                    gh = sum(m.home_yellow_cards + (m.home_red_cards or 0) for m in g_matches) / float(n_g)
-                    ga = sum(m.away_yellow_cards + (m.away_red_cards or 0) for m in g_matches) / float(n_g)
-                    return round(gh, 2), round(ga, 2), round(gh + ga, 2), "global", n_g
+                    gh = sum(m[0] + (m[2] or 0) for m in g_matches) / float(n_g)
+                    ga = sum(m[1] + (m[3] or 0) for m in g_matches) / float(n_g)
+                    res = (round(gh, 2), round(ga, 2), round(gh + ga, 2), "global", n_g)
             except Exception as e:
                 logger.debug(f"Global card baseline error: {e}")
-            return FALLBACK_LEAGUE_HOME_CARDS, FALLBACK_LEAGUE_AWAY_CARDS, FALLBACK_LEAGUE_TOTAL_CARDS, "fallback", 0
+            if use_cache:
+                batch_cache[("card_global_baseline",)] = res
+            return res
 
         if not league_id:
-            return compute_global_baseline()
+            res = compute_global_baseline()
+            if use_cache:
+                batch_cache[("card_league_baseline", league_id)] = res
+            return res
 
         try:
             l_query = (
-                db.query(MatchStatistics)
+                db.query(
+                    MatchStatistics.home_yellow_cards,
+                    MatchStatistics.away_yellow_cards,
+                    MatchStatistics.home_red_cards,
+                    MatchStatistics.away_red_cards,
+                )
                 .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
                 .filter(
                     Fixture.league_id == league_id,
@@ -403,26 +467,34 @@ class LeagueCardBaselineService:
             n_l = len(l_matches)
 
             if n_l >= MIN_COMPETITION_CARDS_SAMPLES:
-                lh = sum(m.home_yellow_cards + (m.home_red_cards or 0) for m in l_matches) / float(n_l)
-                la = sum(m.away_yellow_cards + (m.away_red_cards or 0) for m in l_matches) / float(n_l)
-                return round(lh, 2), round(la, 2), round(lh + la, 2), "competition", n_l
+                lh = sum(m[0] + (m[2] or 0) for m in l_matches) / float(n_l)
+                la = sum(m[1] + (m[3] or 0) for m in l_matches) / float(n_l)
+                res = (round(lh, 2), round(la, 2), round(lh + la, 2), "competition", n_l)
             elif n_l >= MIN_SHRUNK_CARDS_SAMPLES:
-                lh_raw = sum(m.home_yellow_cards + (m.home_red_cards or 0) for m in l_matches) / float(n_l)
-                la_raw = sum(m.away_yellow_cards + (m.away_red_cards or 0) for m in l_matches) / float(n_l)
+                lh_raw = sum(m[0] + (m[2] or 0) for m in l_matches) / float(n_l)
+                la_raw = sum(m[1] + (m[3] or 0) for m in l_matches) / float(n_l)
                 gh, ga, _, _, _ = compute_global_baseline()
                 w = n_l / float(MIN_COMPETITION_CARDS_SAMPLES)
                 shrunk_h = _shrink_to_prior(lh_raw, gh, w)
                 shrunk_a = _shrink_to_prior(la_raw, ga, w)
-                return round(shrunk_h, 2), round(shrunk_a, 2), round(shrunk_h + shrunk_a, 2), "shrunk_competition", n_l
+                res = (round(shrunk_h, 2), round(shrunk_a, 2), round(shrunk_h + shrunk_a, 2), "shrunk_competition", n_l)
             else:
-                return compute_global_baseline()
+                res = compute_global_baseline()
         except Exception as e:
             logger.warning(f"Error calculating card baseline for league {league_id}: {e}")
-            return compute_global_baseline()
+            res = compute_global_baseline()
+
+        if use_cache:
+            batch_cache[("card_league_baseline", league_id)] = res
+        return res
 
     @classmethod
     def resolve_dispersion(
-        cls, db: Optional[Session], league_id: Optional[int], target_date: Optional[datetime] = None
+        cls,
+        db: Optional[Session],
+        league_id: Optional[int],
+        target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, str]:
         """
         Resolves Negative Binomial dispersion parameter r for cards.
@@ -430,12 +502,25 @@ class LeagueCardBaselineService:
         if not db:
             return DEFAULT_FALLBACK_CARDS_DISPERSION, "fallback"
 
+        use_cache = _can_use_card_cache(db, target_date, batch_cache)
+        if use_cache and ("card_league_disp", league_id) in batch_cache:
+            return batch_cache[("card_league_disp", league_id)]
+
         naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
 
         def compute_global_dispersion() -> Tuple[float, str]:
+            if use_cache and ("card_global_disp",) in batch_cache:
+                return batch_cache[("card_global_disp",)]
+            res = (DEFAULT_FALLBACK_CARDS_DISPERSION, "fallback")
             try:
                 g_query = (
-                    db.query(MatchStatistics)
+                    db.query(
+                        MatchStatistics.total_cards,
+                        MatchStatistics.home_yellow_cards,
+                        MatchStatistics.away_yellow_cards,
+                        MatchStatistics.home_red_cards,
+                        MatchStatistics.away_red_cards,
+                    )
                     .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
                     .filter(
                         Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
@@ -449,7 +534,7 @@ class LeagueCardBaselineService:
                 matches = g_query.limit(300).all()
                 if len(matches) >= 30:
                     cards = [
-                        (m.total_cards or (m.home_yellow_cards + m.away_yellow_cards + (m.home_red_cards or 0) + (m.away_red_cards or 0)))
+                        (m[0] or (m[1] + m[2] + (m[3] or 0) + (m[4] or 0)))
                         for m in matches
                     ]
                     n = len(cards)
@@ -457,19 +542,30 @@ class LeagueCardBaselineService:
                     var_val = sum((c - mean_val) ** 2 for c in cards) / float(n)
                     if var_val > mean_val:
                         r = (mean_val ** 2) / (var_val - mean_val)
-                        return round(_clamp(r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "global"
+                        res = (round(_clamp(r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "global")
                     else:
-                        return MAX_CARDS_DISPERSION, "global"
+                        res = (MAX_CARDS_DISPERSION, "global")
             except Exception as e:
                 logger.debug(f"Global card dispersion error: {e}")
-            return DEFAULT_FALLBACK_CARDS_DISPERSION, "fallback"
+            if use_cache:
+                batch_cache[("card_global_disp",)] = res
+            return res
 
         if not league_id:
-            return compute_global_dispersion()
+            res = compute_global_dispersion()
+            if use_cache:
+                batch_cache[("card_league_disp", league_id)] = res
+            return res
 
         try:
             l_query = (
-                db.query(MatchStatistics)
+                db.query(
+                    MatchStatistics.total_cards,
+                    MatchStatistics.home_yellow_cards,
+                    MatchStatistics.away_yellow_cards,
+                    MatchStatistics.home_red_cards,
+                    MatchStatistics.away_red_cards,
+                )
                 .join(Fixture, Fixture.id == MatchStatistics.fixture_id)
                 .filter(
                     Fixture.league_id == league_id,
@@ -486,19 +582,19 @@ class LeagueCardBaselineService:
 
             if n_comp >= MIN_COMPETITION_CARDS_SAMPLES:
                 cards = [
-                    (m.total_cards or (m.home_yellow_cards + m.away_yellow_cards + (m.home_red_cards or 0) + (m.away_red_cards or 0)))
+                    (m[0] or (m[1] + m[2] + (m[3] or 0) + (m[4] or 0)))
                     for m in league_matches
                 ]
                 mean_val = sum(cards) / float(n_comp)
                 var_val = sum((c - mean_val) ** 2 for c in cards) / float(n_comp)
                 if var_val > mean_val:
                     r = (mean_val ** 2) / (var_val - mean_val)
-                    return round(_clamp(r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "competition"
+                    res = (round(_clamp(r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "competition")
                 else:
-                    return MAX_CARDS_DISPERSION, "competition"
+                    res = (MAX_CARDS_DISPERSION, "competition")
             elif n_comp >= MIN_SHRUNK_CARDS_SAMPLES:
                 cards = [
-                    (m.total_cards or (m.home_yellow_cards + m.away_yellow_cards + (m.home_red_cards or 0) + (m.away_red_cards or 0)))
+                    (m[0] or (m[1] + m[2] + (m[3] or 0) + (m[4] or 0)))
                     for m in league_matches
                 ]
                 mean_val = sum(cards) / float(n_comp)
@@ -507,12 +603,16 @@ class LeagueCardBaselineService:
                 glob_r, _ = compute_global_dispersion()
                 w = n_comp / float(MIN_COMPETITION_CARDS_SAMPLES)
                 shrunk_r = _shrink_to_prior(raw_comp, glob_r, w)
-                return round(_clamp(shrunk_r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "shrunk_competition"
+                res = (round(_clamp(shrunk_r, MIN_CARDS_DISPERSION, MAX_CARDS_DISPERSION), 2), "shrunk_competition")
             else:
-                return compute_global_dispersion()
+                res = compute_global_dispersion()
         except Exception as e:
             logger.warning(f"Error calculating card dispersion for league {league_id}: {e}")
-            return compute_global_dispersion()
+            res = compute_global_dispersion()
+
+        if use_cache:
+            batch_cache[("card_league_disp", league_id)] = res
+        return res
 
 
 class TeamDisciplineService:
@@ -527,21 +627,36 @@ class TeamDisciplineService:
 
     @classmethod
     def get_team_discipline_features(
-        cls, db: Session, team_id: int, is_home: bool, target_date: Optional[datetime] = None
+        cls,
+        db: Session,
+        team_id: int,
+        is_home: bool,
+        target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Extracts team discipline features strictly prior to target_date.
         """
-        team = db.query(Team).filter(Team.id == team_id).first() if team_id else None
+        use_cache = _can_use_card_cache(db, target_date, batch_cache)
         att_str, def_str = 1.0, 1.0
-        if team:
-            try:
-                from services.prediction_service import PoissonPredictionEngine
-                h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
+        if team_id:
+            ratings_key = ("card_team_ratings", team_id)
+            if use_cache and ratings_key in batch_cache:
+                h_att, h_def, a_att, a_def = batch_cache[ratings_key]
                 att_str = h_att if is_home else a_att
                 def_str = h_def if is_home else a_def
-            except Exception:
-                pass
+            else:
+                team = db.query(Team).filter(Team.id == team_id).first()
+                if team:
+                    try:
+                        from services.prediction_service import PoissonPredictionEngine
+                        h_att, h_def, a_att, a_def = PoissonPredictionEngine.resolve_team_ratings(team)
+                        att_str = h_att if is_home else a_att
+                        def_str = h_def if is_home else a_def
+                        if use_cache:
+                            batch_cache[ratings_key] = (h_att, h_def, a_att, a_def)
+                    except Exception:
+                        pass
 
         fallback_for = round((FALLBACK_LEAGUE_HOME_CARDS if is_home else FALLBACK_LEAGUE_AWAY_CARDS) * def_str, 2)
         fallback_forced = round((FALLBACK_LEAGUE_AWAY_CARDS if is_home else FALLBACK_LEAGUE_HOME_CARDS) * att_str, 2)
@@ -549,41 +664,67 @@ class TeamDisciplineService:
         try:
             naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if (target_date and target_date.tzinfo) else target_date
 
-            # Venue matches
-            venue_query = (
-                db.query(Fixture, MatchStatistics)
-                .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
-                .filter(
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_yellow_cards.isnot(None),
-                    MatchStatistics.away_yellow_cards.isnot(None)
-                )
-            )
-            if naive_target:
-                venue_query = venue_query.filter(Fixture.match_date < naive_target)
-
-            if is_home:
-                venue_query = venue_query.filter(Fixture.home_team_id == team_id)
+            venue_key = ("card_team_venue_rows", team_id, is_home)
+            if use_cache and venue_key in batch_cache:
+                venue_records = batch_cache[venue_key]
             else:
-                venue_query = venue_query.filter(Fixture.away_team_id == team_id)
-
-            venue_records = venue_query.order_by(Fixture.match_date.desc()).limit(25).all()
-
-            # All matches for rolling history
-            all_query = (
-                db.query(Fixture, MatchStatistics)
-                .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
-                .filter(
-                    or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
-                    Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
-                    MatchStatistics.home_yellow_cards.isnot(None),
-                    MatchStatistics.away_yellow_cards.isnot(None)
+                # Venue matches (6-column tuple projection)
+                venue_query = (
+                    db.query(
+                        Fixture.match_date,
+                        Fixture.home_team_id,
+                        MatchStatistics.home_yellow_cards,
+                        MatchStatistics.away_yellow_cards,
+                        MatchStatistics.home_red_cards,
+                        MatchStatistics.away_red_cards,
+                    )
+                    .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
+                    .filter(
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_yellow_cards.isnot(None),
+                        MatchStatistics.away_yellow_cards.isnot(None)
+                    )
                 )
-            )
-            if naive_target:
-                all_query = all_query.filter(Fixture.match_date < naive_target)
+                if naive_target:
+                    venue_query = venue_query.filter(Fixture.match_date < naive_target)
 
-            all_records = all_query.order_by(Fixture.match_date.desc()).limit(20).all()
+                if is_home:
+                    venue_query = venue_query.filter(Fixture.home_team_id == team_id)
+                else:
+                    venue_query = venue_query.filter(Fixture.away_team_id == team_id)
+
+                venue_records = venue_query.order_by(Fixture.match_date.desc()).limit(25).all()
+                if use_cache:
+                    batch_cache[venue_key] = venue_records
+
+            all_key = ("card_team_all_rows", team_id)
+            if use_cache and all_key in batch_cache:
+                all_records = batch_cache[all_key]
+            else:
+                # All matches for rolling history
+                all_query = (
+                    db.query(
+                        Fixture.match_date,
+                        Fixture.home_team_id,
+                        MatchStatistics.home_yellow_cards,
+                        MatchStatistics.away_yellow_cards,
+                        MatchStatistics.home_red_cards,
+                        MatchStatistics.away_red_cards,
+                    )
+                    .join(MatchStatistics, MatchStatistics.fixture_id == Fixture.id)
+                    .filter(
+                        or_(Fixture.home_team_id == team_id, Fixture.away_team_id == team_id),
+                        Fixture.status.in_(["FINISHED", "FT", "AET", "PEN"]),
+                        MatchStatistics.home_yellow_cards.isnot(None),
+                        MatchStatistics.away_yellow_cards.isnot(None)
+                    )
+                )
+                if naive_target:
+                    all_query = all_query.filter(Fixture.match_date < naive_target)
+
+                all_records = all_query.order_by(Fixture.match_date.desc()).limit(20).all()
+                if use_cache:
+                    batch_cache[all_key] = all_records
 
             if not venue_records and not all_records:
                 return {
@@ -607,18 +748,18 @@ class TeamDisciplineService:
             raw_forced = []
             tot_reds = 0
 
-            for f, stats in records_to_use:
-                days_diff = max(0, (ref_date - f.match_date).total_seconds() / 86400.0) if f.match_date else 0
+            for m_date, home_id, h_yc, a_yc, h_rc, a_rc in records_to_use:
+                days_diff = max(0, (ref_date - m_date).total_seconds() / 86400.0) if m_date else 0
                 w = math.exp(-cls.XI_TIME_DECAY * days_diff)
 
-                if f.home_team_id == team_id:
-                    c_recv = (stats.home_yellow_cards or 0) + (stats.home_red_cards or 0)
-                    c_forced = (stats.away_yellow_cards or 0) + (stats.away_red_cards or 0)
-                    tot_reds += (stats.home_red_cards or 0)
+                if home_id == team_id:
+                    c_recv = (h_yc or 0) + (h_rc or 0)
+                    c_forced = (a_yc or 0) + (a_rc or 0)
+                    tot_reds += (h_rc or 0)
                 else:
-                    c_recv = (stats.away_yellow_cards or 0) + (stats.away_red_cards or 0)
-                    c_forced = (stats.home_yellow_cards or 0) + (stats.home_red_cards or 0)
-                    tot_reds += (stats.away_red_cards or 0)
+                    c_recv = (a_yc or 0) + (a_rc or 0)
+                    c_forced = (h_yc or 0) + (h_rc or 0)
+                    tot_reds += (a_rc or 0)
 
                 weighted_recv += c_recv * w
                 weighted_forced += c_forced * w
@@ -673,7 +814,14 @@ class CardsPredictionEngine:
 
     @classmethod
     def calculate_expected_cards(
-        cls, db: Session, home_team_id: int, away_team_id: int, league_id: Optional[int], referee_name: Optional[str] = None, target_date: Optional[datetime] = None
+        cls,
+        db: Session,
+        home_team_id: int,
+        away_team_id: int,
+        league_id: Optional[int],
+        referee_name: Optional[str] = None,
+        target_date: Optional[datetime] = None,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, float, float, Dict[str, Any]]:
         """
         Calculates expected cards (lambda_home, lambda_away, lambda_total) with
@@ -681,12 +829,16 @@ class CardsPredictionEngine:
         """
         # 1. League Baseline
         l_home, l_away, l_tot, baseline_source, baseline_sample_size = LeagueCardBaselineService.resolve_league_baseline(
-            db, league_id, target_date=target_date
+            db, league_id, target_date=target_date, batch_cache=batch_cache
         )
 
         # 2. Team Features
-        h_feat = TeamDisciplineService.get_team_discipline_features(db, home_team_id, is_home=True, target_date=target_date)
-        a_feat = TeamDisciplineService.get_team_discipline_features(db, away_team_id, is_home=False, target_date=target_date)
+        h_feat = TeamDisciplineService.get_team_discipline_features(
+            db, home_team_id, is_home=True, target_date=target_date, batch_cache=batch_cache
+        )
+        a_feat = TeamDisciplineService.get_team_discipline_features(
+            db, away_team_id, is_home=False, target_date=target_date, batch_cache=batch_cache
+        )
 
         # 3. Disciplinary & Forcing Ratios
         raw_h_disc = h_feat["avg_cards_received"] / max(0.8, l_home)
@@ -704,7 +856,9 @@ class CardsPredictionEngine:
         a_force = _shrink_to_prior(raw_a_force, 1.0, w_a)
 
         # 5. Referee Adjustment
-        ref_info = RefereeIntelligenceService.resolve_referee_adjustment(db, referee_name, league_id, target_date=target_date)
+        ref_info = RefereeIntelligenceService.resolve_referee_adjustment(
+            db, referee_name, league_id, target_date=target_date, batch_cache=batch_cache
+        )
         ref_adj = ref_info.get("influence_factor", 1.0)
 
         # 6. Expected Rates
@@ -948,7 +1102,13 @@ class CardsPredictionEngine:
 
     @classmethod
     def predict_cards(
-        cls, db: Session, fixture_id: int, target_date: Optional[datetime] = None, save_snapshot: bool = True
+        cls,
+        db: Session,
+        fixture_id: int,
+        target_date: Optional[datetime] = None,
+        save_snapshot: bool = True,
+        commit_snapshot: bool = True,
+        batch_cache: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Executes full Cards Prediction pipeline for a fixture.
@@ -971,7 +1131,12 @@ class CardsPredictionEngine:
 
         # Check coverage
         cov_info = CardDataQualityService.get_fixture_card_coverage(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, target_date=target_date
+            db,
+            cast(int, fixture.home_team_id),
+            cast(int, fixture.away_team_id),
+            fixture.league_id,
+            target_date=target_date,
+            batch_cache=batch_cache,
         )
 
         h_sample = cov_info["home_sample_size"]
@@ -997,11 +1162,19 @@ class CardsPredictionEngine:
 
         # Calculate expected cards
         xg_h, xg_a, xg_tot, diag = cls.calculate_expected_cards(
-            db, cast(int, fixture.home_team_id), cast(int, fixture.away_team_id), fixture.league_id, referee_name=ref_name, target_date=target_date
+            db,
+            cast(int, fixture.home_team_id),
+            cast(int, fixture.away_team_id),
+            fixture.league_id,
+            referee_name=ref_name,
+            target_date=target_date,
+            batch_cache=batch_cache,
         )
 
         # Resolve dispersion
-        dispersion_r, dispersion_source = LeagueCardBaselineService.resolve_dispersion(db, fixture.league_id, target_date=target_date)
+        dispersion_r, dispersion_source = LeagueCardBaselineService.resolve_dispersion(
+            db, fixture.league_id, target_date=target_date, batch_cache=batch_cache
+        )
 
         # Calculate probabilities
         probs = cls.calculate_card_probabilities(xg_h, xg_a, dispersion=dispersion_r)
@@ -1050,7 +1223,13 @@ class CardsPredictionEngine:
 
         if save_snapshot:
             try:
-                CardSnapshotService.save_prediction_snapshot(db, fixture_id, res_payload, is_prematch=(fixture.status == "SCHEDULED"))
+                CardSnapshotService.save_prediction_snapshot(
+                    db,
+                    fixture_id,
+                    res_payload,
+                    is_prematch=(fixture.status == "SCHEDULED"),
+                    commit=commit_snapshot,
+                )
             except Exception as snap_ex:
                 logger.debug(f"Error saving card snapshot for fixture {fixture_id}: {snap_ex}")
 
@@ -1064,7 +1243,12 @@ class CardSnapshotService:
 
     @classmethod
     def save_prediction_snapshot(
-        cls, db: Session, fixture_id: int, pred_dict: Dict[str, Any], is_prematch: bool = True
+        cls,
+        db: Session,
+        fixture_id: int,
+        pred_dict: Dict[str, Any],
+        is_prematch: bool = True,
+        commit: bool = True,
     ) -> Optional[CardPredictionSnapshot]:
         """
         Persists a pre-match card prediction snapshot without overwriting earlier pre-match snapshots.
@@ -1130,7 +1314,10 @@ class CardSnapshotService:
             existing.baseline_source = model_meta.get("baseline_source", "fallback")
             existing.referee_source = model_meta.get("referee_source", "fallback")
             existing.referee_sample_size = ref_info.get("sample_size", 0)
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
             return existing
 
         snapshot = CardPredictionSnapshot(
@@ -1177,7 +1364,10 @@ class CardSnapshotService:
             is_verified=False
         )
         db.add(snapshot)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return snapshot
 
     @classmethod
