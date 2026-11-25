@@ -313,6 +313,23 @@ class TestPhaseABCUpgrades(unittest.TestCase):
         self.assertGreaterEqual(len(r_list_a["summary"]["equity_curve"]), 2)
         self.assertEqual(r_list_a["summary"]["market_breakdown"][0]["market"], "Over 1.5 Goals")
 
+        # Verify browser CORS preflight OPTIONS allows X-Client-Id and PATCH/PUT/DELETE
+        preflight = self.client.options(
+            f"/api/betslips/{slip_id}/booking-code",
+            headers={
+                "Origin": "https://soccer-goal-predictor-web.onrender.com",
+                "Access-Control-Request-Method": "PATCH",
+                "Access-Control-Request-Headers": "content-type, x-client-id, x-admin-key",
+            },
+        )
+        self.assertEqual(preflight.status_code, 200)
+        allow_hdrs = preflight.headers.get("access-control-allow-headers", "").lower()
+        allow_meths = preflight.headers.get("access-control-allow-methods", "").upper()
+        self.assertIn("x-client-id", allow_hdrs)
+        self.assertIn("PATCH", allow_meths)
+        self.assertIn("DELETE", allow_meths)
+        self.assertIn("PUT", allow_meths)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,8 +101,9 @@ const apiRequest = async (method, path, data = null, options = {}) => {
   const timeoutMs = options.timeout || 60000;
   const adminKey = getStoredAdminKey();
   const clientId = getOrCreateClientId();
+  const isBetSlipRoute = path.startsWith('/api/betslips');
   const mergedHeaders = {
-    'X-Client-Id': clientId,
+    ...(isBetSlipRoute ? { 'X-Client-Id': clientId } : {}),
     ...(options.headers || {}),
     ...((method === 'post' || method === 'put' || method === 'patch' || method === 'delete' || path === '/api/admin/verify') && adminKey
       ? { 'X-Admin-Key': adminKey }
