@@ -10,9 +10,9 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
+    from models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics, EloRating
 except ImportError:
-    from ..models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics
+    from ..models import League, Team, Fixture, HistoricalResult, TeamStatistics, LeagueStatistics, EloRating
 
 
 FINISHED_STATUSES = ["FINISHED", "FT", "AET", "PEN"]
@@ -57,6 +57,21 @@ def calculate_team_statistics(
     now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
     decay_factor = 0.0035
 
+    opp_ids = set()
+    for res in home_results:
+        if res.fixture and res.fixture.away_team_id:
+            opp_ids.add(res.fixture.away_team_id)
+    for res in away_results:
+        if res.fixture and res.fixture.home_team_id:
+            opp_ids.add(res.fixture.home_team_id)
+
+    elo_map = {}
+    if opp_ids:
+        for er in db.query(EloRating).filter(EloRating.team_id.in_(list(opp_ids))).all():
+            if (er.matches_played or 0) >= 3 and er.rating:
+                elo_map[er.team_id] = float(er.rating)
+
+    home_opp_elo_weighted = 0.0
     if home_count > 0:
         weight_sum = 0.0
         scored_weighted = 0.0
@@ -65,17 +80,22 @@ def calculate_team_statistics(
             match_date = res.fixture.match_date
             m_date = match_date.replace(tzinfo=None) if match_date.tzinfo else match_date
             days_diff = max(0.0, (now_dt - m_date).total_seconds() / 86400.0)
-            weight = math.exp(-decay_factor * days_diff)
+            comp_w = 0.65 if (team.league_id and res.fixture.league_id and res.fixture.league_id != team.league_id) else 1.0
+            weight = math.exp(-decay_factor * days_diff) * comp_w
             weight_sum += weight
             scored_weighted += float(res.home_score) * weight
             conceded_weighted += float(res.away_score) * weight
-        
+            home_opp_elo_weighted += elo_map.get(res.fixture.away_team_id, 1500.0) * weight
+
         avg_home_scored = round(scored_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
         avg_home_conceded = round(conceded_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
+        avg_home_opp_elo = (home_opp_elo_weighted / weight_sum) if weight_sum > 0 else 1500.0
     else:
         avg_home_scored = 0.0
         avg_home_conceded = 0.0
+        avg_home_opp_elo = 1500.0
 
+    away_opp_elo_weighted = 0.0
     if away_count > 0:
         weight_sum = 0.0
         scored_weighted = 0.0
@@ -84,16 +104,20 @@ def calculate_team_statistics(
             match_date = res.fixture.match_date
             m_date = match_date.replace(tzinfo=None) if match_date.tzinfo else match_date
             days_diff = max(0.0, (now_dt - m_date).total_seconds() / 86400.0)
-            weight = math.exp(-decay_factor * days_diff)
+            comp_w = 0.65 if (team.league_id and res.fixture.league_id and res.fixture.league_id != team.league_id) else 1.0
+            weight = math.exp(-decay_factor * days_diff) * comp_w
             weight_sum += weight
             scored_weighted += float(res.away_score) * weight
             conceded_weighted += float(res.home_score) * weight
-            
+            away_opp_elo_weighted += elo_map.get(res.fixture.home_team_id, 1500.0) * weight
+
         avg_away_scored = round(scored_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
         avg_away_conceded = round(conceded_weighted / weight_sum, 2) if weight_sum > 0 else 0.0
+        avg_away_opp_elo = (away_opp_elo_weighted / weight_sum) if weight_sum > 0 else 1500.0
     else:
         avg_away_scored = 0.0
         avg_away_conceded = 0.0
+        avg_away_opp_elo = 1500.0
 
     # Fetch or calculate league statistics for strength metric comparisons
     league_avg_home = 0.0
@@ -104,10 +128,15 @@ def calculate_team_statistics(
             league_avg_home = cast(float, l_stats.avg_home_goals)
             league_avg_away = cast(float, l_stats.avg_away_goals)
 
-    home_attack_strength = round(avg_home_scored / league_avg_home, 4) if (league_avg_home > 0 and home_count > 0) else 1.0
-    home_defense_strength = round(avg_home_conceded / league_avg_away, 4) if (league_avg_away > 0 and home_count > 0) else 1.0
-    away_attack_strength = round(avg_away_scored / league_avg_away, 4) if (league_avg_away > 0 and away_count > 0) else 1.0
-    away_defense_strength = round(avg_away_conceded / league_avg_home, 4) if (league_avg_home > 0 and away_count > 0) else 1.0
+    h_opp_att_factor = max(0.90, min(1.12, avg_home_opp_elo / 1500.0))
+    h_opp_def_factor = max(0.90, min(1.12, 1500.0 / max(1000.0, avg_home_opp_elo)))
+    a_opp_att_factor = max(0.90, min(1.12, avg_away_opp_elo / 1500.0))
+    a_opp_def_factor = max(0.90, min(1.12, 1500.0 / max(1000.0, avg_away_opp_elo)))
+
+    home_attack_strength = round((avg_home_scored / league_avg_home) * h_opp_att_factor, 4) if (league_avg_home > 0 and home_count > 0) else 1.0
+    home_defense_strength = round((avg_home_conceded / league_avg_away) * h_opp_def_factor, 4) if (league_avg_away > 0 and home_count > 0) else 1.0
+    away_attack_strength = round((avg_away_scored / league_avg_away) * a_opp_att_factor, 4) if (league_avg_away > 0 and away_count > 0) else 1.0
+    away_defense_strength = round((avg_away_conceded / league_avg_home) * a_opp_def_factor, 4) if (league_avg_home > 0 and away_count > 0) else 1.0
 
     # Fetch existing team statistics or create a new entry
     stats = db.query(TeamStatistics).filter(TeamStatistics.team_id == team_id).first()

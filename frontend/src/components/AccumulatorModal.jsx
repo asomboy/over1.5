@@ -22,6 +22,9 @@ export default function AccumulatorModal({ isOpen, onClose, apiRequest, selected
       if (controller.signal.aborted) return;
       if (res.data?.status === 'ok') {
         setAccumulators(res.data.accumulators);
+        if (res.data.warming_up) {
+          setTimeout(() => { if (!controller.signal.aborted) fetchAccas(); }, 4000);
+        }
       }
     } catch (err) {
       if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
@@ -72,7 +75,7 @@ export default function AccumulatorModal({ isOpen, onClose, apiRequest, selected
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
-      <div className={`w-full max-w-3xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors ${
+      <div className={`modal-light-scope w-full max-w-3xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors ${
         darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         

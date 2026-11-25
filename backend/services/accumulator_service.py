@@ -135,6 +135,7 @@ class AccumulatorGeneratorService:
         return {
             "status": "ok",
             "total_candidates_analyzed": len(candidates),
+            "warming_up": bool(len(fixtures) > 0 and len(candidates) == 0),
             "accumulators": {
                 "safe_double": safe_double,
                 "over_1_5_5fold": over15_5fold,

@@ -1,9 +1,11 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,11 +22,12 @@ except ImportError:
 
 class BetSlipService:
     """
-    Manages tracked bet slips, +EV edge calculations against user bookmaker odds,
-    quarter-Kelly sizing, and automatic match settlement against final results.
+    Paper-trading Bet Slip, +EV Edge Calculator, Quarter-Kelly sizer, and automatic
+    fixture outcome settlement engine with per-client workspace isolation.
     """
 
     MAX_STORED_SLIPS = 500
+    DEFAULT_CLIENT_ID = "public"
 
     DISPLAY_MARKET_ALIASES: Dict[str, str] = {
         "over 0.5": "over_0_5_goals",
@@ -80,6 +83,21 @@ class BetSlipService:
         "over 4.5 cards": "over_4_5_cards",
     }
 
+    @classmethod
+    def normalize_client_id(cls, client_id: Optional[str]) -> str:
+        """Sanitizes client profile token; falls back to 'public' when omitted."""
+        if not client_id:
+            return cls.DEFAULT_CLIENT_ID
+        cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(client_id).strip())[:64]
+        return cleaned if len(cleaned) >= 4 else cls.DEFAULT_CLIENT_ID
+
+    @classmethod
+    def _client_filter(cls, query, client_id: Optional[str]):
+        cid = cls.normalize_client_id(client_id)
+        if cid == cls.DEFAULT_CLIENT_ID:
+            return query.filter(or_(BetSlip.client_id == cls.DEFAULT_CLIENT_ID, BetSlip.client_id.is_(None)))
+        return query.filter(BetSlip.client_id == cid)
+
     @staticmethod
     def calculate_leg_ev(
         model_prob: float, bookmaker_odds: Optional[float] = None
@@ -90,21 +108,21 @@ class BetSlipService:
 
         if bookmaker_odds is not None and float(bookmaker_odds) > 1.0:
             eff_odds = round(float(bookmaker_odds), 2)
-            edge = prob * eff_odds - 1.0
-            ev_pct = round(edge * 100.0, 2)
-            kelly_raw = edge / max(0.01, eff_odds - 1.0)
-            kelly_quarter = round(min(0.10, max(0.0, kelly_raw * 0.25)), 4)
+            ev_pct = round((prob * eff_odds - 1.0) * 100.0, 2)
+            b = eff_odds - 1.0
+            full_kelly = (prob * eff_odds - 1.0) / b if b > 0 else 0.0
+            quarter_kelly = round(max(0.0, min(0.10, full_kelly * 0.25)), 4)
         else:
             eff_odds = fair_odds
             ev_pct = 0.0
-            kelly_quarter = 0.0
+            quarter_kelly = 0.0
 
         return {
             "model_prob": round(prob, 4),
             "fair_odds": fair_odds,
             "effective_odds": eff_odds,
             "ev_pct": ev_pct,
-            "kelly_fraction": kelly_quarter,
+            "kelly_fraction": quarter_kelly,
         }
 
     @classmethod
@@ -116,64 +134,70 @@ class BetSlipService:
         stats: Optional[MatchStatistics],
         baseline_goals: Optional[int] = None,
     ) -> Optional[str]:
-        """Grades a slip leg against factual finished match results, returning 'WON', 'LOST', 'VOID', or None."""
+        """Grades a single slip leg to 'WON', 'LOST', 'VOID', or None (still pending)."""
         if not fixture:
             return None
 
-        st = str(fixture.status or "").upper()
-        if st in ("POSTPONED", "CANCELLED", "CANCELED", "ABANDONED"):
+        status_up = str(fixture.status or "").upper()
+        if status_up in ("POSTPONED", "CANCELLED", "ABANDONED"):
             return "VOID"
 
-        if st not in ("FINISHED", "FT", "AET", "PEN"):
+        if status_up not in ("FINISHED", "FT", "AET", "PEN"):
             return None
 
-        h_score = fixture.home_score if fixture.home_score is not None else (hist.home_score if hist else None)
-        a_score = fixture.away_score if fixture.away_score is not None else (hist.away_score if hist else None)
-        if h_score is None or a_score is None:
+        if fixture.home_score is None or fixture.away_score is None:
             return None
 
-        norm_market = str(market or "").strip().lower()
-        if "at least 1 more goal" in norm_market or "+1 more goal" in norm_market:
-            base = int(baseline_goals or 0)
-            return "WON" if (h_score + a_score) > base else "LOST"
+        h_goals = int(fixture.home_score)
+        a_goals = int(fixture.away_score)
+        total_goals = h_goals + a_goals
 
-        canonical = cls.DISPLAY_MARKET_ALIASES.get(norm_market, norm_market.replace(" ", "_"))
-        res = MarketResolutionService.resolve_market_outcome(
+        raw_m = market.strip().lower()
+        if "more goal" in raw_m or raw_m == "at_least_1_more_goal":
+            if baseline_goals is None:
+                return "WON" if total_goals >= 1 else "LOST"
+            return "WON" if total_goals >= (int(baseline_goals) + 1) else "LOST"
+
+        canonical = cls.DISPLAY_MARKET_ALIASES.get(raw_m, raw_m.replace(" ", "_"))
+        ht_h = hist.half_time_home_score if hist else None
+        ht_a = hist.half_time_away_score if hist else None
+
+        outcome = MarketResolutionService.resolve_market_outcome(
             market=canonical,
-            home_score=h_score,
-            away_score=a_score,
-            ht_home_score=hist.half_time_home_score if hist else None,
-            ht_away_score=hist.half_time_away_score if hist else None,
-            home_corners=stats.home_corners if stats else (hist.home_corners if hist else None),
-            away_corners=stats.away_corners if stats else (hist.away_corners if hist else None),
-            home_yellow=stats.home_yellow_cards if stats else (hist.home_yellow_cards if hist else None),
-            away_yellow=stats.away_yellow_cards if stats else (hist.away_yellow_cards if hist else None),
-            home_red=stats.home_red_cards if stats else (hist.home_red_cards if hist else None),
-            away_red=stats.away_red_cards if stats else (hist.away_red_cards if hist else None),
+            home_score=h_goals,
+            away_score=a_goals,
+            ht_home_score=ht_h,
+            ht_away_score=ht_a,
+            home_corners=int(stats.home_corners) if (stats and stats.home_corners is not None) else None,
+            away_corners=int(stats.away_corners) if (stats and stats.away_corners is not None) else None,
+            home_yellow=int(stats.home_yellow_cards) if (stats and stats.home_yellow_cards is not None) else None,
+            away_yellow=int(stats.away_yellow_cards) if (stats and stats.away_yellow_cards is not None) else None,
+            home_red=int(stats.home_red_cards or 0) if stats else None,
+            away_red=int(stats.away_red_cards or 0) if stats else None,
         )
-        if res is None:
+        if outcome is None:
             return None
-        return "WON" if res >= 0.5 else "LOST"
+        return "WON" if outcome >= 0.5 else "LOST"
 
-    @classmethod
-    def serialize_slip(cls, slip: BetSlip) -> Dict[str, Any]:
-        """Serializes a BetSlip row with UTC ISO timestamps."""
+    @staticmethod
+    def serialize_slip(slip: BetSlip) -> Dict[str, Any]:
         try:
             legs = json.loads(slip.legs_json or "[]")
         except Exception:
             legs = []
         created_iso = (
-            slip.created_at.isoformat() + "Z"
-            if slip.created_at and getattr(slip.created_at, "tzinfo", None) is None
-            else (slip.created_at.isoformat() if slip.created_at else None)
+            slip.created_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            if slip.created_at
+            else None
         )
         settled_iso = (
-            slip.settled_at.isoformat() + "Z"
-            if slip.settled_at and getattr(slip.settled_at, "tzinfo", None) is None
-            else (slip.settled_at.isoformat() if slip.settled_at else None)
+            slip.settled_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            if slip.settled_at
+            else None
         )
         return {
             "id": slip.id,
+            "client_id": getattr(slip, "client_id", None) or "public",
             "title": slip.title,
             "source": slip.source,
             "bookmaker": (getattr(slip, "bookmaker", None) or "general"),
@@ -212,11 +236,14 @@ class BetSlipService:
         legs: List[Dict[str, Any]],
         bookmaker: str = "general",
         booking_code: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Validates, prices, persists, and settles (if applicable) a new tracked BetSlip."""
-        existing_count = db.query(BetSlip).count()
+        cid = cls.normalize_client_id(client_id)
+        existing_q = cls._client_filter(db.query(BetSlip), cid)
+        existing_count = existing_q.count()
         if existing_count >= cls.MAX_STORED_SLIPS:
-            oldest = db.query(BetSlip).order_by(BetSlip.created_at.asc()).limit(existing_count - cls.MAX_STORED_SLIPS + 1).all()
+            oldest = existing_q.order_by(BetSlip.created_at.asc()).limit(existing_count - cls.MAX_STORED_SLIPS + 1).all()
             for row in oldest:
                 db.delete(row)
 
@@ -253,6 +280,7 @@ class BetSlipService:
         eff_ev = round((joint_prob * eff_combined - 1.0) * 100.0, 2)
 
         slip = BetSlip(
+            client_id=cid,
             title=str(title or "Tracked Prediction Slip").strip()[:120],
             source=str(source or "manual").strip()[:32],
             bookmaker=cls.normalize_bookmaker(bookmaker),
@@ -386,40 +414,86 @@ class BetSlipService:
         return settled_count
 
     @classmethod
-    def get_slips_and_summary(cls, db: Session, limit: int = 100) -> Dict[str, Any]:
-        """Returns persisted slips alongside aggregate ROI, win rate, and drawdown stats."""
+    def get_slips_and_summary(
+        cls, db: Session, limit: int = 100, client_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Returns persisted slips for client_id alongside aggregate ROI, equity curve, and market breakdown."""
         cls.settle_open_slips(db)
-        rows = db.query(BetSlip).order_by(BetSlip.created_at.desc(), BetSlip.id.desc()).limit(limit).all()
+        cid = cls.normalize_client_id(client_id)
+        rows = (
+            cls._client_filter(db.query(BetSlip), cid)
+            .order_by(BetSlip.created_at.desc(), BetSlip.id.desc())
+            .limit(limit)
+            .all()
+        )
         slips = [cls.serialize_slip(r) for r in rows]
 
-        all_rows = db.query(BetSlip).order_by(BetSlip.created_at.asc(), BetSlip.id.asc()).all()
+        all_rows = (
+            cls._client_filter(db.query(BetSlip), cid)
+            .order_by(BetSlip.created_at.asc(), BetSlip.id.asc())
+            .all()
+        )
+        pending_slips = sum(1 for r in all_rows if r.status == "PENDING")
         won_slips = sum(1 for r in all_rows if r.status == "WON")
         lost_slips = sum(1 for r in all_rows if r.status == "LOST")
         void_slips = sum(1 for r in all_rows if r.status == "VOID")
-        pending_slips = sum(1 for r in all_rows if r.status == "PENDING")
 
-        settled_non_void = won_slips + lost_slips
-        total_staked = sum(float(r.stake or 0.0) for r in all_rows if r.status in ("WON", "LOST"))
-        total_payout = sum(float(r.payout or 0.0) for r in all_rows if r.status in ("WON", "LOST"))
+        settled_rows = [r for r in all_rows if r.status in ("WON", "LOST")]
+        total_staked = sum(float(r.stake or 0.0) for r in settled_rows)
+        total_payout = sum(float(r.payout or 0.0) for r in settled_rows)
         net_profit = round(total_payout - total_staked, 2)
         roi_pct = round((net_profit / total_staked) * 100.0, 2) if total_staked > 0 else 0.0
-        win_rate_pct = round((won_slips / settled_non_void) * 100.0, 1) if settled_non_void > 0 else 0.0
+        win_rate_pct = round((won_slips / len(settled_rows)) * 100.0, 1) if settled_rows else 0.0
 
-        # Cumulative equity curve drawdown across settled non-void slips
-        running = 0.0
-        peak = 0.0
+        running_pl = 0.0
+        peak_pl = 0.0
         max_dd = 0.0
-        for r in all_rows:
-            if r.status in ("WON", "LOST"):
-                running += float(r.profit_loss or 0.0)
-                if running > peak:
-                    peak = running
-                dd = peak - running
-                if dd > max_dd:
-                    max_dd = dd
+        equity_curve: List[Dict[str, Any]] = [{"step": 0, "label": "Start", "equity": 0.0}]
+        market_stats: Dict[str, Dict[str, int]] = {}
+
+        for idx, r in enumerate(settled_rows, 1):
+            running_pl = round(running_pl + float(r.profit_loss or 0.0), 2)
+            if running_pl > peak_pl:
+                peak_pl = running_pl
+            dd = peak_pl - running_pl
+            if dd > max_dd:
+                max_dd = dd
+            equity_curve.append({
+                "step": idx,
+                "label": f"#{r.id}",
+                "equity": running_pl,
+                "status": r.status,
+            })
+
+            try:
+                r_legs = json.loads(r.legs_json or "[]")
+            except Exception:
+                r_legs = []
+            for lg in (r_legs if isinstance(r_legs, list) else []):
+                m_name = str(lg.get("market") or "Over 1.5 Goals")
+                lg_res = str(lg.get("result") or "")
+                if lg_res in ("WON", "LOST"):
+                    bucket = market_stats.setdefault(m_name, {"won": 0, "lost": 0, "total": 0})
+                    bucket["total"] += 1
+                    if lg_res == "WON":
+                        bucket["won"] += 1
+                    else:
+                        bucket["lost"] += 1
+
+        market_breakdown = [
+            {
+                "market": m_name,
+                "won": vals["won"],
+                "lost": vals["lost"],
+                "total": vals["total"],
+                "hit_rate_pct": round((vals["won"] / vals["total"]) * 100.0, 1) if vals["total"] else 0.0,
+            }
+            for m_name, vals in sorted(market_stats.items(), key=lambda kv: kv[1]["total"], reverse=True)[:8]
+        ]
 
         return {
             "status": "ok",
+            "client_id": cid,
             "slips": slips,
             "summary": {
                 "total_slips": len(all_rows),
@@ -434,6 +508,8 @@ class BetSlipService:
                 "net_profit": net_profit,
                 "roi_pct": roi_pct,
                 "max_drawdown": round(max_dd, 2),
+                "equity_curve": equity_curve,
+                "market_breakdown": market_breakdown,
             },
         }
 
@@ -444,9 +520,11 @@ class BetSlipService:
         slip_id: int,
         bookmaker: Optional[str] = None,
         booking_code: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Updates the bookmaker profile and/or user-attached booking code on a tracked slip."""
-        row = db.query(BetSlip).filter(BetSlip.id == slip_id).first()
+        q = cls._client_filter(db.query(BetSlip).filter(BetSlip.id == slip_id), client_id)
+        row = q.first()
         if not row:
             return None
         if bookmaker is not None:
@@ -457,13 +535,13 @@ class BetSlipService:
         db.refresh(row)
         return cls.serialize_slip(row)
 
-    @staticmethod
-    def delete_slip(db: Session, slip_id: int) -> bool:
-        """Deletes a single tracked bet slip by ID."""
-        row = db.query(BetSlip).filter(BetSlip.id == slip_id).first()
+    @classmethod
+    def delete_slip(cls, db: Session, slip_id: int, client_id: Optional[str] = None) -> bool:
+        """Deletes a single tracked bet slip by ID within the caller's client scope."""
+        q = cls._client_filter(db.query(BetSlip).filter(BetSlip.id == slip_id), client_id)
+        row = q.first()
         if not row:
             return False
         db.delete(row)
         db.commit()
         return True
-

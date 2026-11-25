@@ -6,6 +6,7 @@ import {
   Coins,
   Copy,
   ExternalLink,
+  KeyRound,
   Receipt,
   RefreshCw,
   ShieldCheck,
@@ -22,6 +23,8 @@ import {
   getBookmakerSearchUrl,
   translateMarketForBookmaker,
 } from '../utils/bookmakerMarkets';
+import { BankrollEquityChart } from './AnalyticsCharts';
+import { getOrCreateClientId, setCustomClientId } from '../utils/clientSession';
 
 const STATUS_BADGE = {
   WON: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
@@ -90,9 +93,14 @@ export default function BetSlipTrackerModal({
   const [editingBookingCode, setEditingBookingCode] = useState('');
   const [savingCode, setSavingCode] = useState(false);
 
+  const [profileCode, setProfileCode] = useState(() => getOrCreateClientId());
+  const [showProfileLink, setShowProfileLink] = useState(false);
+  const [linkCodeInput, setLinkCodeInput] = useState('');
+
   const [copiedKey, setCopiedKey] = useState(null);
   const wasOpenRef = useRef(false);
   const bookmakerAbortRef = useRef(null);
+  const warmupTimerRef = useRef(null);
 
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
@@ -152,6 +160,12 @@ export default function BetSlipTrackerModal({
       if (controller.signal.aborted) return;
       if (res.data?.status === 'ok') {
         setBookmakerData(res.data);
+        if (res.data.warming_up) {
+          clearTimeout(warmupTimerRef.current);
+          warmupTimerRef.current = setTimeout(() => {
+            fetchBookmakerSlips();
+          }, 4000);
+        }
       }
     } catch (err) {
       if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
@@ -170,6 +184,7 @@ export default function BetSlipTrackerModal({
       bookmakerAbortRef.current.abort();
     }
     return () => {
+      clearTimeout(warmupTimerRef.current);
       if (bookmakerAbortRef.current) {
         bookmakerAbortRef.current.abort();
       }
@@ -348,7 +363,7 @@ export default function BetSlipTrackerModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md">
-      <div className={`w-full max-w-4xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${surface}`}>
+      <div className={`modal-light-scope w-full max-w-4xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${surface}`}>
         {/* Header */}
         <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-gradient-to-r from-rose-950/30 via-slate-900 to-emerald-950/30">
           <div className="flex items-center gap-3">
@@ -898,6 +913,68 @@ export default function BetSlipTrackerModal({
             )
           ) : (
             <div className="space-y-4">
+              {/* Private Sync Profile Bar */}
+              <div className={`p-3 rounded-2xl border flex flex-wrap items-center justify-between gap-2 text-xs ${cardCls}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="text-slate-400 font-semibold">Private Ledger Sync Code:</span>
+                  <code className="px-2 py-0.5 rounded bg-slate-900 text-cyan-300 font-mono font-bold border border-slate-800">
+                    {profileCode}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyTextWithFeedback(profileCode, 'sync-profile')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold"
+                  >
+                    {copiedKey === 'sync-profile' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedKey === 'sync-profile' ? 'Copied!' : 'Copy'}</span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProfileLink((v) => !v);
+                    setLinkCodeInput('');
+                  }}
+                  className="text-[11px] font-bold text-amber-400 hover:underline"
+                >
+                  {showProfileLink ? 'Close Device Sync' : 'Sync Another Device'}
+                </button>
+              </div>
+
+              {showProfileLink && (
+                <div className={`p-3 rounded-2xl border flex flex-wrap items-center gap-2 ${cardCls}`}>
+                  <input
+                    type="text"
+                    value={linkCodeInput}
+                    onChange={(e) => setLinkCodeInput(e.target.value.toUpperCase())}
+                    placeholder="Paste Sync Code (e.g. SGP-ABCD-1234)"
+                    className={`flex-1 min-w-[180px] px-3 py-1.5 rounded-xl border text-xs font-mono font-bold ${inputCls}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const updated = setCustomClientId(linkCodeInput);
+                      if (!updated) {
+                        if (onNotifyBanner) {
+                          onNotifyBanner({ type: 'error', message: 'Enter at least 4 letters/digits for a Sync Code.' });
+                        }
+                        return;
+                      }
+                      setProfileCode(updated);
+                      setShowProfileLink(false);
+                      await fetchLedger();
+                      if (onNotifyBanner) {
+                        onNotifyBanner({ type: 'success', message: `Synced ledger profile ${updated}!` });
+                      }
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold"
+                  >
+                    Apply Sync Code
+                  </button>
+                </div>
+              )}
+
               {/* Summary KPIs */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs text-slate-400 font-semibold">
@@ -915,42 +992,49 @@ export default function BetSlipTrackerModal({
               </div>
 
               {summary && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className={`p-3 rounded-xl border ${cardCls}`}>
-                    <div className="text-[10px] font-bold uppercase text-slate-400">Win Rate</div>
-                    <div className="text-xl font-black text-emerald-400">{summary.win_rate_pct ?? 0}%</div>
-                    <div className="text-[10px] text-slate-500">
-                      {summary.won_slips ?? 0}W / {summary.lost_slips ?? 0}L / {summary.pending_slips ?? 0}P
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className={`p-3 rounded-xl border ${cardCls}`}>
+                      <div className="text-[10px] font-bold uppercase text-slate-400">Win Rate</div>
+                      <div className="text-xl font-black text-emerald-400">{summary.win_rate_pct ?? 0}%</div>
+                      <div className="text-[10px] text-slate-500">
+                        {summary.won_slips ?? 0}W / {summary.lost_slips ?? 0}L / {summary.pending_slips ?? 0}P
+                      </div>
+                    </div>
+                    <div className={`p-3 rounded-xl border ${cardCls}`}>
+                      <div className="text-[10px] font-bold uppercase text-slate-400">Net Profit/Loss</div>
+                      <div
+                        className={`text-xl font-black ${
+                          summary.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {summary.net_profit >= 0 ? `+$${summary.net_profit}` : `-$${Math.abs(summary.net_profit)}`}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Staked: ${summary.total_staked ?? 0}</div>
+                    </div>
+                    <div className={`p-3 rounded-xl border ${cardCls}`}>
+                      <div className="text-[10px] font-bold uppercase text-slate-400">ROI</div>
+                      <div
+                        className={`text-xl font-black ${
+                          summary.roi_pct >= 0 ? 'text-cyan-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {summary.roi_pct >= 0 ? `+${summary.roi_pct}%` : `${summary.roi_pct}%`}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Settled Slips: {summary.settled_slips ?? 0}</div>
+                    </div>
+                    <div className={`p-3 rounded-xl border ${cardCls}`}>
+                      <div className="text-[10px] font-bold uppercase text-slate-400">Max Drawdown</div>
+                      <div className="text-xl font-black text-amber-400">-${summary.max_drawdown}</div>
+                      <div className="text-[10px] text-slate-500">Total Slips: {summary.total_slips}</div>
                     </div>
                   </div>
-                  <div className={`p-3 rounded-xl border ${cardCls}`}>
-                    <div className="text-[10px] font-bold uppercase text-slate-400">Net Profit/Loss</div>
-                    <div
-                      className={`text-xl font-black ${
-                        summary.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {summary.net_profit >= 0 ? `+$${summary.net_profit}` : `-$${Math.abs(summary.net_profit)}`}
-                    </div>
-                    <div className="text-[10px] text-slate-500">Staked: ${summary.total_staked ?? 0}</div>
-                  </div>
-                  <div className={`p-3 rounded-xl border ${cardCls}`}>
-                    <div className="text-[10px] font-bold uppercase text-slate-400">ROI</div>
-                    <div
-                      className={`text-xl font-black ${
-                        summary.roi_pct >= 0 ? 'text-cyan-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {summary.roi_pct >= 0 ? `+${summary.roi_pct}%` : `${summary.roi_pct}%`}
-                    </div>
-                    <div className="text-[10px] text-slate-500">Settled Slips: {summary.settled_slips ?? 0}</div>
-                  </div>
-                  <div className={`p-3 rounded-xl border ${cardCls}`}>
-                    <div className="text-[10px] font-bold uppercase text-slate-400">Max Drawdown</div>
-                    <div className="text-xl font-black text-amber-400">-${summary.max_drawdown}</div>
-                    <div className="text-[10px] text-slate-500">Total Slips: {summary.total_slips}</div>
-                  </div>
-                </div>
+                  <BankrollEquityChart
+                    equityCurve={summary.equity_curve}
+                    marketBreakdown={summary.market_breakdown}
+                    darkMode={darkMode}
+                  />
+                </>
               )}
 
               {/* Slips List */}

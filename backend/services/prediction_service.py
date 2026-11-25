@@ -12,13 +12,13 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 try:
-    from models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak, EloRating
+    from models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak, EloRating, ModelEvaluation
     from services.statistics_service import calculate_team_statistics, calculate_league_statistics
     from services.elo_service import EloRatingService, TeamFormService, HeadToHeadService
     from services.weather_service import WeatherService
     from schemas.prediction_schema import MatchIntelligencePrediction
 except ImportError:
-    from ..models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak, EloRating
+    from ..models import Fixture, Prediction, TeamStatistics, LeagueStatistics, Team, HistoricalResult, TeamFormStreak, EloRating, ModelEvaluation
     from .statistics_service import calculate_team_statistics, calculate_league_statistics
     from .elo_service import EloRatingService, TeamFormService, HeadToHeadService
     from .weather_service import WeatherService
@@ -43,6 +43,7 @@ SIGNAL_CANDIDATE_MARKETS = [
     # (Market Name, Category Key, Sub-Key, Min Probability Threshold)
     ("Over 1.5 Goals", "goals", "over_1_5", 0.65),
     ("Over 2.5 Goals", "goals", "over_2_5", 0.52),
+    ("Under 2.5 Goals", "goals", "under_2_5", 0.62),
     ("Over 3.5 Goals", "goals", "over_3_5", 0.38),
     ("Both Teams To Score", "btts", "yes", 0.52),
     ("Both Teams Not To Score", "btts", "no", 0.55),
@@ -776,16 +777,29 @@ class DixonColesPredictionEngine:
         except Exception:
             pass
 
-        raw_home = _clamp(raw_home, 0.6, 2.5)
-        raw_away = _clamp(raw_away, 0.4, 2.2)
+        # Rest Days & Schedule Congestion adjustment
+        if target_date:
+            try:
+                h_rest = cls._calculate_rest_days(db, home_team_id, target_date, batch_cache)
+                a_rest = cls._calculate_rest_days(db, away_team_id, target_date, batch_cache)
+                h_att_r, h_conc_r = cls._rest_days_multipliers(h_rest)
+                a_att_r, a_conc_r = cls._rest_days_multipliers(a_rest)
+                raw_home *= (h_att_r * a_conc_r)
+                raw_away *= (a_att_r * h_conc_r)
+            except Exception:
+                pass
+
+        # Realistic football xG bounds (preserves true low-scoring defensive matchups below 1.80)
+        raw_home = _clamp(raw_home, 0.35, 2.85)
+        raw_away = _clamp(raw_away, 0.25, 2.45)
 
         tot_xg = raw_home + raw_away
-        if tot_xg < 1.8:
-            scale = 1.8 / tot_xg
+        if tot_xg < 1.05:
+            scale = 1.05 / tot_xg
             raw_home *= scale
             raw_away *= scale
-        elif tot_xg > 4.0:
-            scale = 4.0 / tot_xg
+        elif tot_xg > 4.60:
+            scale = 4.60 / tot_xg
             raw_home *= scale
             raw_away *= scale
 
@@ -794,6 +808,57 @@ class DixonColesPredictionEngine:
         expected_total_goals = round(expected_home_goals + expected_away_goals, 2)
 
         return expected_home_goals, expected_away_goals, expected_total_goals
+
+    @staticmethod
+    def _calculate_rest_days(
+        db: Optional[Session],
+        team_id: Optional[int],
+        target_date: Optional[datetime],
+        batch_cache: Optional[Dict[str, Any]] = None,
+    ) -> Optional[float]:
+        """Returns days since team's last played/scheduled match strictly before target_date."""
+        if not db or not team_id or not target_date:
+            return None
+        naive_target = target_date.astimezone(timezone.utc).replace(tzinfo=None) if target_date.tzinfo else target_date
+        ck = ("rest_days", team_id, naive_target.isoformat())
+        if batch_cache is not None and ck in batch_cache:
+            return batch_cache[ck]
+        try:
+            prev_fix = (
+                db.query(Fixture.match_date)
+                .filter(
+                    (Fixture.home_team_id == team_id) | (Fixture.away_team_id == team_id),
+                    Fixture.match_date < (naive_target - timedelta(hours=6)),
+                    Fixture.status.notin_(["POSTPONED", "CANCELLED", "ABANDONED"]),
+                )
+                .order_by(Fixture.match_date.desc())
+                .first()
+            )
+            if prev_fix and prev_fix[0]:
+                p_dt = prev_fix[0].replace(tzinfo=None) if prev_fix[0].tzinfo else prev_fix[0]
+                days = round(max(0.0, (naive_target - p_dt).total_seconds() / 86400.0), 2)
+            else:
+                days = None
+        except Exception:
+            days = None
+        if batch_cache is not None:
+            batch_cache[ck] = days
+        return days
+
+    @staticmethod
+    def _rest_days_multipliers(rest_days: Optional[float]) -> Tuple[float, float]:
+        """Returns (attack_multiplier, goals_conceded_multiplier) based on schedule recovery."""
+        if rest_days is None:
+            return 1.0, 1.0
+        if 0.5 <= rest_days < 3.2:
+            # Congested turnaround (< 77h, e.g. Thursday night -> Sunday league)
+            return 0.95, 1.04
+        if 3.2 <= rest_days < 4.5:
+            return 0.98, 1.01
+        if rest_days > 16.0:
+            # Mild match-sharpness rust after extended break
+            return 0.98, 1.00
+        return 1.0, 1.0
 
     @classmethod
     def calculate_score_matrix(
@@ -1035,6 +1100,7 @@ class DixonColesPredictionEngine:
 
         matrix, grid_size, tail_diag = cls.calculate_score_matrix(lambda_home, lambda_away, max_goals=max_goals, rho=safe_rho)
         derived = cls.derive_markets_from_matrix(matrix, grid_size)
+        derived, cal_applied = cls._apply_empirical_calibration(db, derived, batch_cache=batch_cache)
 
         # Half-by-Half goal predictions with exact sum consistency
         half_props = HalfPredictionEngine.calculate_half_proportions(db, league_id, home_team_id, away_team_id, batch_cache=batch_cache)
@@ -1095,11 +1161,91 @@ class DixonColesPredictionEngine:
             "confidence": confidence,
             "best_signal": best_signal,
             "diagnostics": {
-                "score_matrix": tail_diag
+                "score_matrix": tail_diag,
+                "calibration_applied": cal_applied,
             }
         }
 
         return res_dict
+
+    @classmethod
+    def _apply_empirical_calibration(
+        cls,
+        db: Optional[Session],
+        derived: Dict[str, Any],
+        batch_cache: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], bool]:
+        """
+        Applies empirical decile reliability calibration to Over/Under goal probabilities
+        once verified sample >= 100, preserving strict monotonicity and sum-to-1 invariants.
+        """
+        if not db:
+            return derived, False
+
+        cal_key = ("empirical_cal_map", MODEL_VERSION)
+        if batch_cache is not None and cal_key in batch_cache:
+            cal_map = batch_cache[cal_key]
+        else:
+            cal_map = {}
+            try:
+                for mkt in ("over_1_5_goals", "over_2_5_goals"):
+                    rows = (
+                        db.query(ModelEvaluation.predicted_probability, ModelEvaluation.actual_outcome)
+                        .filter(
+                            ModelEvaluation.model_version == MODEL_VERSION,
+                            ModelEvaluation.market == mkt,
+                            ModelEvaluation.verified == True,
+                        )
+                        .limit(600)
+                        .all()
+                    )
+                    if len(rows) >= 100:
+                        buckets: Dict[int, List[Tuple[float, float]]] = {}
+                        for p, y in rows:
+                            if p is not None and y is not None:
+                                b_idx = min(9, max(0, int(float(p) * 10)))
+                                buckets.setdefault(b_idx, []).append((float(p), float(y)))
+                        decile_shifts = {}
+                        for b_idx, pairs in buckets.items():
+                            if len(pairs) >= 15:
+                                avg_p = sum(x[0] for x in pairs) / len(pairs)
+                                avg_y = sum(x[1] for x in pairs) / len(pairs)
+                                decile_shifts[b_idx] = _clamp(avg_y - avg_p, -0.06, 0.06)
+                        if decile_shifts:
+                            cal_map[mkt] = decile_shifts
+            except Exception:
+                cal_map = {}
+            if batch_cache is not None:
+                batch_cache[cal_key] = cal_map
+
+        if not cal_map:
+            return derived, False
+
+        goals = dict(derived.get("goals") or {})
+        applied = False
+        for mkt_eval, g_key, u_key in (
+            ("over_1_5_goals", "over_1_5", "under_1_5"),
+            ("over_2_5_goals", "over_2_5", "under_2_5"),
+        ):
+            shifts = cal_map.get(mkt_eval)
+            if shifts and g_key in goals:
+                raw_p = float(goals[g_key])
+                b_idx = min(9, max(0, int(raw_p * 10)))
+                if b_idx in shifts:
+                    adj_p = round(_clamp(raw_p + 0.35 * shifts[b_idx], 0.01, 0.99), 4)
+                    goals[g_key] = adj_p
+                    goals[u_key] = round(1.0 - adj_p, 4)
+                    applied = True
+
+        if applied:
+            # Preserve strict monotonicity O0.5 >= O1.5 >= O2.5 >= O3.5 >= O4.5
+            goals["over_1_5"] = round(min(goals["over_0_5"], max(goals["over_2_5"], goals["over_1_5"])), 4)
+            goals["under_1_5"] = round(1.0 - goals["over_1_5"], 4)
+            goals["over_2_5"] = round(min(goals["over_1_5"], max(goals["over_3_5"], goals["over_2_5"])), 4)
+            goals["under_2_5"] = round(1.0 - goals["over_2_5"], 4)
+            derived["goals"] = goals
+
+        return derived, applied
 
     @classmethod
     def generate_match_intelligence_prediction(

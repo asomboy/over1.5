@@ -701,6 +701,7 @@ class BookmakerSlipService:
             "bookmaker": bm,
             "profile": BOOKMAKER_PROFILES[bm],
             "total_fixtures_scanned": len(eligible_fixtures),
+            "warming_up": bool(len(eligible_fixtures) > 0 and len(pool) == 0),
             "slips": slips,
         }
 

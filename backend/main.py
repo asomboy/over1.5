@@ -123,6 +123,27 @@ def _load_cards_for_fixtures(db: Session, fixture_ids: List[int]) -> Dict[int, m
     return _load_latest_by_fixture(db, models.CardPredictionSnapshot, fixture_ids)
 
 
+def _load_team_forms_for_teams(db: Session, team_ids: List[int]) -> Dict[int, List[str]]:
+    """Batch-loads recent W/D/L form arrays from TeamFormStreak in safe SQLite IN chunks."""
+    forms: Dict[int, List[str]] = {}
+    if not team_ids:
+        return forms
+    unique_ids = list({tid for tid in team_ids if tid})
+    for i in range(0, len(unique_ids), 500):
+        chunk = unique_ids[i:i + 500]
+        for row in db.query(models.TeamFormStreak).filter(models.TeamFormStreak.team_id.in_(chunk)).all():
+            raw = str(row.last_5_results or "").strip().upper()
+            parsed = [ch for ch in raw.replace(",", "").replace(" ", "") if ch in ("W", "D", "L")][:5]
+            if parsed:
+                forms[row.team_id] = parsed
+    return forms
+
+
+def _resolve_client_id(request: Request) -> str:
+    raw = request.headers.get("X-Client-Id") or request.query_params.get("client_id") or ""
+    return BetSlipService.normalize_client_id(raw)
+
+
 LIVE_ACTIVE_STATUSES = ("LIVE", "HT", "1H", "2H", "ET")
 _LIVE_ALERT_LOCK = threading.Lock()
 _LIVE_ALERT_SENT_CACHE: Dict[Tuple[int, str], datetime] = {}
@@ -2956,6 +2977,17 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
         all_cards = {}
 
     try:
+        all_team_ids_list = []
+        for f in fixtures:
+            if f.home_team_id:
+                all_team_ids_list.append(f.home_team_id)
+            if f.away_team_id:
+                all_team_ids_list.append(f.away_team_id)
+        all_team_forms = _load_team_forms_for_teams(db, all_team_ids_list)
+    except Exception:
+        all_team_forms = {}
+
+    try:
         all_live_states = _load_live_states_for_fixtures(db, fixture_ids_list)
         all_live_snaps = _load_live_snapshots_for_fixtures(db, fixture_ids_list)
     except Exception as live_err:
@@ -3032,8 +3064,8 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
                 s = str(fix.match_date).replace(" ", "T")
                 match_date_str = s if (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]) else s + "Z"
 
-        # Weather Context (Upgrade 5)
-        weather_data = WeatherService.get_weather_for_venue(fix.venue)
+        # Weather Context (non-blocking cache lookup inside read loop)
+        weather_data = WeatherService.get_weather_for_venue(fix.venue, fetch_remote=False)
 
         # Fair Model Odds (never synthesize +8% market odds without a real bookmaker feed)
         if o15 is not None and o15 > 0:
@@ -3193,13 +3225,15 @@ def get_upcoming_fixtures(request: Request, background_tasks: BackgroundTasks, p
                 "id": fix.home_team.id if fix.home_team else None,
                 "name": fix.home_team.name if fix.home_team else None,
                 "short_code": fix.home_team.short_code if fix.home_team else None,
-                "logo_url": fix.home_team.logo_url if fix.home_team else None
+                "logo_url": fix.home_team.logo_url if fix.home_team else None,
+                "recent_form": all_team_forms.get(fix.home_team_id, []) if fix.home_team_id else []
             },
             "away_team": {
                 "id": fix.away_team.id if fix.away_team else None,
                 "name": fix.away_team.name if fix.away_team else None,
                 "short_code": fix.away_team.short_code if fix.away_team else None,
-                "logo_url": fix.away_team.logo_url if fix.away_team else None
+                "logo_url": fix.away_team.logo_url if fix.away_team else None,
+                "recent_form": all_team_forms.get(fix.away_team_id, []) if fix.away_team_id else []
             },
             "prediction": pred_dict,
             "corners": _serialize_corner_snapshot(all_corners.get(fix.id)),
@@ -3464,11 +3498,18 @@ class AlertPreferenceUpdateIn(BaseModel):
     audio_chime_enabled: Optional[bool] = None
 
 
+@app.get("/api/admin/verify", dependencies=[Depends(require_admin_auth)])
+@limiter.limit("20/minute")
+def verify_admin_key(request: Request):
+    """Validates a user-supplied X-Admin-Key header for administrative UI unlock."""
+    return {"status": "ok", "authenticated": True}
+
+
 @app.get("/api/betslips")
 @limiter.limit("30/minute")
 def get_betslips(request: Request, db: Session = Depends(get_db)):
     """Returns tracked bet slips (auto-settling any newly finished fixtures) & ROI summary."""
-    return BetSlipService.get_slips_and_summary(db)
+    return BetSlipService.get_slips_and_summary(db, client_id=_resolve_client_id(request))
 
 
 @app.post("/api/betslips")
@@ -3483,6 +3524,7 @@ def create_betslip(request: Request, payload: BetSlipCreateIn, db: Session = Dep
         legs=[lg.model_dump() for lg in payload.legs],
         bookmaker=payload.bookmaker or "general",
         booking_code=payload.booking_code,
+        client_id=_resolve_client_id(request),
     )
     return {"status": "ok", "slip": slip}
 
@@ -3492,7 +3534,7 @@ def create_betslip(request: Request, payload: BetSlipCreateIn, db: Session = Dep
 def settle_betslips(request: Request, db: Session = Depends(get_db)):
     """Explicitly settles pending tracked bet slips against finished or postponed fixtures."""
     settled_count = BetSlipService.settle_open_slips(db)
-    summary_payload = BetSlipService.get_slips_and_summary(db)
+    summary_payload = BetSlipService.get_slips_and_summary(db, client_id=_resolve_client_id(request))
     return {"status": "ok", "settled_count": settled_count, **summary_payload}
 
 
@@ -3510,6 +3552,7 @@ def update_betslip_booking_code(
         slip_id=slip_id,
         bookmaker=payload.bookmaker,
         booking_code=payload.booking_code,
+        client_id=_resolve_client_id(request),
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Bet slip not found")
@@ -3520,7 +3563,7 @@ def update_betslip_booking_code(
 @limiter.limit("30/minute")
 def delete_betslip(request: Request, slip_id: int, db: Session = Depends(get_db)):
     """Removes a tracked bet slip by ID."""
-    deleted = BetSlipService.delete_slip(db, slip_id)
+    deleted = BetSlipService.delete_slip(db, slip_id, client_id=_resolve_client_id(request))
     if not deleted:
         raise HTTPException(status_code=404, detail="Bet slip not found")
     return {"status": "ok", "deleted_id": slip_id}

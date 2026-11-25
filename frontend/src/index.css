@@ -61,6 +61,49 @@
   background-size: 40px 40px;
 }
 
+/* Comprehensive Light Mode surface & typography contrast overrides */
+.theme-light .modal-light-scope .bg-slate-950,
+.theme-light .modal-light-scope .bg-slate-950\/40,
+.theme-light .modal-light-scope .bg-slate-950\/50,
+.theme-light .modal-light-scope .bg-slate-950\/60,
+.theme-light .modal-light-scope .bg-slate-950\/70,
+.theme-light .modal-light-scope .bg-slate-950\/80 {
+  background-color: #f8fafc !important;
+}
+
+.theme-light .modal-light-scope .bg-slate-900,
+.theme-light .modal-light-scope .bg-slate-900\/60,
+.theme-light .modal-light-scope .bg-slate-900\/70,
+.theme-light .modal-light-scope .bg-slate-900\/80,
+.theme-light .modal-light-scope .bg-slate-900\/90 {
+  background-color: #ffffff !important;
+}
+
+.theme-light .modal-light-scope .bg-slate-800\/40,
+.theme-light .modal-light-scope .bg-slate-800\/60,
+.theme-light .modal-light-scope .bg-slate-800\/70,
+.theme-light .modal-light-scope .bg-slate-800\/80 {
+  background-color: #f1f5f9 !important;
+}
+
+.theme-light .modal-light-scope .border-slate-800,
+.theme-light .modal-light-scope .border-slate-800\/60,
+.theme-light .modal-light-scope .border-slate-800\/70,
+.theme-light .modal-light-scope .border-slate-800\/80,
+.theme-light .modal-light-scope .border-slate-700,
+.theme-light .modal-light-scope .border-slate-700\/50 {
+  border-color: #e2e8f0 !important;
+}
+
+.theme-light .modal-light-scope .text-slate-200,
+.theme-light .modal-light-scope .text-slate-300 {
+  color: #334155 !important;
+}
+
+.theme-light .modal-light-scope .text-slate-400 {
+  color: #475569 !important;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }

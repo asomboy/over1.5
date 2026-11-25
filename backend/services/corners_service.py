@@ -926,7 +926,9 @@ class CornersPredictionEngine:
         # Persist prediction snapshot if requested
         if save_snapshot:
             try:
-                CornerSnapshotService.save_prediction_snapshot(db, fixture_id, res_payload, is_prematch=(fixture.status == "SCHEDULED"), commit=commit_snapshot)
+                status_up = str(fixture.status or "SCHEDULED").upper()
+                is_pre = status_up not in ("LIVE", "HT", "1H", "2H", "ET", "FINISHED", "FT", "AET", "PEN")
+                CornerSnapshotService.save_prediction_snapshot(db, fixture_id, res_payload, is_prematch=is_pre, commit=commit_snapshot)
             except Exception as snap_ex:
                 logger.debug(f"Error persisting corner snapshot for fixture {fixture_id}: {snap_ex}")
 

@@ -1,24 +1,21 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
-import { 
-  Activity, 
-  XCircle, 
-  RefreshCw, 
-  Search, 
-  Calendar, 
-  BarChart2, 
-  Zap, 
-  ChevronRight, 
+import {
+  Activity,
+  XCircle,
+  RefreshCw,
+  Search,
+  Calendar,
+  BarChart2,
+  Zap,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
-  Layers, 
+  Layers,
   X,
   Filter,
-  Sun,
-  Moon,
   AlertCircle,
   List,
-  Grid,
   CheckCircle2,
   Flame,
   ArrowUpRight,
@@ -27,18 +24,26 @@ import {
   Crown,
   Radio,
   Star,
-  BellRing,
-  Calculator,
-  Plus
+  Plus,
 } from 'lucide-react';
-import AccumulatorModal from './components/AccumulatorModal';
-import MatchDetailModal from './components/MatchDetailModal';
-import LiveMatchIntelligenceModal from './components/LiveMatchIntelligenceModal';
-import ModelIntelligenceDashboard from './components/ModelIntelligenceDashboard';
 import FixtureMarketsPanel from './components/FixtureMarketsPanel';
 import LiveGoalRadarTab from './components/LiveGoalRadarTab';
-import AlertSettingsModal from './components/AlertSettingsModal';
-import BetSlipTrackerModal from './components/BetSlipTrackerModal';
+import AppHeaderBar from './components/AppHeaderBar';
+import MobileBottomNav from './components/MobileBottomNav';
+import { TeamFormPills } from './components/AnalyticsCharts';
+import {
+  getOrCreateClientId,
+  getStoredAdminKey,
+  readUrlViewState,
+  writeUrlViewState,
+} from './utils/clientSession';
+
+const AccumulatorModal = lazy(() => import('./components/AccumulatorModal'));
+const MatchDetailModal = lazy(() => import('./components/MatchDetailModal'));
+const LiveMatchIntelligenceModal = lazy(() => import('./components/LiveMatchIntelligenceModal'));
+const ModelIntelligenceDashboard = lazy(() => import('./components/ModelIntelligenceDashboard'));
+const AlertSettingsModal = lazy(() => import('./components/AlertSettingsModal'));
+const BetSlipTrackerModal = lazy(() => import('./components/BetSlipTrackerModal'));
 import { TABLE_MARKET_TABS, pctVal } from './utils/marketTabs';
 import {
   dispatchLiveBrowserNotification,
@@ -94,13 +99,14 @@ const apiRequest = async (method, path, data = null, options = {}) => {
 
   let lastErr = null;
   const timeoutMs = options.timeout || 60000;
-  const adminKey =
-    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ADMIN_API_KEY) ||
-    (typeof window !== 'undefined' ? window.localStorage?.getItem('sgp_admin_key') : '') ||
-    '';
+  const adminKey = getStoredAdminKey();
+  const clientId = getOrCreateClientId();
   const mergedHeaders = {
+    'X-Client-Id': clientId,
     ...(options.headers || {}),
-    ...((method === 'post' || method === 'put' || method === 'patch' || method === 'delete') && adminKey ? { 'X-Admin-Key': adminKey } : {}),
+    ...((method === 'post' || method === 'put' || method === 'patch' || method === 'delete' || path === '/api/admin/verify') && adminKey
+      ? { 'X-Admin-Key': adminKey }
+      : {}),
   };
 
   for (const url of urls) {
@@ -162,15 +168,16 @@ export default function App() {
   const [isWarmingUp, setIsWarmingUp] = useState(false);
 
   // Filter & Search states (Main Table Default: Ascending Order by Kickoff Date starting from current date upward)
+  const initialUrlState = useMemo(() => readUrlViewState(), []);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedLeague, setSelectedLeague] = useState('ALL');
+  const [selectedLeague, setSelectedLeague] = useState(() => initialUrlState.league || 'ALL');
   const [sortBy, setSortBy] = useState('DATE_ASC');
 
   // Dedicated Best 15 Over 1.5 Filter State
   const [showBest15Over15, setShowBest15Over15] = useState(false);
 
-  // Main Tab Selection ('upcoming' | 'finished')
-  const [activeTab, setActiveTab] = useState('upcoming');
+  // Main Tab Selection ('upcoming' | 'live' | 'finished')
+  const [activeTab, setActiveTab] = useState(() => initialUrlState.tab || 'upcoming');
   const [liveFixtures, setLiveFixtures] = useState([]);
   const [loadingLive, setLoadingLive] = useState(false);
 
@@ -190,11 +197,11 @@ export default function App() {
 
   // Smart Accumulator Generator & Match Detail Modal state
   const [showAccaModal, setShowAccaModal] = useState(false);
-  const [activeDetailFixtureId, setActiveDetailFixtureId] = useState(null);
-  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [activeDetailFixtureId, setActiveDetailFixtureId] = useState(() => initialUrlState.matchId || null);
+  const [showDetailModal, setShowDetailModal] = useState(() => Boolean(initialUrlState.matchId));
   const [detailInitialTab, setDetailInitialTab] = useState('decision_intel');
-  const [activeLiveFixtureId, setActiveLiveFixtureId] = useState(null);
-  const [showLiveModal, setShowLiveModal] = useState(false);
+  const [activeLiveFixtureId, setActiveLiveFixtureId] = useState(() => (!initialUrlState.matchId && initialUrlState.liveId) || null);
+  const [showLiveModal, setShowLiveModal] = useState(() => Boolean(!initialUrlState.matchId && initialUrlState.liveId));
   const [showModelDashboard, setShowModelDashboard] = useState(false);
   const [showValueBetsOnly, setShowValueBetsOnly] = useState(false);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
@@ -991,8 +998,38 @@ export default function App() {
 
   // Selected Particular Day state for Top 10 Daily Picks (Default: Today's Date)
   const [selectedPickDay, setSelectedPickDay] = useState(() => {
-    return getGMT1DayKey(new Date().toISOString()) || 'ALL_DAYS';
+    return initialUrlState.day || getGMT1DayKey(new Date().toISOString()) || 'ALL_DAYS';
   });
+
+  useEffect(() => {
+    writeUrlViewState(
+      {
+        tab: activeTab,
+        day: selectedPickDay,
+        league: selectedLeague,
+        matchId: showDetailModal ? activeDetailFixtureId : null,
+        liveId: showLiveModal ? activeLiveFixtureId : null,
+      },
+      Boolean(showDetailModal || showLiveModal)
+    );
+  }, [activeTab, selectedPickDay, selectedLeague, showDetailModal, activeDetailFixtureId, showLiveModal, activeLiveFixtureId]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const st = readUrlViewState();
+      if (!st.matchId && showDetailModal) {
+        setShowDetailModal(false);
+        setActiveDetailFixtureId(null);
+      }
+      if (!st.liveId && showLiveModal) {
+        setShowLiveModal(false);
+        setActiveLiveFixtureId(null);
+      }
+      if (st.tab) setActiveTab(st.tab);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [showDetailModal, showLiveModal]);
 
   // Automatically default Table 1 to current date (Today) if matches exist, or fallback gracefully to closest upcoming match day
   useEffect(() => {
@@ -1131,7 +1168,7 @@ export default function App() {
     const alreadyAttemptedOnPage = paginatedFixtures.filter((fix) =>
       extraMarketsAttemptedRef.current.has(fix.id)
     ).length;
-    const remainingBudget = Math.max(0, 24 - alreadyAttemptedOnPage);
+    const remainingBudget = Math.max(0, 50 - alreadyAttemptedOnPage);
     if (remainingBudget === 0) return;
 
     const candidates = paginatedFixtures
@@ -1211,7 +1248,7 @@ export default function App() {
 
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 relative overflow-x-hidden w-full max-w-full ${
-      darkMode ? 'bg-slate-950 text-slate-100 pitch-grid' : 'bg-slate-50 text-slate-900'
+      darkMode ? 'bg-slate-950 text-slate-100 pitch-grid' : 'theme-light bg-slate-50 text-slate-900'
     }`}>
       {/* Background Glow Blobs */}
       {darkMode && (
@@ -1221,154 +1258,30 @@ export default function App() {
         </>
       )}
 
-      {/* Header */}
-      <header className={`border-b sticky top-0 z-40 backdrop-blur-md transition-colors ${
-        darkMode ? 'border-slate-800/80 bg-slate-950/80' : 'border-slate-200 bg-white/80'
-      }`}>
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2 overflow-hidden">
-          
-          {/* Brand */}
-          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
-            <div className="p-1.5 sm:p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-500 shrink-0">
-              <Activity className="w-4 h-4 sm:w-6 sm:h-6 animate-pulse" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <span className={`font-black text-xs sm:text-base md:text-xl tracking-tight leading-tight uppercase ${
-                  darkMode ? 'bg-gradient-to-r from-white via-slate-200 to-emerald-400 bg-clip-text text-transparent' : 'text-slate-900'
-                }`}>
-                  <span className="block sm:inline">Soccer</span>
-                  <span className="sm:ml-1 text-emerald-400">GoalPredictor</span>
-                </span>
-                <span className="hidden md:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 whitespace-nowrap">
-                  GMT+1 Live Feed
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 hidden lg:block">
-                Real-Time Match Timings (GMT+1) & Goal Expectation Analytics
-              </p>
-            </div>
-          </div>
-
-          {/* Action Controls */}
-          <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
-            
-            {/* View Mode Toggle */}
-            <div className={`flex items-center p-0.5 sm:p-1 rounded-xl border ${
-              darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'
-            }`}>
-              <button
-                onClick={() => setViewMode('table')}
-                className={`p-1 sm:p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
-                  viewMode === 'table' 
-                    ? 'bg-emerald-600 text-white shadow-sm' 
-                    : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title="Compact Table / List View"
-              >
-                <List className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                <span className="hidden md:inline">List</span>
-              </button>
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-1 sm:p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
-                  viewMode === 'grid' 
-                    ? 'bg-emerald-600 text-white shadow-sm' 
-                    : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title="Grid Cards View"
-              >
-                <Grid className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                <span className="hidden md:inline">Grid</span>
-              </button>
-            </div>
-
-            {/* Theme Toggle */}
-            <button
-              onClick={() => {
-                const nextMode = !darkMode;
-                setDarkMode(nextMode);
-                localStorage.setItem('sgp-theme', nextMode ? 'dark' : 'light');
-              }}
-              className={`p-1.5 sm:p-2 rounded-xl border transition-all ${
-                darkMode 
-                  ? 'bg-slate-900 border-slate-800 text-amber-400 hover:bg-slate-800' 
-                  : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
-              }`}
-              title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-            >
-              {darkMode ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-            </button>
-
-            {/* API Health */}
-            <div className={`flex items-center space-x-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-xs font-semibold border transition-all ${
-              backendHealth.online 
-                ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' 
-                : 'bg-rose-500/10 text-rose-500 border-rose-500/30'
-            }`}>
-              <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${backendHealth.online ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`} />
-              <span className="hidden sm:inline">
-                {backendHealth.online ? `Live (${backendHealth.latency}ms)` : 'Offline'}
-              </span>
-            </div>
-
-            {/* +EV Paper Bet Slip Button */}
-            <button
-              onClick={() => setShowBetSlipModal(true)}
-              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-extrabold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-xl transition-all shadow-sm active:scale-95"
-              title="Open SportyBet & Bet9ja Slip Builder, +EV Calculator & Paper Ledger"
-            >
-              <Calculator className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Bet Slips</span>
-              {draftSlipLegs.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-500 text-slate-950">
-                  {draftSlipLegs.length}
-                </span>
-              )}
-            </button>
-
-            {/* Live Alert Rules Button */}
-            <button
-              onClick={() => setShowAlertSettingsModal(true)}
-              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-bold bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-cyan-300 rounded-xl transition-all shadow-sm active:scale-95"
-              title="Live Browser Push, Audio Chime & Telegram Alert Preferences"
-            >
-              <BellRing className={`w-3.5 h-3.5 ${alertSettings.browserPushEnabled ? 'text-emerald-400' : 'text-cyan-400'}`} />
-              <span className="hidden md:inline">Alerts</span>
-            </button>
-
-            {/* Smart Acca Button */}
-            <button
-              onClick={() => setShowAccaModal(true)}
-              className="flex items-center space-x-1 px-2.5 sm:px-3.5 py-1 sm:py-1.5 text-xs font-bold bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white rounded-xl transition-all shadow-md active:scale-95 border border-emerald-400/30"
-              title="Generate Smart Accumulators"
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
-              <span className="hidden sm:inline">Smart Accas</span>
-            </button>
-
-            {/* Model Evaluation Dashboard Button */}
-            <button
-              onClick={() => setShowModelDashboard(true)}
-              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-black bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 rounded-xl transition-all shadow-sm active:scale-95"
-              title="Open Model Evaluation & Calibration Dashboard"
-            >
-              <BarChart2 className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden sm:inline">Model Intel</span>
-            </button>
-
-            {/* Sync Button */}
-            <button
-              onClick={handleSyncData}
-              disabled={syncing}
-              className="flex items-center space-x-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{syncing ? 'Syncing...' : 'Sync'}</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      <AppHeaderBar
+        darkMode={darkMode}
+        onToggleDarkMode={() => {
+          const nextMode = !darkMode;
+          setDarkMode(nextMode);
+          localStorage.setItem('sgp-theme', nextMode ? 'dark' : 'light');
+        }}
+        viewMode={viewMode}
+        onChangeViewMode={setViewMode}
+        backendHealth={backendHealth}
+        draftSlipCount={draftSlipLegs.length}
+        browserPushEnabled={Boolean(alertSettings.browserPushEnabled)}
+        syncing={syncing}
+        onOpenBetSlips={() => setShowBetSlipModal(true)}
+        onOpenAlerts={() => setShowAlertSettingsModal(true)}
+        onOpenAccas={() => setShowAccaModal(true)}
+        onOpenModelDashboard={() => setShowModelDashboard(true)}
+        onSyncData={handleSyncData}
+        apiRequest={apiRequest}
+        onNotifyBanner={(msg) => {
+          setNotification(msg);
+          setTimeout(() => setNotification(null), 5000);
+        }}
+      />
 
       {/* Cold-Start Server Warming Banner */}
       {isWarmingUp && loading && (
@@ -1403,7 +1316,7 @@ export default function App() {
       )}
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col gap-5 sm:gap-8 overflow-x-hidden">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 pt-4 pb-20 sm:py-8 flex flex-col gap-5 sm:gap-8 overflow-x-hidden">
         
         {/* Main Tab Navigation Bar */}
         <div className="flex items-center gap-2 sm:gap-3 border-b pb-3 border-slate-800/80 w-full overflow-x-auto custom-scrollbar">
@@ -1488,7 +1401,7 @@ export default function App() {
               <div className="grid grid-cols-3 gap-2 sm:gap-3 w-full md:w-auto shrink-0">
                 <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
                   <span className="text-[10px] font-bold text-slate-400 uppercase truncate">Results</span>
-                  <span className="text-base sm:text-xl font-bold text-white block mt-0.5">{filteredFinishedFixtures.length}</span>
+                  <span className={`text-base sm:text-xl font-bold block mt-0.5 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{filteredFinishedFixtures.length}</span>
                   <span className="text-[8px] sm:text-[9px] font-semibold text-emerald-400 truncate mt-0.5">
                     {selectedPickDay === 'ALL_DAYS' ? 'All Days' : formatDayTitle(selectedPickDay)}
                   </span>
@@ -2465,7 +2378,7 @@ export default function App() {
                           </td>
 
                           {/* Total xG */}
-                          <td className="py-3 px-3 text-center font-mono font-bold text-slate-300">
+                          <td className={`py-3 px-3 text-center font-mono font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                             {formatFixed(fix.prediction?.expected_goals_xg, 2)}
                           </td>
 
@@ -2690,7 +2603,7 @@ export default function App() {
             darkMode ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'
           }`}>
             <div className="p-3 sm:p-4 border-b flex flex-wrap items-center justify-between gap-2 border-slate-800/80">
-              <span className="text-xs font-extrabold uppercase text-slate-300 flex items-center gap-2">
+              <span className={`text-xs font-extrabold uppercase flex items-center gap-2 ${darkMode ? 'text-slate-300' : 'text-slate-800'}`}>
                 <Calendar className="w-4 h-4 text-emerald-400" />
                 {`Table 2: Upcoming & Live Match Predictions (${selectedPickDay === 'ALL_DAYS' ? 'All Match Days' : formatDayTitle(selectedPickDay)})`}
               </span>
@@ -2978,9 +2891,12 @@ export default function App() {
                                   {fix.home_team?.short_code?.substring(0, 2)}
                                 </span>
                               )}
-                              <span className={`font-bold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
-                                {fix.home_team?.name}
-                              </span>
+                              <div className="flex flex-col">
+                                <span className={`font-bold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
+                                  {fix.home_team?.name}
+                                </span>
+                                <TeamFormPills form={fix.home_team?.recent_form} compact />
+                              </div>
                             </div>
 
                             {/* Live Score Pill or VS */}
@@ -3002,9 +2918,12 @@ export default function App() {
                                   {fix.away_team?.short_code?.substring(0, 2)}
                                 </span>
                               )}
-                              <span className={`font-bold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
-                                {fix.away_team?.name}
-                              </span>
+                              <div className="flex flex-col">
+                                <span className={`font-bold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
+                                  {fix.away_team?.name}
+                                </span>
+                                <TeamFormPills form={fix.away_team?.recent_form} compact />
+                              </div>
                             </div>
                           </div>
                         </td>
@@ -3146,7 +3065,7 @@ export default function App() {
                             </div>
                           ) : (
                             <div className="flex flex-col items-center">
-                              <span className="font-mono font-black text-xs text-slate-200">
+                              <span className={`font-mono font-black text-xs ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
                                 {formatFixed(pred.predicted_home_score, 2)} - {formatFixed(pred.predicted_away_score, 2)}
                               </span>
                               <span className="text-[10px] text-slate-400">Total: {formatFixed(pred.expected_goals_xg, 2)}</span>
@@ -3614,15 +3533,32 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      <MobileBottomNav
+        activeTab={activeTab}
+        onSelectTab={(nextTab) => {
+          setActiveTab(nextTab);
+          if (nextTab === 'live') fetchLiveFixtures(false);
+          if (nextTab === 'finished' && finishedFixtures.length === 0) fetchFinishedFixtures();
+        }}
+        onOpenBetSlips={() => setShowBetSlipModal(true)}
+        onOpenSmartAccas={() => setShowAccaModal(true)}
+        upcomingCount={dayUpcomingFixturesCount}
+        liveCount={liveFixtures.length}
+        draftSlipCount={draftSlipLegs.length}
+        darkMode={darkMode}
+      />
+
+      <Suspense fallback={null}>
       {/* Smart Accumulator Generator Modal */}
-      <AccumulatorModal
+      {showAccaModal && <AccumulatorModal
         isOpen={showAccaModal}
         onClose={() => setShowAccaModal(false)}
         apiRequest={apiRequest}
         selectedPickDay={selectedPickDay}
         darkMode={darkMode}
         onSendToBetSlip={handleSendAccaToSlip}
-      />
+      />}
 
       {/* Deep Match Detail & H2H Modal - Strictly Mutex Isolated */}
       {showDetailModal && !showLiveModal && activeDetailFixtureId && (
@@ -3661,15 +3597,15 @@ export default function App() {
       )}
 
       {/* Model Intelligence Evaluation & Calibration Dashboard */}
-      <ModelIntelligenceDashboard
+      {showModelDashboard && <ModelIntelligenceDashboard
         isOpen={showModelDashboard}
         onClose={() => setShowModelDashboard(false)}
         apiRequest={apiRequest}
         darkMode={darkMode}
-      />
+      />}
 
       {/* +EV Edge Calculator & Paper Bet Ledger Modal */}
-      <BetSlipTrackerModal
+      {showBetSlipModal && <BetSlipTrackerModal
         isOpen={showBetSlipModal}
         onClose={() => setShowBetSlipModal(false)}
         draftLegs={draftSlipLegs}
@@ -3686,10 +3622,10 @@ export default function App() {
           setNotification(msg);
           setTimeout(() => setNotification(null), 5000);
         }}
-      />
+      />}
 
       {/* Live Browser Push, Audio Chime & Telegram Alert Rules Modal */}
-      <AlertSettingsModal
+      {showAlertSettingsModal && <AlertSettingsModal
         isOpen={showAlertSettingsModal}
         onClose={() => setShowAlertSettingsModal(false)}
         settings={alertSettings}
@@ -3702,7 +3638,8 @@ export default function App() {
           setNotification(msg);
           setTimeout(() => setNotification(null), 5000);
         }}
-      />
+      />}
+      </Suspense>
     </div>
   );
 }

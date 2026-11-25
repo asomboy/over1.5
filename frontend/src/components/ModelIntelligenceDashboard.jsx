@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { CalibrationReliabilityChart } from './AnalyticsCharts';
 import {
   X,
   Activity,
@@ -266,7 +267,7 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
-      <div className={`w-full max-w-5xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] transition-colors ${
+      <div className={`modal-light-scope w-full max-w-5xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] transition-colors ${
         darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         
@@ -1066,6 +1067,8 @@ export default function ModelIntelligenceDashboard({ isOpen, onClose, apiRequest
                       </span>
                     </div>
                   </div>
+
+                  <CalibrationReliabilityChart buckets={calibrationData?.buckets || []} darkMode={darkMode} />
 
                   <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                     <span className="text-xs font-black uppercase tracking-wider text-white block">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { ScorelineHeatmap } from './AnalyticsCharts';
 import { 
   X, 
   Shield, 
@@ -346,7 +347,7 @@ export default function MatchDetailModal({
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fadeIn"
     >
-      <div className={`w-full max-w-2xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors ${
+      <div className={`modal-light-scope w-full max-w-2xl rounded-3xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors ${
         darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         
@@ -1448,6 +1449,14 @@ export default function MatchDetailModal({
                       </div>
                     </div>
                   )}
+                  <ScorelineHeatmap
+                    exactScores={exactScores}
+                    xgHome={xgHome}
+                    xgAway={xgAway}
+                    homeName={home?.name || 'Home'}
+                    awayName={away?.name || 'Away'}
+                    darkMode={darkMode}
+                  />
 
                   {/* Confidence Indicator */}
                   {confidence && (

@@ -1,29 +1,43 @@
-// Service Worker for Soccer Goal Predictor (Offline & PWA Support)
-const CACHE_NAME = 'sgp-cache-v2';
-const STATIC_ASSETS = [
-  '/favicon.svg',
-  '/manifest.json'
-];
+// Service Worker for Soccer Goal Predictor (Offline & PWA Support with Bounded Image Cache)
+const SHELL_CACHE = 'sgp-shell-v3';
+const IMAGE_CACHE = 'sgp-images-v3';
+const VALID_CACHES = [SHELL_CACHE, IMAGE_CACHE];
+const MAX_IMAGE_ENTRIES = 120;
+
+const STATIC_ASSETS = ['/favicon.svg', '/manifest.json'];
+
+async function putBoundedImageCache(request, response) {
+  const cache = await caches.open(IMAGE_CACHE);
+  await cache.put(request, response);
+  const keys = await cache.keys();
+  if (keys.length > MAX_IMAGE_ENTRIES) {
+    const overflow = keys.length - MAX_IMAGE_ENTRIES;
+    for (let i = 0; i < overflow; i += 1) {
+      await cache.delete(keys[i]);
+    }
+  }
+}
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
-  );
+  event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-          return Promise.resolve();
-        })
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.map((key) => {
+            if (!VALID_CACHES.includes(key)) {
+              return caches.delete(key);
+            }
+            return Promise.resolve();
+          })
+        )
       )
-    ).then(() => self.clients.claim())
+      .then(() => self.clients.claim())
   );
 });
 
@@ -31,17 +45,14 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
 
-  // Never intercept or cache the Service Worker script itself
   if (url.pathname === '/sw.js') {
     event.respondWith(fetch(new Request(event.request, { cache: 'no-store' })));
     return;
   }
 
-  // 1. Network-first strategy for all API requests
+  // 1. Network-first strategy for API requests
   if (url.pathname.startsWith('/api/')) {
-    event.respondWith(
-      fetch(event.request).catch(() => caches.match(event.request))
-    );
+    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
     return;
   }
 
@@ -52,7 +63,7 @@ self.addEventListener('fetch', (event) => {
         .then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', clone));
+            caches.open(SHELL_CACHE).then((cache) => cache.put('/index.html', clone));
           }
           return networkResponse;
         })
@@ -61,26 +72,15 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Cache-first strategy for hashed immutable build assets (/assets/), fonts, and icons
-  if (
-    url.pathname.startsWith('/assets/') ||
-    url.hostname.includes('fonts.googleapis.com') ||
-    url.hostname.includes('fonts.gstatic.com') ||
-    url.pathname.endsWith('.svg') ||
-    url.pathname.endsWith('.png') ||
-    url.pathname.endsWith('.jpg') ||
-    url.pathname.endsWith('.css') ||
-    url.pathname.endsWith('.js')
-  ) {
+  // 3. Bounded FIFO cache for team/league logos & images
+  if (url.pathname.endsWith('.png') || url.pathname.endsWith('.jpg') || url.pathname.endsWith('.webp')) {
     event.respondWith(
       caches.match(event.request).then((cachedResponse) => {
-        if (cachedResponse) {
-          return cachedResponse;
-        }
+        if (cachedResponse) return cachedResponse;
         return fetch(event.request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
-            const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+            const clone = networkResponse.clone();
+            event.waitUntil(putBoundedImageCache(event.request, clone));
           }
           return networkResponse;
         });
@@ -89,10 +89,31 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Default: Network with fallback to cache
-  event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
-  );
+  // 4. Cache-first for immutable hashed Vite /assets/, fonts, and local SVGs
+  if (
+    url.pathname.startsWith('/assets/') ||
+    url.hostname.includes('fonts.googleapis.com') ||
+    url.hostname.includes('fonts.gstatic.com') ||
+    url.pathname.endsWith('.svg') ||
+    url.pathname.endsWith('.css') ||
+    url.pathname.endsWith('.js')
+  ) {
+    event.respondWith(
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) return cachedResponse;
+        return fetch(event.request).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        });
+      })
+    );
+    return;
+  }
+
+  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
 });
 
 self.addEventListener('notificationclick', (event) => {

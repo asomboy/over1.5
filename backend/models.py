@@ -973,6 +973,7 @@ class BetSlip(Base):
     __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    client_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default="public", index=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, default="manual", index=True)  # manual | accumulator | live_signal
     bookmaker: Mapped[Optional[str]] = mapped_column(String, nullable=True, default="general")  # general | sportybet | bet9ja

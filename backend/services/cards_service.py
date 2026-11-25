@@ -1223,11 +1223,13 @@ class CardsPredictionEngine:
 
         if save_snapshot:
             try:
+                status_up = str(fixture.status or "SCHEDULED").upper()
+                is_pre = status_up not in ("LIVE", "HT", "1H", "2H", "ET", "FINISHED", "FT", "AET", "PEN")
                 CardSnapshotService.save_prediction_snapshot(
                     db,
                     fixture_id,
                     res_payload,
-                    is_prematch=(fixture.status == "SCHEDULED"),
+                    is_prematch=is_pre,
                     commit=commit_snapshot,
                 )
             except Exception as snap_ex:
